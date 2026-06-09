@@ -111,6 +111,9 @@ def execute_python(arguments: dict[str, Any], workspace_dir: Path) -> str:
         result = subprocess.run([sys.executable, "-c", code], **kwargs)
         return result.stdout if result.returncode == 0 else result.stderr
     except subprocess.TimeoutExpired:
+        # Python 3.11+ sends SIGKILL to the child on TimeoutExpired.
+        # On older Pythons the child may linger as a zombie; if that
+        # matters, switch to Popen + process_group + os.killpg.
         return "error: execution timed out (30s)"
     except Exception as e:
         return str(e)
@@ -136,7 +139,7 @@ def read_file(arguments: dict[str, Any], workspace_dir: Path) -> str:
     path = arguments.get("path", "")
     try:
         file_path = _resolve_path(path, workspace_dir)
-        return file_path.read_text(encoding="utf-8")
+        return file_path.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
         return str(e)
 

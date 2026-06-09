@@ -72,7 +72,7 @@ class ChatScreen(Screen[None]):
 
     # -- Input handling ---------------------------------------------------
 
-    def on_chat_input_chat_submitted(self, event: ChatInput.ChatSubmitted) -> None:
+    async def on_chat_input_chat_submitted(self, event: ChatInput.ChatSubmitted) -> None:
         """Handle a normal (non-slash) message submission."""
         text = event.value.strip()
         if not text:
@@ -83,7 +83,7 @@ class ChatScreen(Screen[None]):
         if text.startswith("/"):
             _old_theme = self.state.theme
             result = await handle_slash_command(
-                text, self.state, self.client, self.workspace
+                text, self.state, self.client, self.workspace, http_client=self._http
             )
             if text in {"/exit", "/quit"}:
                 self.app.exit()
@@ -120,7 +120,7 @@ class ChatScreen(Screen[None]):
         else:
             palette.select_next()
 
-    def on_chat_input_slash_select(self, event: ChatInput.SlashSelect) -> None:
+    async def on_chat_input_slash_select(self, event: ChatInput.SlashSelect) -> None:
         """Enter pressed in slash mode — select command or execute directly."""
         palette = self.query_one("#command-palette", CommandPalette)
         input_widget = self.query_one("#chat-input", ChatInput)
@@ -132,7 +132,7 @@ class ChatScreen(Screen[None]):
         if _is_exact_command(current_text):
             _old_theme = self.state.theme
             result = await handle_slash_command(
-                current_text, self.state, self.client, self.workspace
+                current_text, self.state, self.client, self.workspace, http_client=self._http
             )
             if current_text in {"/exit", "/quit"}:
                 self.app.exit()
@@ -172,7 +172,7 @@ class ChatScreen(Screen[None]):
         """Preview a file selected in the file explorer."""
         chat_view = self.query_one("#chat-view", ChatView)
         try:
-            content = event.path.read_text(encoding="utf-8")
+            content = event.path.read_text(encoding="utf-8", errors="replace")
             preview = content[:1500] + ("…" if len(content) > 1500 else "")
             chat_view.add_system(
                 f"[bold]Preview: {event.path.name}[/bold]\n{preview}"
@@ -194,16 +194,25 @@ class ChatScreen(Screen[None]):
                 message, self.state, tools, self._http
             )
         except Exception as exc:
-            status_bar.clear_busy()
             chat_view.add_error(f"Send failed: {exc}")
             self._refresh_all()
             return
+        finally:
+            status_bar.clear_busy()
 
         max_iterations = 10
         iteration = 0
         recent_calls: list[tuple[str, str]] = []  # track (name, args) for dedup
         while result.tool_calls and iteration < max_iterations:
             iteration += 1
+            # Append assistant message ONCE for all parallel tool calls
+            self.state.history.append(
+                {
+                    "role": "assistant",
+                    "content": result.content or "",
+                    "tool_calls": result.tool_calls,
+                }
+            )
             for tc in result.tool_calls:
                 func = tc.get("function", {})
                 name = func.get("name", "unknown")
@@ -230,7 +239,7 @@ class ChatScreen(Screen[None]):
                 status_bar.set_busy(f"Executing {name}...")
                 chat_view.add_tool_status(f"Running {name}...")
 
-                tool_result_msg = execute_tool_call(tc, self.workspace)
+                tool_result_msg = await asyncio.to_thread(execute_tool_call, tc, self.workspace)
                 # If this is a duplicate, append a warning to the tool result
                 if recent_calls.count(call_key) >= 2:
                     original = tool_result_msg.get("content", "")
@@ -242,13 +251,6 @@ class ChatScreen(Screen[None]):
                 result_content = tool_result_msg.get("content", "")
                 chat_view.add_tool_result(result_content)
 
-                self.state.history.append(
-                    {
-                        "role": "assistant",
-                        "content": result.content or "",
-                        "tool_calls": result.tool_calls,
-                    }
-                )
                 self.state.history.append(tool_result_msg)
 
             try:
@@ -275,7 +277,7 @@ class ChatScreen(Screen[None]):
                 chat_view.add_system("[dim]⏳ Auto-compacting conversation (context > 80%)...[/dim]")
                 try:
                     before = usage.used_tokens
-                    self.client.compact(self.state)
+                    await self.client.async_compact(self.state, client=self._http)
                     after = token_usage(self.state).used_tokens
                     chat_view.add_system(f"[dim]Compacted {before} → {after} tokens[/dim]")
                 except Exception:

@@ -8,6 +8,8 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from rova.state import (
     DEFAULT_MODEL,
     VALID_PROFILES,
@@ -99,6 +101,7 @@ async def handle_slash_command(
     state: ChatState,
     client: Any | None = None,
     workspace_dir: Path | None = None,
+    http_client: httpx.AsyncClient | None = None,
 ) -> str:
     """Parse and execute a slash command. Returns output text to display.
 
@@ -127,7 +130,10 @@ async def handle_slash_command(
         if client is None:
             return "client unavailable"
         before = token_usage(state).used_tokens
-        result = await client.async_compact(state)
+        try:
+            result = await client.async_compact(state, client=http_client)
+        except httpx.HTTPError as exc:
+            return f"compact failed: {exc}"
         after = token_usage(state).used_tokens
         return f"compacted {before}→{after} tokens\n{result.content}"
     if command == "/profile":
@@ -140,7 +146,7 @@ async def handle_slash_command(
         state.profile = profile
         return f"profile={profile}"
     if command == "/rag":
-        return await _handle_rag_command(args, state, client)
+        return await _handle_rag_command(args, state, client, http_client=http_client)
     if command == "/quality":
         if not args:
             state.quality = None
@@ -169,12 +175,19 @@ async def handle_slash_command(
     if command == "/health":
         if client is None:
             return "client unavailable"
-        return json.dumps(await client.async_health(), indent=2, sort_keys=True)
+        try:
+            health_data = await client.async_health(client=http_client)
+            return json.dumps(health_data, indent=2, sort_keys=True)
+        except httpx.HTTPError as exc:
+            return f"health check failed: {exc}"
     if command == "/profiles":
         if client is None:
             return "client unavailable"
-        payload = await client.async_profiles()
-        return "\n".join(sorted((payload.get("profiles") or {}).keys()))
+        try:
+            payload = await client.async_profiles(client=http_client)
+            return "\n".join(sorted((payload.get("profiles") or {}).keys()))
+        except httpx.HTTPError as exc:
+            return f"profiles fetch failed: {exc}"
     if command == "/skills":
         return _format_skills(list_skills(state.skills_dir))
     if command == "/skill":
@@ -209,7 +222,7 @@ async def handle_slash_command(
         if not file_path.exists():
             return f"file not found: {args[0]}"
         try:
-            content = file_path.read_text(encoding="utf-8")
+            content = file_path.read_text(encoding="utf-8", errors="replace")
             return f"--- {args[0]} ---\n{content[:2000]}"
         except Exception as exc:
             return f"error reading {args[0]}: {exc}"
@@ -217,7 +230,8 @@ async def handle_slash_command(
 
 
 async def _handle_rag_command(
-    args: list[str], state: ChatState, client: Any | None
+    args: list[str], state: ChatState, client: Any | None,
+    http_client: httpx.AsyncClient | None = None,
 ) -> str:
     if not args:
         state.rag = not bool(state.rag)
@@ -235,18 +249,28 @@ async def _handle_rag_command(
         if len(args) < 2:
             return "usage: /rag ingest <path-or-url> [more...]"
         paths, urls = _split_paths_and_urls(args[1:])
-        return _format_ingest(await client.async_ingest(paths=paths, urls=urls))
+        try:
+            return _format_ingest(
+                await client.async_ingest(paths=paths, urls=urls, client=http_client)
+            )
+        except httpx.HTTPError as exc:
+            return f"rag ingest failed: {exc}"
     if action == "search":
         if client is None:
             return "client unavailable"
         if len(args) < 2:
             return "usage: /rag search <query>"
-        return _format_search(await client.async_search(" ".join(args[1:]), top_k=5))
+        try:
+            return _format_search(
+                await client.async_search(" ".join(args[1:]), top_k=5, client=http_client)
+            )
+        except httpx.HTTPError as exc:
+            return f"rag search failed: {exc}"
     if action == "list":
         if client is None:
             return "client unavailable"
         try:
-            payload = await client.async_list_rag_documents()
+            payload = await client.async_list_rag_documents(client=http_client)
             return _format_rag_list(payload)
         except Exception as exc:
             return f"rag list failed: {exc}"
@@ -256,7 +280,7 @@ async def _handle_rag_command(
         if len(args) < 2:
             return "usage: /rag delete <id>"
         try:
-            payload = await client.async_delete_rag_document(args[1])
+            payload = await client.async_delete_rag_document(args[1], client=http_client)
             return _format_rag_delete(payload)
         except Exception as exc:
             return f"rag delete failed: {exc}"
@@ -266,7 +290,12 @@ async def _handle_rag_command(
         if len(args) < 2:
             return "usage: /rag update <path>"
         paths, _urls = _split_paths_and_urls(args[1:])
-        return _format_ingest(await client.async_ingest(paths=paths))
+        try:
+            return _format_ingest(
+                await client.async_ingest(paths=paths, client=http_client)
+            )
+        except httpx.HTTPError as exc:
+            return f"rag update failed: {exc}"
     return "usage: /rag on|off|ingest|search|list|delete|update"
 
 

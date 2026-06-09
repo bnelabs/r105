@@ -183,8 +183,8 @@ class ChatInput(TextArea):
                 self.text = match
                 self.cursor_location = (self.document.line_count - 1, len(match))
                 self.post_message(self.SlashChanged(match))
-        else:
-            self.screen.action_focus_next()
+                return
+        self.screen.action_focus_next()
 
 
 # -- Fuzzy matching ----------------------------------------------------------

@@ -111,4 +111,4 @@ def _read_skill(skills_dir: Path, name: str) -> str:
     path = skills_dir / f"{name}.md"
     if not path.is_file():
         return ""
-    return path.read_text(encoding="utf-8").strip()
+    return path.read_text(encoding="utf-8", errors="replace").strip()

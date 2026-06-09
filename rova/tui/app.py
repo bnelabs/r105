@@ -27,11 +27,13 @@ class RovaApp(App):
         Binding("ctrl+r", "show_history", "History", show=True),
     ]
 
+    _THEME_DIR = Path(__file__).resolve().parent.parent / "themes"
+
     THEME_PATHS = {
-        "rova": "themes/rova.tcss",
-        "dracula": "themes/dracula.tcss",
-        "solarized-dark": "themes/solarized-dark.tcss",
-        "high-contrast": "themes/high-contrast.tcss",
+        "rova": str(_THEME_DIR / "rova.tcss"),
+        "dracula": str(_THEME_DIR / "dracula.tcss"),
+        "solarized-dark": str(_THEME_DIR / "solarized-dark.tcss"),
+        "high-contrast": str(_THEME_DIR / "high-contrast.tcss"),
     }
 
     def __init__(
@@ -55,7 +57,7 @@ class RovaApp(App):
 
     def apply_theme(self, name: str) -> None:
         """Apply a theme at runtime, using Textual's native theme API."""
-        path = self.THEME_PATHS.get(name, "themes/rova.tcss")
+        path = self.THEME_PATHS.get(name, str(self._THEME_DIR / "rova.tcss"))
         try:
             # Prefer Textual's native theme property (avoids bypassing CSS cache)
             if hasattr(self, "theme") and name in self.THEME_PATHS:
