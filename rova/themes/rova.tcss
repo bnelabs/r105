@@ -1,0 +1,91 @@
+/* Rova Textual CSS Theme */
+
+Screen {
+    background: #1a1a2e;
+    color: #e0e0e0;
+}
+
+#rova-header {
+    dock: top;
+    height: 4;
+    padding: 0 1;
+    background: #16213e;
+    color: #e0e0e0;
+    text-style: bold;
+    border-bottom: solid #0f3460;
+}
+
+#main-content {
+    height: 1fr;
+}
+
+#chat-view {
+    width: 3fr;
+    border-right: solid #0f3460;
+    padding: 0 1;
+}
+
+#sidebar {
+    width: 1fr;
+    min-width: 28;
+    max-width: 36;
+    padding: 1;
+    background: #16213e;
+    border-left: solid #0f3460;
+}
+
+#sidebar-state,
+#sidebar-workspace,
+#sidebar-skills {
+    margin-bottom: 1;
+    padding: 0 1;
+}
+
+#chat-input {
+    dock: bottom;
+    height: 3;
+    margin: 0;
+    border-top: solid #0f3460;
+    background: #16213e;
+    color: #e0e0e0;
+}
+
+#status-bar {
+    dock: bottom;
+    height: 1;
+    background: #0f3460;
+    color: #a0a0a0;
+    padding: 0 1;
+}
+
+#help-container {
+    padding: 1 2;
+    background: #1a1a2e;
+    color: #e0e0e0;
+}
+
+#help-text {
+    padding: 1;
+}
+
+#help-close {
+    margin-top: 1;
+    width: 20;
+}
+
+/* RichLog styling */
+RichLog {
+    background: #1a1a2e;
+    color: #e0e0e0;
+}
+
+/* Button styling */
+Button {
+    background: #0f3460;
+    color: #e0e0e0;
+    border: solid #1a508b;
+}
+
+Button:hover {
+    background: #1a508b;
+}

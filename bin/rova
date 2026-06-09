@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Resolve symlinks to find the real script location
+SCRIPT="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+ROVA_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+export PYTHONPATH="${ROVA_DIR}${PYTHONPATH:+:$PYTHONPATH}"
+exec "${ROVA_DIR}/.venv/bin/python" -m rova "$@"

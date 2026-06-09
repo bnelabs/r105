@@ -1,0 +1,1 @@
+Before answering, check whether the response covers the user's actual deliverables, hidden assumptions, edge cases, failure modes, safety or security risks, tests, rollout, rollback, and unsupported claims. Return only the final answer unless the user asks for the review.
