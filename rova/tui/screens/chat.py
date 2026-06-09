@@ -17,7 +17,7 @@ from textual.widgets import Static
 from rova.client import RouterClient
 from rova.commands import handle_slash_command
 from rova.state import DEFAULT_MODEL, ChatState, token_usage
-from rova.tools import TOOL_DEFINITIONS, execute_tool_call
+from rova.tools import execute_tool_call, get_tool_definitions
 from rova.tui.widgets.chat_view import ChatView
 from rova.tui.widgets.command_palette import COMMAND_DEFS, CommandPalette
 from rova.tui.widgets.file_explorer import FileExplorer
@@ -186,7 +186,7 @@ class ChatScreen(Screen[None]):
     async def _send_message(self, message: str) -> None:
         chat_view = self.query_one("#chat-view", ChatView)
         status_bar = self.query_one("#status-bar", StatusBarWidget)
-        tools = TOOL_DEFINITIONS if self.state.profile == "tool_agent" else None
+        tools = get_tool_definitions() if self.state.profile == "tool_agent" else None
 
         status_bar.set_busy("Streaming...")
         chat_view.start_streaming()

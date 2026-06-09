@@ -10,14 +10,15 @@ import operator
 import os
 import platform
 import re
-import shutil
 import subprocess
-import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+from rova.mcp_client import get_mcp_manager
+from rova.plugins import get_registry
+from rova.sandbox import get_sandbox
 
 
 def execute_tool_call(
@@ -26,7 +27,7 @@ def execute_tool_call(
 ) -> dict[str, Any]:
     """Execute a single tool call locally and return a tool result message."""
     function = call.get("function") or {}
-    name = function.get("name")
+    name = str(function.get("name", ""))
     raw_arguments = function.get("arguments") or "{}"
     arguments = (
         json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
@@ -51,7 +52,17 @@ def execute_tool_call(
     elif name == "system_info":
         result = system_info()
     else:
-        result = f"unknown tool: {name}"
+        # Check plugin registry before declaring unknown
+        plugin_result = get_registry().execute(name, arguments, workspace_dir)
+        if plugin_result is not None:
+            result = plugin_result
+        else:
+            # Check MCP tools
+            mcp_result = get_mcp_manager().execute_tool(name, arguments)
+            if mcp_result is not None:
+                result = mcp_result
+            else:
+                result = f"unknown tool: {name}"
 
     return {
         "role": "tool",
@@ -61,64 +72,37 @@ def execute_tool_call(
     }
 
 
+def get_tool_definitions() -> list[dict[str, Any]]:
+    """Return merged tool definitions: built-in + plugins + MCP."""
+    return [
+        *TOOL_DEFINITIONS,
+        *get_registry().get_definitions(),
+        *get_mcp_manager().get_all_definitions(),
+    ]
+
+
 # -- Python execution (sandboxed) ---------------------------------------
-
-def _sandbox_preexec() -> None:
-    """Set resource limits for sandboxed Python execution (Unix only)."""
-    if sys.platform == "win32":
-        return  # resource module is Unix-only; skip sandbox limits on Windows
-    import resource
-
-    # 256 MB memory limit
-    mem_bytes = 256 * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-    # 25s CPU time limit
-    resource.setrlimit(resource.RLIMIT_CPU, (25, 25))
-    # No child processes
-    resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
-    # Limit file size to 50MB
-    resource.setrlimit(resource.RLIMIT_FSIZE, (50 * 1024 * 1024, 50 * 1024 * 1024))
 
 
 def execute_python(arguments: dict[str, Any], workspace_dir: Path) -> str:
     """Execute Python code in a sandboxed subprocess.
 
-    Uses resource limits (Unix) and stripped environment for basic isolation.
-    NOTE: For production multi-tenant use, replace this with container-based
-    isolation (Docker, WASM runtime, or gVisor) — the current approach runs
-    under the host UID and can read host files like ~/.aws/credentials.
+    Uses the configured sandbox backend (bwrap on Linux, rlimit on Unix,
+    noop on Windows). See rova/sandbox.py for backend details.
     """
     code = arguments.get("code", "")
-    tmpdir = tempfile.mkdtemp(prefix="rova_sandbox_")
-    try:
-        # Use the same Python interpreter that runs Rova (handles venv, Windows, etc.)
-        kwargs: dict[str, Any] = {
-            "capture_output": True,
-            "text": True,
-            "timeout": 30,
-            "cwd": tmpdir,
-            "env": {
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "HOME": tmpdir,
-                "TMPDIR": tmpdir,
-                "PYTHONPATH": "",
-            },
-        }
-        # preexec_fn is Unix-only
-        if sys.platform != "win32":
-            kwargs["preexec_fn"] = _sandbox_preexec
+    if not code:
+        return "error: no code provided"
 
-        result = subprocess.run([sys.executable, "-c", code], **kwargs)
-        return result.stdout if result.returncode == 0 else result.stderr
+    try:
+        proc = get_sandbox().execute(code)
+        return proc.stdout if proc.returncode == 0 else proc.stderr
     except subprocess.TimeoutExpired:
-        # Python 3.11+ sends SIGKILL to the child on TimeoutExpired.
-        # On older Pythons the child may linger as a zombie; if that
-        # matters, switch to Popen + process_group + os.killpg.
         return "error: execution timed out (30s)"
+    except FileNotFoundError:
+        return "error: sandbox backend not available (missing executable)"
     except Exception as e:
         return str(e)
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # -- File operations ----------------------------------------------------

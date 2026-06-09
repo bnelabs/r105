@@ -11,6 +11,8 @@ from typing import Any
 import httpx
 
 from rova.config import save_config
+from rova.mcp_client import get_mcp_manager
+from rova.plugins import get_registry
 from rova.sessions import (
     delete_session,
     export_conversation,
@@ -51,6 +53,8 @@ SLASH_COMMANDS = [
     "/preview",
     "/session",
     "/export",
+    "/plugin",
+    "/mcp",
     "/exit",
 ]
 
@@ -105,6 +109,10 @@ Sessions
   /session list                  list saved sessions
   /session delete <name>         delete a saved session
   /export markdown|json|html     export conversation to a file
+  /plugin list                   list loaded custom tool plugins
+  /plugin reload                 reload plugins from disk
+  /mcp list                      list connected MCP servers
+  /mcp tools <server>            list tools from an MCP server
 
 System
   /health                        show router health
@@ -249,6 +257,10 @@ async def handle_slash_command(
         return _handle_session_command(args, state)
     if command == "/export":
         return _handle_export_command(args, state, workspace_dir)
+    if command == "/plugin":
+        return _handle_plugin_command(args)
+    if command == "/mcp":
+        return _handle_mcp_command(args)
     return f"unknown command: {command}"
 
 
@@ -443,6 +455,68 @@ def _handle_export_command(
 
     return f"exported {len(state.history)} messages to {output_path}"
 
+
+
+def _handle_plugin_command(args: list[str]) -> str:
+    """Handle /plugin list|reload commands."""
+    registry = get_registry()
+
+    if not args or args[0] == "list":
+        tools = registry.list_tools()
+        if not tools:
+            return "no custom plugins loaded"
+        lines = [f"{len(tools)} plugin tool(s) loaded:"]
+        for t in tools:
+            src = f" ({t.source_file})" if t.source_file else ""
+            warn = " ⚠️ network" if t.needs_network else ""
+            lines.append(f"  {t.name}{src}{warn}")
+        if registry.warnings:
+            lines.append("")
+            lines.append("warnings:")
+            for w in registry.warnings:
+                lines.append(f"  ⚠️ {w}")
+        return "\n".join(lines)
+
+    if args[0] == "reload":
+        count, warnings = registry.reload()
+        msg = f"plugins reloaded: {count} plugin(s) loaded"
+        if warnings:
+            msg += "\n" + "\n".join(f"  ⚠️ {w}" for w in warnings)
+        return msg
+
+    return "usage: /plugin list|reload"
+
+
+def _handle_mcp_command(args: list[str]) -> str:
+    """Handle /mcp list|tools commands."""
+    manager = get_mcp_manager()
+
+    if not args or args[0] == "list":
+        servers = manager.list_servers()
+        if not servers:
+            return "no MCP servers connected (configure mcp_servers in config.json)"
+        lines = [f"{len(servers)} MCP server(s):"]
+        for s in servers:
+            status = "connected" if s["connected"] else "disconnected"
+            lines.append(f"  {s['name']}  ({status}, {s['tool_count']} tools)")
+        return "\n".join(lines)
+
+    if args[0] == "tools":
+        if len(args) < 2:
+            return "usage: /mcp tools <server>"
+        server_name = args[1]
+        client = manager.get_client(server_name)
+        if client is None:
+            return f"MCP server not found: {server_name}"
+        tools = client.tools
+        if not tools:
+            return f"no tools from MCP server '{server_name}'"
+        lines = [f"{len(tools)} tool(s) from '{server_name}':"]
+        for t in tools:
+            lines.append(f"  {t.name}: {t.description[:100]}")
+        return "\n".join(lines)
+
+    return "usage: /mcp list|tools"
 
 
 def _split_paths_and_urls(items: list[str]) -> tuple[list[str], list[str]]:

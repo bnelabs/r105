@@ -40,6 +40,12 @@ COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     ("Sessions", "/session list", "", "List saved sessions"),
     ("Sessions", "/session delete", "<name>", "Delete a saved session"),
     ("Sessions", "/export", "markdown|json|html", "Export conversation to a file"),
+    # Plugins
+    ("Plugins", "/plugin list", "", "List loaded custom tool plugins"),
+    ("Plugins", "/plugin reload", "", "Reload plugins from disk"),
+    # MCP
+    ("MCP", "/mcp list", "", "List connected MCP servers"),
+    ("MCP", "/mcp tools", "<server>", "List tools from an MCP server"),
     # System
     ("System", "/theme", "<name>", "Switch theme (rova, dracula, solarized-dark, high-contrast)"),
     ("System", "/health", "", "Check llama-router health"),

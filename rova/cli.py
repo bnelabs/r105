@@ -14,6 +14,9 @@ from rova import __version__
 from rova.client import RouterClient
 from rova.commands import _format_ingest, _format_search, _split_paths_and_urls
 from rova.config import ensure_config, load_state_overrides
+from rova.mcp_client import load_mcp_servers
+from rova.plugins import init_registry
+from rova.sandbox import detect_backend, set_sandbox
 from rova.sessions import load_session
 from rova.state import (
     VALID_PROFILES,
@@ -43,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--skills-dir",
         default=str(DEFAULT_SKILLS_DIR),
         help="Skills directory, default: %(default)s",
+    )
+    parser.add_argument(
+        "--plugins-dir",
+        default=None,
+        help="Custom tool plugins directory, default: ~/.config/rova/plugins",
     )
     parser.add_argument(
         "--profile", choices=sorted(VALID_PROFILES), help="Force a router task profile"
@@ -105,6 +113,31 @@ def main(argv: list[str] | None = None) -> int:
         if args.skills_dir != str(DEFAULT_SKILLS_DIR)
         else config.get("skills_dir", str(DEFAULT_SKILLS_DIR))
     )
+
+    # Initialize sandbox backend
+    sandbox_name = config.get("sandbox_backend", "auto")
+    if sandbox_name == "auto":
+        detect_backend()  # selects best available and caches it
+    else:
+        set_sandbox(sandbox_name)
+
+    # Initialize plugin registry
+    plugins_str = (
+        args.plugins_dir
+        if args.plugins_dir
+        else config.get("plugins_dir")
+    )
+    if plugins_str:
+        init_registry(Path(plugins_str).expanduser().resolve())
+    else:
+        init_registry()  # uses default path
+
+    # Load MCP servers
+    mcp_configs: list[dict[str, Any]] = config.get("mcp_servers") or []
+    if mcp_configs:
+        mcp_errors = load_mcp_servers(mcp_configs)
+        for err in mcp_errors:
+            print(f"warning: {err}", file=sys.stderr)
 
     client = RouterClient(url)
     workspace_dir = Path(workspace_str).expanduser().resolve()

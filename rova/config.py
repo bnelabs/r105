@@ -17,9 +17,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "theme": "rova",
     "workspace": str(Path.home() / "rova-workspace"),
     "skills_dir": str(CONFIG_DIR / "skills"),
+    "plugins_dir": str(CONFIG_DIR / "plugins"),
     "quality": None,
     "profile": None,
     "auto_compact": True,
+    "sandbox_backend": "auto",
+    "mcp_servers": [],
     "url": "http://127.0.0.1:8010",
 }
 
