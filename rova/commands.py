@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import shlex
 from pathlib import Path
@@ -10,6 +11,13 @@ from typing import Any
 import httpx
 
 from rova.config import save_config
+from rova.sessions import (
+    delete_session,
+    export_conversation,
+    list_sessions,
+    load_session,
+    save_session,
+)
 from rova.skills import list_skills, read_skill
 from rova.state import (
     DEFAULT_MODEL,
@@ -41,6 +49,8 @@ SLASH_COMMANDS = [
     "/theme",
     "/autocompact",
     "/preview",
+    "/session",
+    "/export",
     "/exit",
 ]
 
@@ -88,6 +98,13 @@ Skills
 
 Workspace
   /workspace                     show workspace directory and files
+
+Sessions
+  /session save <name>           save conversation to a session file
+  /session load <name>           load and restore a saved session
+  /session list                  list saved sessions
+  /session delete <name>         delete a saved session
+  /export markdown|json|html     export conversation to a file
 
 System
   /health                        show router health
@@ -228,6 +245,10 @@ async def handle_slash_command(
             return f"--- {args[0]} ---\n{content[:2000]}"
         except Exception as exc:
             return f"error reading {args[0]}: {exc}"
+    if command == "/session":
+        return _handle_session_command(args, state)
+    if command == "/export":
+        return _handle_export_command(args, state, workspace_dir)
     return f"unknown command: {command}"
 
 
@@ -341,6 +362,87 @@ def _handle_skill_command(args: list[str], state: ChatState) -> str:
         text = read_skill(state.skills_dir, args[1])
         return text if text else f"unknown skill: {args[1]}"
     return "usage: /skill list|use|drop|clear|show"
+
+
+def _handle_session_command(args: list[str], state: ChatState) -> str:
+    """Handle /session save|load|list|delete commands."""
+    if not args:
+        return "usage: /session save|load|list|delete"
+
+    action = args[0]
+
+    if action == "save":
+        if len(args) < 2:
+            return "usage: /session save <name>"
+        name = args[1]
+        try:
+            path = save_session(state, name)
+            return f"session saved: {name} ({len(state.history)} messages → {path})"
+        except OSError as exc:
+            return f"session save failed: {exc}"
+
+    if action == "load":
+        if len(args) < 2:
+            return "usage: /session load <name>"
+        name = args[1]
+        try:
+            count = load_session(state, name)
+            return f"session loaded: {name} ({count} messages restored)"
+        except FileNotFoundError:
+            return f"session not found: {name}"
+        except (json.JSONDecodeError, OSError) as exc:
+            return f"session load failed: {exc}"
+
+    if action == "list":
+        sessions = list_sessions()
+        if not sessions:
+            return "no saved sessions"
+        lines = [f"{len(sessions)} session(s):"]
+        for s in sessions:
+            name = s["name"]
+            count = s["message_count"]
+            when = s.get("saved_at", "?")[:16]
+            preview = s.get("preview", "")
+            lines.append(f"  {name}  ({count} msgs, {when})")
+            if preview:
+                lines.append(f"    {preview}")
+        return "\n".join(lines)
+
+    if action == "delete":
+        if len(args) < 2:
+            return "usage: /session delete <name>"
+        name = args[1]
+        if delete_session(name):
+            return f"session deleted: {name}"
+        return f"session not found: {name}"
+
+    return "usage: /session save|load|list|delete"
+
+
+def _handle_export_command(
+    args: list[str], state: ChatState, workspace_dir: Path | None
+) -> str:
+    """Handle /export markdown|json|html command."""
+    if workspace_dir is None:
+        return "workspace not configured"
+
+    fmt = args[0] if args else "markdown"
+    if fmt not in {"markdown", "json", "html"}:
+        return f"unknown format: {fmt} (valid: markdown, json, html)"
+
+    if not state.history:
+        return "nothing to export — conversation is empty"
+
+    try:
+        content = export_conversation(state, fmt)
+    except Exception as exc:
+        return f"export failed: {exc}"
+
+    output_path = workspace_dir / f"conversation-{datetime.datetime.now():%Y%m%d-%H%M%S}.{fmt if fmt != 'markdown' else 'md'}"
+    output_path.write_text(content, encoding="utf-8")
+
+    return f"exported {len(state.history)} messages to {output_path}"
+
 
 
 def _split_paths_and_urls(items: list[str]) -> tuple[list[str], list[str]]:

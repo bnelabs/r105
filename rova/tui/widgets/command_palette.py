@@ -34,6 +34,12 @@ COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     # Workspace
     ("Workspace", "/workspace", "", "Show workspace directory and generated files"),
     ("Workspace", "/preview", "<filename>", "Preview a workspace file"),
+    # Sessions
+    ("Sessions", "/session save", "<name>", "Save conversation to a session file"),
+    ("Sessions", "/session load", "<name>", "Load and restore a saved session"),
+    ("Sessions", "/session list", "", "List saved sessions"),
+    ("Sessions", "/session delete", "<name>", "Delete a saved session"),
+    ("Sessions", "/export", "markdown|json|html", "Export conversation to a file"),
     # System
     ("System", "/theme", "<name>", "Switch theme (rova, dracula, solarized-dark, high-contrast)"),
     ("System", "/health", "", "Check llama-router health"),

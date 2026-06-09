@@ -116,5 +116,5 @@ class TestCommandPalette:
         for entry in COMMAND_DEFS:
             assert len(entry) == 4
             category, cmd, usage, desc = entry
-            assert category in ("Chat", "RAG", "Skills", "Workspace", "System")
+            assert category in ("Chat", "RAG", "Skills", "Sessions", "Workspace", "System")
             assert cmd.startswith("/")

@@ -14,6 +14,7 @@ from rova import __version__
 from rova.client import RouterClient
 from rova.commands import _format_ingest, _format_search, _split_paths_and_urls
 from rova.config import ensure_config, load_state_overrides
+from rova.sessions import load_session
 from rova.state import (
     VALID_PROFILES,
     VALID_QUALITIES,
@@ -61,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--version", action="version", version=f"rova {__version__}"
+    )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="Load a saved session on startup",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -117,6 +123,16 @@ def main(argv: list[str] | None = None) -> int:
         theme=state_overrides.get("theme", "rova"),
         skills_dir=skills_dir,
     )
+
+    # Load session if requested
+    if args.session:
+        try:
+            count = load_session(state, args.session)
+            print(f"Loaded session '{args.session}': {count} messages restored", file=sys.stderr)
+        except FileNotFoundError:
+            print(f"warning: session not found: {args.session}", file=sys.stderr)
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"warning: failed to load session: {exc}", file=sys.stderr)
 
     try:
         if args.command == "send":
