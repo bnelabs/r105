@@ -1,4 +1,4 @@
-"""HTTP client for llama-router API."""
+"""HTTP client for llama-router API — sync and async support."""
 
 from __future__ import annotations
 
@@ -63,8 +63,48 @@ def _maybe_float(value: Any) -> float | None:
         return None
 
 
+def _build_payload(message: str, state: ChatState, tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Build the request payload for a chat completion."""
+    messages = [*_skill_messages(state), *state.history, {"role": "user", "content": message}]
+    payload: dict[str, Any] = {
+        "model": DEFAULT_MODEL,
+        "messages": messages,
+        "stream": False,
+    }
+    metadata = _metadata_from_state(state)
+    if metadata:
+        payload["metadata"] = metadata
+    if state.max_tokens is not None:
+        payload["max_tokens"] = state.max_tokens
+    if state.json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    return payload
+
+
+def _parse_response(raw: dict[str, Any], started: float) -> ChatResult:
+    """Parse an API response into a ChatResult."""
+    wall_seconds = time.perf_counter() - started
+    content = _extract_assistant_content(raw)
+    tool_calls = _extract_tool_calls(raw)
+    timings = raw.get("timings") or {}
+    return ChatResult(
+        content=content,
+        wall_seconds=wall_seconds,
+        prompt_tps=_maybe_float(timings.get("prompt_per_second")),
+        generation_tps=_maybe_float(timings.get("predicted_per_second")),
+        raw=raw,
+        tool_calls=tool_calls,
+    )
+
+
 class RouterClient:
-    """HTTP client for the llama-router API."""
+    """HTTP client for the llama-router API.
+
+    Supports both sync (for non-interactive use) and async (for TUI use).
+    """
 
     def __init__(
         self,
@@ -73,6 +113,8 @@ class RouterClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+
+    # -- Sync API (for CLI subcommands) -----------------------------------
 
     def health(self) -> dict[str, Any]:
         response = httpx.get(f"{self.base_url}/health", timeout=10.0)
@@ -99,28 +141,14 @@ class RouterClient:
         response.raise_for_status()
         return response.json()
 
-    def send(self, message: str, state: ChatState, tools: list[dict[str, Any]] | None = None) -> ChatResult:
-        """Send a message and return the result. If the response contains tool
-        calls they are included in the result but NOT auto-executed — the
-        caller is responsible for the tool loop."""
-        messages = [*_skill_messages(state), *state.history, {"role": "user", "content": message}]
-        payload: dict[str, Any] = {
-            "model": DEFAULT_MODEL,
-            "messages": messages,
-            "stream": False,
-        }
-
-        metadata = _metadata_from_state(state)
-        if metadata:
-            payload["metadata"] = metadata
-        if state.max_tokens is not None:
-            payload["max_tokens"] = state.max_tokens
-        if state.json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-
+    def send(
+        self,
+        message: str,
+        state: ChatState,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ChatResult:
+        """Send a message synchronously and return the result."""
+        payload = _build_payload(message, state, tools)
         started = time.perf_counter()
         response = httpx.post(
             f"{self.base_url}/v1/chat/completions",
@@ -129,24 +157,12 @@ class RouterClient:
         )
         response.raise_for_status()
         raw = response.json()
-        wall_seconds = time.perf_counter() - started
-        content = _extract_assistant_content(raw)
-        tool_calls = _extract_tool_calls(raw)
-        timings = raw.get("timings") or {}
-        state.history.extend(
-            [
-                {"role": "user", "content": message},
-                {"role": "assistant", "content": content},
-            ]
-        )
-        return ChatResult(
-            content=content,
-            wall_seconds=wall_seconds,
-            prompt_tps=_maybe_float(timings.get("prompt_per_second")),
-            generation_tps=_maybe_float(timings.get("predicted_per_second")),
-            raw=raw,
-            tool_calls=tool_calls,
-        )
+        result = _parse_response(raw, started)
+        state.history.extend([
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": result.content},
+        ])
+        return result
 
     def compact(self, state: ChatState) -> ChatResult:
         """Summarize conversation history and replace it with the summary."""
@@ -179,3 +195,48 @@ class RouterClient:
             {"role": "system", "content": f"Conversation summary so far:\n{result.content}"}
         ]
         return result
+
+    # -- Async API (for TUI) -----------------------------------------------
+
+    async def async_send(
+        self,
+        message: str,
+        state: ChatState,
+        tools: list[dict[str, Any]] | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> ChatResult:
+        """Send a message asynchronously using an optional shared AsyncClient."""
+        payload = _build_payload(message, state, tools)
+        started = time.perf_counter()
+
+        if client is not None:
+            response = await client.post(
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+                timeout=self.timeout,
+            )
+        else:
+            async with httpx.AsyncClient() as ac:
+                response = await ac.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=payload,
+                    timeout=self.timeout,
+                )
+
+        response.raise_for_status()
+        raw = response.json()
+        result = _parse_response(raw, started)
+        state.history.extend([
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": result.content},
+        ])
+        return result
+
+    async def async_health(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
+        if client is not None:
+            response = await client.get(f"{self.base_url}/health", timeout=10.0)
+        else:
+            async with httpx.AsyncClient() as ac:
+                response = await ac.get(f"{self.base_url}/health", timeout=10.0)
+        response.raise_for_status()
+        return response.json()

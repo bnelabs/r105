@@ -1,18 +1,18 @@
-/* Rova Textual CSS Theme */
+/* Rova — modern dark theme (inspired by Claude Code / Catppuccin Mocha) */
 
 Screen {
-    background: #1a1a2e;
-    color: #e0e0e0;
+    background: #11111b;
+    color: #cdd6f4;
 }
 
 #rova-header {
     dock: top;
-    height: 4;
+    height: 3;
     padding: 0 1;
-    background: #16213e;
-    color: #e0e0e0;
+    background: #181825;
+    color: #cdd6f4;
     text-style: bold;
-    border-bottom: solid #0f3460;
+    border-bottom: solid #313244;
 }
 
 #main-content {
@@ -21,17 +21,18 @@ Screen {
 
 #chat-view {
     width: 3fr;
-    border-right: solid #0f3460;
+    border-right: solid #313244;
     padding: 0 1;
+    background: #11111b;
 }
 
 #sidebar {
     width: 1fr;
-    min-width: 28;
-    max-width: 36;
+    min-width: 26;
+    max-width: 34;
     padding: 1;
-    background: #16213e;
-    border-left: solid #0f3460;
+    background: #181825;
+    border-left: solid #313244;
 }
 
 #sidebar-state,
@@ -45,27 +46,33 @@ Screen {
     dock: bottom;
     height: 3;
     margin: 0;
-    border-top: solid #0f3460;
-    background: #16213e;
-    color: #e0e0e0;
+    border-top: solid #313244;
+    background: #181825;
+    color: #cdd6f4;
+}
+
+#chat-input:focus {
+    border-top: solid #cba6f7;
 }
 
 #status-bar {
     dock: bottom;
     height: 1;
-    background: #0f3460;
-    color: #a0a0a0;
+    background: #1e1e2e;
+    color: #6c7086;
     padding: 0 1;
 }
 
 #help-container {
     padding: 1 2;
-    background: #1a1a2e;
-    color: #e0e0e0;
+    background: #11111b;
+    color: #cdd6f4;
 }
 
 #help-text {
     padding: 1;
+    background: #181825;
+    border: solid #313244;
 }
 
 #help-close {
@@ -75,17 +82,44 @@ Screen {
 
 /* RichLog styling */
 RichLog {
-    background: #1a1a2e;
-    color: #e0e0e0;
+    background: #11111b;
+    color: #cdd6f4;
+}
+
+RichLog:focus {
+    border: none;
 }
 
 /* Button styling */
 Button {
-    background: #0f3460;
-    color: #e0e0e0;
-    border: solid #1a508b;
+    background: #313244;
+    color: #cdd6f4;
+    border: solid #45475a;
 }
 
 Button:hover {
-    background: #1a508b;
+    background: #45475a;
+    color: #f5c2e7;
+}
+
+/* Input styling */
+Input {
+    background: #181825;
+    color: #cdd6f4;
+    border: none;
+}
+
+Input:focus {
+    border: none;
+}
+
+/* Scrollbar styling */
+Scrollbar {
+    background: #11111b;
+    color: #585b70;
+}
+
+Scrollbar:hover {
+    background: #313244;
+    color: #cba6f7;
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal
@@ -12,13 +13,7 @@ from textual.screen import Screen
 from textual.widgets import Static
 
 from rova.client import RouterClient
-from rova.state import (
-    VALID_PROFILES,
-    VALID_QUALITIES,
-    ChatState,
-    DEFAULT_MODEL,
-    token_usage,
-)
+from rova.state import ChatState, DEFAULT_MODEL, token_usage
 from rova.commands import handle_slash_command
 from rova.tools import execute_tool_call, TOOL_DEFINITIONS
 from rova.tui.widgets.chat_view import ChatView
@@ -40,6 +35,13 @@ class ChatScreen(Screen[None]):
         self.client = client
         self.state = state
         self.workspace = workspace_dir
+        self._http = httpx.AsyncClient()
+
+    def on_unmount(self) -> None:
+        """Clean up the shared HTTP client when the screen is removed."""
+        # Schedule async close — Textual will handle this
+        import asyncio
+        asyncio.create_task(self._http.aclose())
 
     def compose(self) -> ComposeResult:
         yield Static(self._render_header(), id="rova-header")
@@ -50,11 +52,9 @@ class ChatScreen(Screen[None]):
         yield StatusBarWidget(id="status-bar")
 
     def on_mount(self) -> None:
-        self._refresh_header()
-        self._refresh_sidebar()
-        self._refresh_status_bar()
+        self._refresh_all()
 
-    # --- Input handling -------------------------------------------------------
+    # --- Input handling ---------------------------------------------------
 
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         text = event.value.strip()
@@ -64,9 +64,7 @@ class ChatScreen(Screen[None]):
         chat_view = self.query_one("#chat-view", ChatView)
 
         if text.startswith("/"):
-            result = handle_slash_command(
-                text, self.state, self.client, self.workspace
-            )
+            result = handle_slash_command(text, self.state, self.client, self.workspace)
             if text in {"/exit", "/quit"}:
                 self.app.exit()
                 return
@@ -75,27 +73,23 @@ class ChatScreen(Screen[None]):
             chat_view.add_user(text)
             self._send_message(text)
 
-        self._refresh_header()
-        self._refresh_sidebar()
-        self._refresh_status_bar()
+        self._refresh_all()
 
-    # --- Message sending & tool loop ------------------------------------------
+    # --- Message sending & tool loop --------------------------------------
 
     @work(exclusive=True)
     async def _send_message(self, message: str) -> None:
         chat_view = self.query_one("#chat-view", ChatView)
-
-        # Build the tool-using send: if tool_agent profile or explicit tools,
-        # pass tool definitions so the LLM can call them.
         tools = TOOL_DEFINITIONS if self.state.profile == "tool_agent" else None
 
         try:
-            result = await self._call_send(message, tools)
+            result = await self.client.async_send(message, self.state, tools, self._http)
         except Exception as exc:
-            chat_view.add_error(f"error: {exc}")
+            chat_view.add_error(f"Send failed: {exc}")
+            self._refresh_all()
             return
 
-        # Tool loop: while the model returns tool calls, execute and continue
+        # Tool loop: execute tool calls locally and continue
         max_iterations = 10
         iteration = 0
         while result.tool_calls and iteration < max_iterations:
@@ -103,16 +97,19 @@ class ChatScreen(Screen[None]):
             for tc in result.tool_calls:
                 func = tc.get("function", {})
                 name = func.get("name", "unknown")
-                args_str = json.dumps(
-                    func.get("arguments", {}), indent=2, sort_keys=True
-                )
+                try:
+                    args = func.get("arguments", {})
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                args_str = json.dumps(args, indent=2, sort_keys=True)
                 chat_view.add_tool_call(name, args_str)
 
                 tool_result_msg = execute_tool_call(tc, self.workspace)
                 result_content = tool_result_msg.get("content", "")
                 chat_view.add_tool_result(result_content)
 
-                # Append the assistant message with tool_calls and the tool result
                 self.state.history.append({
                     "role": "assistant",
                     "content": result.content or "",
@@ -120,56 +117,56 @@ class ChatScreen(Screen[None]):
                 })
                 self.state.history.append(tool_result_msg)
 
-            # Send follow-up with tool results
-            followup_msg = "Tool results received. Continue or provide final answer."
             try:
-                result = await self._call_send(followup_msg, tools)
+                result = await self.client.async_send(
+                    "Tool results received. Continue or provide final answer.",
+                    self.state,
+                    tools,
+                    self._http,
+                )
             except Exception as exc:
-                chat_view.add_error(f"error during tool loop: {exc}")
+                chat_view.add_error(f"Tool loop error: {exc}")
+                self._refresh_all()
                 return
 
         chat_view.add_assistant(result.content, result.wall_seconds)
-        self._refresh_sidebar()
-        self._refresh_status_bar()
+        self._refresh_all()
 
-    async def _call_send(self, message: str, tools: list | None) -> "ChatResult":
-        from rova.client import ChatResult
-        import asyncio
-        return await asyncio.to_thread(self.client.send, message, self.state, tools)
-
-    # --- Refresh helpers ------------------------------------------------------
+    # --- Refresh helpers --------------------------------------------------
 
     def _render_header(self) -> str:
         usage = token_usage(self.state)
+        pct = f"({usage.percent:.0f}%)" if usage.percent > 0 else ""
         return (
-            f"Rova — local router console\n"
-            f"model={DEFAULT_MODEL}  "
-            f"ctx={usage.used_tokens}/{usage.context_tokens} ({usage.percent:.1f}%)  "
-            f"url={self.client.base_url}\n"
+            f"Rova  ·  {DEFAULT_MODEL}  ·  "
+            f"{usage.used_tokens}/{usage.context_tokens} {pct}  ·  "
+            f"{self.client.base_url}\n"
             f"profile={self.state.profile or 'auto'}  "
             f"rag={self.state.rag if self.state.rag is not None else 'auto'}  "
             f"quality={self.state.quality or 'auto'}  "
             f"skills={','.join(self.state.active_skills) if self.state.active_skills else 'none'}"
         )
 
+    def _refresh_all(self) -> None:
+        self._refresh_header()
+        self._refresh_sidebar()
+        self._refresh_status_bar()
+
     def _refresh_header(self) -> None:
         try:
-            header = self.query_one("#rova-header", Static)
-            header.update(self._render_header())
+            self.query_one("#rova-header", Static).update(self._render_header())
         except Exception:
             pass
 
     def _refresh_sidebar(self) -> None:
         try:
-            sidebar = self.query_one("#sidebar", Sidebar)
-            sidebar.refresh_state(self.state, self.workspace)
+            self.query_one("#sidebar", Sidebar).refresh_state(self.state, self.workspace)
         except Exception:
             pass
 
     def _refresh_status_bar(self) -> None:
         try:
-            bar = self.query_one("#status-bar", StatusBarWidget)
             usage = token_usage(self.state)
-            bar.update_status(self.state, usage)
+            self.query_one("#status-bar", StatusBarWidget).update_status(self.state, usage)
         except Exception:
             pass
