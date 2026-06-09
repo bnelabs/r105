@@ -1,17 +1,24 @@
-"""File explorer widget — tree view of the workspace directory."""
+"""File explorer widget — tree view of the workspace directory.
+
+Uses Textual's built-in DirectoryTree for async lazy-loading,
+so expanding large directories won't freeze the UI.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from textual.widgets import Tree
+from textual.widgets import DirectoryTree
 from textual.message import Message
 
 
-class FileExplorer(Tree[Path]):
+class FileExplorer(DirectoryTree):
     """A directory tree widget showing the workspace file structure.
 
-    Click a file to preview it. Directories are expandable.
+    Uses Textual's DirectoryTree which lazy-loads directories asynchronously,
+    handles filesystem permissions, and provides standard UI hooks.
+
+    Click a file to preview it in the chat view.
     """
 
     class FileSelected(Message):
@@ -22,43 +29,14 @@ class FileExplorer(Tree[Path]):
             self.path = path
 
     def __init__(self, workspace_dir: Path, **kwargs) -> None:
-        super().__init__("Workspace", **kwargs)
-        self.workspace_dir = workspace_dir
-        self.show_root = True
-
-    def on_mount(self) -> None:
-        self._populate()
-
-    def _populate(self) -> None:
-        """Build the tree from the workspace directory."""
-        self.root.remove_children()
-        if not self.workspace_dir.exists():
-            return
-        self._add_directory(self.root, self.workspace_dir)
-
-    def _add_directory(self, parent, path: Path) -> None:
-        """Recursively add directory contents to the tree."""
-        try:
-            entries = sorted(
-                [p for p in path.iterdir() if p.name != ".gitkeep"],
-                key=lambda p: (not p.is_dir(), p.name.lower()),
-            )
-        except PermissionError:
-            return
-
-        for entry in entries:
-            if entry.is_dir():
-                branch = parent.add(entry.name, entry)
-                self._add_directory(branch, entry)
-            else:
-                parent.add_leaf(entry.name, entry)
+        super().__init__(workspace_dir, **kwargs)
 
     def refresh_tree(self) -> None:
         """Rebuild the tree (e.g., after a file is created)."""
-        self._populate()
+        self.reload()
 
-    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+    def on_directory_tree_file_selected(
+        self, event: DirectoryTree.FileSelected
+    ) -> None:
         """Post a message when a file node is selected."""
-        node = event.node
-        if node.data is not None and isinstance(node.data, Path) and node.data.is_file():
-            self.post_message(self.FileSelected(node.data))
+        self.post_message(self.FileSelected(event.path))

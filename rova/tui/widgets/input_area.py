@@ -7,7 +7,7 @@ Features:
   - Enter selects from palette (slash mode), submits message (normal mode)
   - Escape dismisses palette and clears slash input
   - Fuzzy slash-command matching on Tab
-  - Slash detection posts SlashChanged messages for the command palette
+  - Slash detection via TextArea.Changed event (no polling)
 """
 
 from __future__ import annotations
@@ -116,22 +116,15 @@ class ChatInput(TextArea):
             self.post_message(self.SlashDismiss())
             self.clear()
 
-    # -- Slash detection --------------------------------------------------
+    # -- Slash detection (event-driven, no polling) ------------------------
 
-    def on_mount(self) -> None:
-        """Start polling for slash commands."""
-        self._prev_text: str = ""
-        self.set_interval(0.1, self._poll_slash)
-
-    def _poll_slash(self) -> None:
-        """Check if text changed and post SlashChanged."""
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """React to text changes — post SlashChanged when text starts with /."""
         text = self.text
-        if text != self._prev_text:
-            self._prev_text = text
-            if text.startswith("/"):
-                self.post_message(self.SlashChanged(text))
-            else:
-                self.post_message(self.SlashChanged(""))
+        if text.startswith("/"):
+            self.post_message(self.SlashChanged(text))
+        else:
+            self.post_message(self.SlashChanged(""))
 
     # -- Arrow-key handling -----------------------------------------------
 

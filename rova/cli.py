@@ -12,6 +12,7 @@ import httpx
 
 from rova import __version__
 from rova.client import RouterClient
+from rova.config import ensure_config, load_state_overrides
 from rova.state import (
     DEFAULT_MODEL,
     DEFAULT_CONTEXT_TOKENS,
@@ -87,17 +88,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    client = RouterClient(args.url)
-    workspace_dir = Path(args.workspace).expanduser().resolve()
-    skills_dir = Path(args.skills_dir).expanduser().resolve()
+
+    # Load config file for defaults (CLI args take precedence)
+    config = ensure_config()
+    url = args.url if args.url != DEFAULT_URL else config.get("url", DEFAULT_URL)
+    workspace_str = (
+        args.workspace
+        if args.workspace != str(DEFAULT_WORKSPACE)
+        else config.get("workspace", str(DEFAULT_WORKSPACE))
+    )
+    skills_str = (
+        args.skills_dir
+        if args.skills_dir != str(DEFAULT_SKILLS_DIR)
+        else config.get("skills_dir", str(DEFAULT_SKILLS_DIR))
+    )
+
+    client = RouterClient(url)
+    workspace_dir = Path(workspace_str).expanduser().resolve()
+    skills_dir = Path(skills_str).expanduser().resolve()
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load state-level overrides from config, then apply CLI args on top
+    state_overrides = load_state_overrides()
     state = ChatState(
-        profile=args.profile,
+        profile=args.profile or state_overrides.get("profile"),
         rag=True if args.rag else None,
-        quality=args.quality,
+        quality=args.quality or state_overrides.get("quality"),
         max_tokens=args.max_tokens,
         json_mode=args.json_mode,
+        auto_compact=state_overrides.get("auto_compact", True),
+        theme=state_overrides.get("theme", "rova"),
         skills_dir=skills_dir,
     )
 

@@ -45,6 +45,18 @@ SLASH_COMMANDS = [
 VALID_THEMES = {"rova", "dracula", "solarized-dark", "high-contrast"}
 
 
+def _parse_bool(value: str | None) -> bool | None:
+    """Parse a string as a boolean; returns None if unrecognized."""
+    if value is None:
+        return None
+    v = value.lower()
+    if v in {"on", "true", "1", "yes"}:
+        return True
+    if v in {"off", "false", "0", "no"}:
+        return False
+    return None
+
+
 def command_menu() -> str:
     return """Rova Commands
 
@@ -82,13 +94,16 @@ System
 """
 
 
-def handle_slash_command(
+async def handle_slash_command(
     line: str,
     state: ChatState,
     client: Any | None = None,
     workspace_dir: Path | None = None,
 ) -> str:
-    """Parse and execute a slash command. Returns output text to display."""
+    """Parse and execute a slash command. Returns output text to display.
+
+    Async so commands calling the router API do not block the TUI.
+    """
     parts = shlex.split(line)
     if not parts:
         return ""
@@ -112,7 +127,7 @@ def handle_slash_command(
         if client is None:
             return "client unavailable"
         before = token_usage(state).used_tokens
-        result = client.compact(state)
+        result = await client.async_compact(state)
         after = token_usage(state).used_tokens
         return f"compacted {before}→{after} tokens\n{result.content}"
     if command == "/profile":
@@ -125,7 +140,7 @@ def handle_slash_command(
         state.profile = profile
         return f"profile={profile}"
     if command == "/rag":
-        return _handle_rag_command(args, state, client)
+        return await _handle_rag_command(args, state, client)
     if command == "/quality":
         if not args:
             state.quality = None
@@ -139,7 +154,8 @@ def handle_slash_command(
         if not args:
             state.json_mode = not state.json_mode
         else:
-            state.json_mode = args[0].lower() in {"on", "true", "1", "yes"}
+            parsed = _parse_bool(args[0])
+            state.json_mode = parsed if parsed is not None else state.json_mode
         return f"json={state.json_mode}"
     if command == "/max":
         if not args:
@@ -153,11 +169,11 @@ def handle_slash_command(
     if command == "/health":
         if client is None:
             return "client unavailable"
-        return json.dumps(client.health(), indent=2, sort_keys=True)
+        return json.dumps(await client.async_health(), indent=2, sort_keys=True)
     if command == "/profiles":
         if client is None:
             return "client unavailable"
-        payload = client.profiles()
+        payload = await client.async_profiles()
         return "\n".join(sorted((payload.get("profiles") or {}).keys()))
     if command == "/skills":
         return _format_skills(list_skills(state.skills_dir))
@@ -181,7 +197,8 @@ def handle_slash_command(
         if not args:
             state.auto_compact = not state.auto_compact
         else:
-            state.auto_compact = args[0].lower() in {"on", "true", "1", "yes"}
+            parsed = _parse_bool(args[0])
+            state.auto_compact = parsed if parsed is not None else state.auto_compact
         return f"auto_compact={state.auto_compact}"
     if command == "/preview":
         if workspace_dir is None:
@@ -199,7 +216,7 @@ def handle_slash_command(
     return f"unknown command: {command}"
 
 
-def _handle_rag_command(
+async def _handle_rag_command(
     args: list[str], state: ChatState, client: Any | None
 ) -> str:
     if not args:
@@ -218,18 +235,18 @@ def _handle_rag_command(
         if len(args) < 2:
             return "usage: /rag ingest <path-or-url> [more...]"
         paths, urls = _split_paths_and_urls(args[1:])
-        return _format_ingest(client.ingest(paths=paths, urls=urls))
+        return _format_ingest(await client.async_ingest(paths=paths, urls=urls))
     if action == "search":
         if client is None:
             return "client unavailable"
         if len(args) < 2:
             return "usage: /rag search <query>"
-        return _format_search(client.search(" ".join(args[1:]), top_k=5))
+        return _format_search(await client.async_search(" ".join(args[1:]), top_k=5))
     if action == "list":
         if client is None:
             return "client unavailable"
         try:
-            payload = client.list_rag_documents()
+            payload = await client.async_list_rag_documents()
             return _format_rag_list(payload)
         except Exception as exc:
             return f"rag list failed: {exc}"
@@ -239,7 +256,7 @@ def _handle_rag_command(
         if len(args) < 2:
             return "usage: /rag delete <id>"
         try:
-            payload = client.delete_rag_document(args[1])
+            payload = await client.async_delete_rag_document(args[1])
             return _format_rag_delete(payload)
         except Exception as exc:
             return f"rag delete failed: {exc}"
@@ -249,7 +266,7 @@ def _handle_rag_command(
         if len(args) < 2:
             return "usage: /rag update <path>"
         paths, _urls = _split_paths_and_urls(args[1:])
-        return _format_ingest(client.ingest(paths=paths))
+        return _format_ingest(await client.async_ingest(paths=paths))
     return "usage: /rag on|off|ingest|search|list|delete|update"
 
 

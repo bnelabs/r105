@@ -180,7 +180,11 @@ class RouterClient:
         return result
 
     def compact(self, state: ChatState) -> ChatResult:
-        """Summarize conversation history and replace it with the summary."""
+        """Summarize conversation history and replace it with the summary.
+
+        Summarizes the older ~70% of messages while retaining the most recent
+        ~30% as raw context so the LLM doesn't lose recent tool calls/results.
+        """
         if not state.history:
             return ChatResult(
                 content="No conversation history to compact.",
@@ -189,8 +193,13 @@ class RouterClient:
                 generation_tps=None,
                 raw={},
             )
+        # Keep the most recent ~30% of messages; summarize the older ~70%
+        split = max(1, len(state.history) - max(4, len(state.history) // 3))
+        older = state.history[:split]
+        recent = state.history[split:]
+
         transcript = "\n\n".join(
-            f"{message['role']}: {message['content']}" for message in state.history
+            f"{message['role']}: {message['content']}" for message in older
         )
         prompt = (
             "Compact the conversation below into a durable summary for continuing the same chat. "
@@ -206,8 +215,10 @@ class RouterClient:
             context_tokens=state.context_tokens,
         )
         result = self.send(prompt, compact_state)
+        # Replace history: summary first, then retain recent raw messages
         state.history = [
-            {"role": "system", "content": f"Conversation summary so far:\n{result.content}"}
+            {"role": "system", "content": f"Conversation summary so far:\n{result.content}"},
+            *recent,
         ]
         return result
 
@@ -255,3 +266,117 @@ class RouterClient:
                 response = await ac.get(f"{self.base_url}/health", timeout=10.0)
         response.raise_for_status()
         return response.json()
+
+    async def async_profiles(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
+        if client is not None:
+            response = await client.get(f"{self.base_url}/profiles", timeout=10.0)
+        else:
+            async with httpx.AsyncClient() as ac:
+                response = await ac.get(f"{self.base_url}/profiles", timeout=10.0)
+        response.raise_for_status()
+        return response.json()
+
+    async def async_ingest(
+        self,
+        paths: list[str] | None = None,
+        urls: list[str] | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"paths": paths or [], "urls": urls or []}
+        if client is not None:
+            response = await client.post(
+                f"{self.base_url}/rag/ingest", json=payload, timeout=self.timeout
+            )
+        else:
+            async with httpx.AsyncClient() as ac:
+                response = await ac.post(
+                    f"{self.base_url}/rag/ingest", json=payload, timeout=self.timeout
+                )
+        response.raise_for_status()
+        return response.json()
+
+    async def async_search(
+        self, query: str, top_k: int = 5, client: httpx.AsyncClient | None = None
+    ) -> dict[str, Any]:
+        if client is not None:
+            response = await client.post(
+                f"{self.base_url}/rag/search",
+                json={"query": query, "top_k": top_k},
+                timeout=self.timeout,
+            )
+        else:
+            async with httpx.AsyncClient() as ac:
+                response = await ac.post(
+                    f"{self.base_url}/rag/search",
+                    json={"query": query, "top_k": top_k},
+                    timeout=self.timeout,
+                )
+        response.raise_for_status()
+        return response.json()
+
+    async def async_list_rag_documents(
+        self, client: httpx.AsyncClient | None = None
+    ) -> dict[str, Any]:
+        if client is not None:
+            response = await client.get(f"{self.base_url}/rag/documents", timeout=10.0)
+        else:
+            async with httpx.AsyncClient() as ac:
+                response = await ac.get(f"{self.base_url}/rag/documents", timeout=10.0)
+        response.raise_for_status()
+        return response.json()
+
+    async def async_delete_rag_document(
+        self, doc_id: str, client: httpx.AsyncClient | None = None
+    ) -> dict[str, Any]:
+        if client is not None:
+            response = await client.delete(
+                f"{self.base_url}/rag/documents/{doc_id}", timeout=10.0
+            )
+        else:
+            async with httpx.AsyncClient() as ac:
+                response = await ac.delete(
+                    f"{self.base_url}/rag/documents/{doc_id}", timeout=10.0
+                )
+        response.raise_for_status()
+        return response.json()
+
+    async def async_compact(
+        self, state: ChatState, client: httpx.AsyncClient | None = None
+    ) -> ChatResult:
+        """Compact conversation asynchronously (used by TUI)."""
+        if not state.history:
+            return ChatResult(
+                content="No conversation history to compact.",
+                wall_seconds=0,
+                prompt_tps=None,
+                generation_tps=None,
+                raw={},
+            )
+        # Keep the most recent 30% of messages; summarize the older 70%
+        split = max(1, len(state.history) - max(4, len(state.history) // 3))
+        older = state.history[:split]
+        recent = state.history[split:]
+
+        transcript = "\n\n".join(
+            f"{m['role']}: {m['content']}" for m in older
+        )
+        prompt = (
+            "Compact the conversation below into a durable summary. "
+            "Preserve user goals, decisions, constraints, important facts, open questions, "
+            "file paths, commands, and unresolved work. Remove filler. Return only the summary.\n\n"
+            f"{transcript}"
+        )
+        compact_state = ChatState(
+            profile="complex_reasoning",
+            quality="balanced",
+            max_tokens=2048,
+            skills_dir=state.skills_dir,
+            context_tokens=state.context_tokens,
+        )
+        result = await self.async_send(prompt, compact_state, client=client)
+        # Replace history: summary first, then retain recent raw messages
+        state.history = [
+            {"role": "system", "content": f"Conversation summary so far:\n{result.content}"},
+            *recent,
+        ]
+        return result

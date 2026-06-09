@@ -70,10 +70,26 @@ def token_usage(state: ChatState) -> TokenUsage:
 
 
 def estimate_tokens(text: str) -> int:
+    """Estimate token count using a heuristic calibrated for BPE tokenizers.
+
+    Modern LLMs (Gemma, Llama, etc.) use sub-word tokenizers where:
+    - Common English words average ~1.3 tokens each
+    - Code with indentation, operators, and punctuation can be 2-4x denser
+    - Whitespace-heavy formatting (tabs, repeated spaces) creates extra tokens
+
+    This estimator applies a 1.3x multiplier to the word/punctuation count
+    and adds a separate allowance for whitespace-heavy code blocks.
+    """
     if not text:
         return 0
+    # Count word-like tokens and individual punctuation/operators
     pieces = re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE)
-    return max(1, len(pieces))
+    base = len(pieces)
+    # Count leading whitespace (indentation) — each indent level costs tokens
+    indent_lines = len(re.findall(r"^\s{2,}", text, flags=re.MULTILINE))
+    # Apply BPE overhead multiplier (1.3x) plus indentation penalty
+    estimated = int(base * 1.3) + indent_lines
+    return max(1, estimated)
 
 
 def _skill_messages(state: ChatState) -> list[dict[str, str]]:

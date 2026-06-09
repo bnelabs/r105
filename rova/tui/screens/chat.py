@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -53,8 +54,6 @@ class ChatScreen(Screen[None]):
         self._http = httpx.AsyncClient()
 
     def on_unmount(self) -> None:
-        import asyncio
-
         asyncio.create_task(self._http.aclose())
 
     def compose(self) -> ComposeResult:
@@ -83,7 +82,7 @@ class ChatScreen(Screen[None]):
 
         if text.startswith("/"):
             _old_theme = self.state.theme
-            result = handle_slash_command(
+            result = await handle_slash_command(
                 text, self.state, self.client, self.workspace
             )
             if text in {"/exit", "/quit"}:
@@ -92,7 +91,7 @@ class ChatScreen(Screen[None]):
             chat_view.add_system(result)
             if self.state.theme != _old_theme:
                 try:
-                    self.app._apply_theme(self.state.theme)
+                    self.app.apply_theme(self.state.theme)
                 except Exception:
                     pass
         else:
@@ -132,7 +131,7 @@ class ChatScreen(Screen[None]):
 
         if _is_exact_command(current_text):
             _old_theme = self.state.theme
-            result = handle_slash_command(
+            result = await handle_slash_command(
                 current_text, self.state, self.client, self.workspace
             )
             if current_text in {"/exit", "/quit"}:
@@ -141,7 +140,7 @@ class ChatScreen(Screen[None]):
             chat_view.add_system(result)
             if self.state.theme != _old_theme:
                 try:
-                    self.app._apply_theme(self.state.theme)
+                    self.app.apply_theme(self.state.theme)
                 except Exception:
                     pass
             input_widget.clear()
@@ -202,6 +201,7 @@ class ChatScreen(Screen[None]):
 
         max_iterations = 10
         iteration = 0
+        recent_calls: list[tuple[str, str]] = []  # track (name, args) for dedup
         while result.tool_calls and iteration < max_iterations:
             iteration += 1
             for tc in result.tool_calls:
@@ -216,10 +216,29 @@ class ChatScreen(Screen[None]):
                 args_str = json.dumps(args, indent=2, sort_keys=True)
                 chat_view.add_tool_call(name, args_str)
 
+                # Detect repeated tool calls (LLM stuck in a loop)
+                call_key = (name, args_str)
+                if call_key in recent_calls:
+                    chat_view.add_system(
+                        f"[dim]⚠️ Repeated call to {name} with same args — "
+                        "injecting reminder to try a different approach[/dim]"
+                    )
+                recent_calls.append(call_key)
+                if len(recent_calls) > 6:
+                    recent_calls.pop(0)
+
                 status_bar.set_busy(f"Executing {name}...")
                 chat_view.add_tool_status(f"Running {name}...")
 
                 tool_result_msg = execute_tool_call(tc, self.workspace)
+                # If this is a duplicate, append a warning to the tool result
+                if recent_calls.count(call_key) >= 2:
+                    original = tool_result_msg.get("content", "")
+                    tool_result_msg["content"] = (
+                        f"{original}\n\n[SYSTEM NOTE: You just called {name} with "
+                        "the same arguments. This already failed or returned no useful "
+                        "result. Do NOT repeat this call. Try a different approach.]"
+                    )
                 result_content = tool_result_msg.get("content", "")
                 chat_view.add_tool_result(result_content)
 

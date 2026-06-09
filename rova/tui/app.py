@@ -51,13 +51,17 @@ class RovaApp(App):
         # Apply theme from state if set
         theme = self.rova_state.theme
         if theme in self.THEME_PATHS:
-            self._apply_theme(theme)
+            self.apply_theme(theme)
 
-    def _apply_theme(self, name: str) -> None:
-        """Apply a theme at runtime by re-reading the CSS file."""
+    def apply_theme(self, name: str) -> None:
+        """Apply a theme at runtime, using Textual's native theme API."""
         path = self.THEME_PATHS.get(name, "themes/rova.tcss")
         try:
-            self.stylesheet.read(path)
+            # Prefer Textual's native theme property (avoids bypassing CSS cache)
+            if hasattr(self, "theme") and name in self.THEME_PATHS:
+                self.theme = name
+            else:
+                self.stylesheet.read(path)
             self.refresh()
         except Exception:
             pass

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import ast
 import datetime
+import html.parser
 import json
 import operator
 import os
 import platform
 import re
-import resource
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -63,7 +64,11 @@ def execute_tool_call(
 # -- Python execution (sandboxed) ---------------------------------------
 
 def _sandbox_preexec() -> None:
-    """Set resource limits for sandboxed Python execution."""
+    """Set resource limits for sandboxed Python execution (Unix only)."""
+    if sys.platform == "win32":
+        return  # resource module is Unix-only; skip sandbox limits on Windows
+    import resource
+
     # 256 MB memory limit
     mem_bytes = 256 * 1024 * 1024
     resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
@@ -76,23 +81,34 @@ def _sandbox_preexec() -> None:
 
 
 def execute_python(arguments: dict[str, Any], workspace_dir: Path) -> str:
+    """Execute Python code in a sandboxed subprocess.
+
+    Uses resource limits (Unix) and stripped environment for basic isolation.
+    NOTE: For production multi-tenant use, replace this with container-based
+    isolation (Docker, WASM runtime, or gVisor) — the current approach runs
+    under the host UID and can read host files like ~/.aws/credentials.
+    """
     code = arguments.get("code", "")
     tmpdir = tempfile.mkdtemp(prefix="rova_sandbox_")
     try:
-        result = subprocess.run(
-            ["python3", "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=tmpdir,
-            preexec_fn=_sandbox_preexec,
-            env={
-                "PATH": "/usr/bin:/bin",
+        # Use the same Python interpreter that runs Rova (handles venv, Windows, etc.)
+        kwargs: dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "timeout": 30,
+            "cwd": tmpdir,
+            "env": {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "HOME": tmpdir,
                 "TMPDIR": tmpdir,
                 "PYTHONPATH": "",
             },
-        )
+        }
+        # preexec_fn is Unix-only
+        if sys.platform != "win32":
+            kwargs["preexec_fn"] = _sandbox_preexec
+
+        result = subprocess.run([sys.executable, "-c", code], **kwargs)
         return result.stdout if result.returncode == 0 else result.stderr
     except subprocess.TimeoutExpired:
         return "error: execution timed out (30s)"
@@ -142,10 +158,34 @@ def list_files(arguments: dict[str, Any], workspace_dir: Path) -> str:
 
 
 def _resolve_path(path: str, workspace_dir: Path) -> Path:
+    """Resolve a path safely within the workspace directory.
+
+    Absolute paths are treated as relative to the workspace root to prevent
+    path traversal attacks. Relative paths stay within the workspace.
+
+    Raises PermissionError if the resolved path escapes the workspace.
+    """
     p = Path(path)
+    workspace_resolved = workspace_dir.resolve()
+
     if p.is_absolute():
-        return p
-    return (workspace_dir / p).resolve()
+        # Strip the root anchor and force it relative to the workspace
+        try:
+            resolved = (workspace_resolved / p.relative_to(p.anchor)).resolve()
+        except ValueError:
+            resolved = (workspace_resolved / p.name).resolve()
+    else:
+        resolved = (workspace_resolved / p).resolve()
+
+    # Strict containment check — no path may escape the workspace
+    try:
+        resolved.relative_to(workspace_resolved)
+    except ValueError:
+        raise PermissionError(
+            f"Access denied: '{path}' resolves outside the workspace ({workspace_resolved})"
+        )
+
+    return resolved
 
 
 # -- Web tools ----------------------------------------------------------
@@ -229,30 +269,72 @@ def _parse_ddg_results(html: str) -> list[dict[str, str]]:
     return results
 
 
+class _HTMLStripper(html.parser.HTMLParser):
+    """Structural HTML stripper that extracts readable text.
+
+    Uses stdlib HTMLParser for robust parsing. Skips <script>, <style>,
+    and <noscript> content. Emits newlines for block-level elements.
+    """
+
+    BLOCK_TAGS = {
+        "div", "p", "br", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+        "tr", "article", "section", "header", "footer", "nav", "main",
+        "ul", "ol", "dl", "table", "blockquote", "pre", "hr", "form",
+        "fieldset", "figure", "figcaption", "details", "summary",
+    }
+    SKIP_TAGS = {"script", "style", "noscript", "head", "meta", "link", "title"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self.SKIP_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self.SKIP_TAGS and self._skip_depth > 0:
+            self._skip_depth -= 1
+        if tag in self.BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0:
+            return
+        text = data.strip()
+        if text:
+            self._parts.append(text)
+            self._parts.append(" ")
+
+    def get_text(self) -> str:
+        raw = "".join(self._parts)
+        # Collapse whitespace
+        raw = re.sub(r'[ \t]+', ' ', raw)
+        raw = re.sub(r'\n\s*\n', '\n\n', raw)
+        return raw.strip()
+
+
 def _strip_html(html: str) -> str:
-    """Strip HTML tags and return plain text."""
-    # Remove scripts and styles
-    text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    # Replace common block elements with newlines
-    text = re.sub(r'</?(?:div|p|br|li|h[1-6]|tr|article|section)[^>]*>', '\n', text, flags=re.IGNORECASE)
-    # Remove all remaining HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
-    # Decode HTML entities
-    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
-    text = text.replace('&quot;', '"').replace('&#x27;', "'").replace('&nbsp;', ' ')
-    # Collapse whitespace
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    text = re.sub(r'[ \t]+', ' ', text)
-    return text.strip()
+    """Strip HTML tags and return plain text using a structural parser."""
+    stripper = _HTMLStripper()
+    try:
+        stripper.feed(html)
+        stripper.close()
+        return stripper.get_text()
+    except Exception:
+        # Fallback to regex for malformed input
+        text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r'\n\s*\n', '\n\n', text)
+        return text.strip()
 
 
 def _clean_html(text: str) -> str:
     """Remove HTML tags from a short snippet."""
-    text = re.sub(r'<[^>]+>', '', text)
-    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
-    text = text.replace('&quot;', '"').replace('&#x27;', "'").replace('&nbsp;', ' ')
-    return text.strip()
+    return _strip_html(text)
 
 
 # -- Utility tools ------------------------------------------------------
