@@ -184,7 +184,14 @@ Generate presentations (pptx), documents (docx), and PDFs through the LLM. The m
 PYTHONPATH=. .venv/bin/python -m pytest tests/ -v
 ```
 
-105 tests covering commands, tools, state, skills, and the command palette.
+146 tests covering commands, tools, state, skills, client, integration, and the command palette.
+
+## Documentation
+
+- [Architecture](ARCHITECTURE.md) — system design, data flow, component tree, key patterns
+- [Contributing](CONTRIBUTING.md) — dev setup, testing, linting, PR process
+- [Custom Tools](docs/TOOLS.md) — how to add new tools with JSON Schema + handler functions
+- [Skills](docs/SKILLS.md) — creating prompt templates with `{param}` substitution
 
 ## License
 
