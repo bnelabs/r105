@@ -1,7 +1,7 @@
 [project]
 name = "rova"
 version = "0.2.0"
-description = "Rova — rich terminal frontend for llama-router"
+description = "Rova — Rapid On-demand Virtual Assistant: rich terminal frontend for llama-router"
 requires-python = ">=3.12"
 dependencies = [
     "httpx",

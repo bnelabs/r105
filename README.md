@@ -2,7 +2,7 @@
   <img src="ROVA.png" alt="Rova" width="600">
 </p>
 
-# Rova
+# Rova — Rapid On-demand Virtual Assistant
 
 Rich terminal frontend for [llama-router](https://github.com/komedi/llama-router) — a Textual-based TUI with interactive slash commands, multi-line input, fuzzy matching, tool execution, RAG management, and multiple themes.
 
