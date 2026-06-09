@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
-
 # Structured command definitions: (category, command, usage, description)
 COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     # Chat

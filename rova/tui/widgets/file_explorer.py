@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from textual.widgets import DirectoryTree
 from textual.message import Message
+from textual.widgets import DirectoryTree
 
 
 class FileExplorer(DirectoryTree):

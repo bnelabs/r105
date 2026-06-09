@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 from rova.tui.widgets.command_palette import (
-    CommandPalette,
     COMMAND_DEFS,
+    CommandPalette,
     _fuzzy_score,
 )
 

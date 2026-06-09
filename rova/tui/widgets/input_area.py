@@ -12,9 +12,9 @@ Features:
 
 from __future__ import annotations
 
-from textual.widgets import TextArea
 from textual.binding import Binding
 from textual.message import Message
+from textual.widgets import TextArea
 
 from rova.tui.widgets.command_palette import COMMAND_DEFS
 
@@ -128,7 +128,7 @@ class ChatInput(TextArea):
 
     # -- Arrow-key handling -----------------------------------------------
 
-    def action_cursor_up(self) -> None:
+    def action_cursor_up(self, select: bool = False) -> None:
         """Up arrow: navigate palette (slash mode) or history (normal mode)."""
         if self.in_slash_mode:
             self.post_message(self.SlashNavigate(-1))
@@ -141,7 +141,7 @@ class ChatInput(TextArea):
         else:
             super().action_cursor_up()
 
-    def action_cursor_down(self) -> None:
+    def action_cursor_down(self, select: bool = False) -> None:
         """Down arrow: navigate palette (slash mode) or history (normal mode)."""
         if self.in_slash_mode:
             self.post_message(self.SlashNavigate(1))
@@ -187,7 +187,7 @@ class ChatInput(TextArea):
                 self.cursor_location = (self.document.line_count - 1, len(match))
                 self.post_message(self.SlashChanged(match))
                 return
-        self.screen.action_focus_next()
+        self.screen.action_focus_next()  # type: ignore[attr-defined]
 
 
 # -- Fuzzy matching ----------------------------------------------------------

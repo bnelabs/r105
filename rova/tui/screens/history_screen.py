@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Static, Input, Button
+from textual.widgets import Button, Static
 
 from rova.state import ChatState
 

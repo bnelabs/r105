@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 
@@ -266,7 +268,7 @@ class RouterClient:
         state: ChatState,
         tools: list[dict[str, Any]] | None = None,
         client: httpx.AsyncClient | None = None,
-        on_chunk: "Callable[[str], None] | None" = None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> ChatResult:
         """Continue conversation after tool results without injecting a user message.
 
@@ -328,7 +330,7 @@ class RouterClient:
         self,
         payload: dict[str, Any],
         client: httpx.AsyncClient | None,
-        on_chunk: "Callable[[str], None]",
+        on_chunk: Callable[[str], None],
     ) -> ChatResult:
         """Shared SSE streaming core — used by async_send_streaming and async_continue."""
         started = time.perf_counter()
@@ -413,7 +415,7 @@ class RouterClient:
         state: ChatState,
         tools: list[dict[str, Any]] | None = None,
         client: httpx.AsyncClient | None = None,
-        on_chunk: "Callable[[str], None] | None" = None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> ChatResult:
         """Send a message with streaming enabled and parse SSE chunks.
 

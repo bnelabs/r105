@@ -10,7 +10,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 CONFIG_DIR = Path.home() / ".config" / "rova"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 

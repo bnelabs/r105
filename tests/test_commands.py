@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from rova.state import ChatState, VALID_PROFILES, VALID_QUALITIES
-from rova.commands import handle_slash_command, VALID_THEMES
+from rova.commands import VALID_THEMES, handle_slash_command
+from rova.state import VALID_PROFILES, VALID_QUALITIES, ChatState
 
 
 def _run(coro):

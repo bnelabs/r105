@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from textual.widgets import RichLog
 from rich.markdown import Markdown
-from rich.text import Text
 from rich.panel import Panel
-from rich.console import RenderableType
+from rich.text import Text
+from textual.widgets import RichLog
 
 
 class ChatView(RichLog):

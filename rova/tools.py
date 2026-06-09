@@ -183,10 +183,10 @@ def _resolve_path(path: str, workspace_dir: Path) -> Path:
     # Strict containment check — no path may escape the workspace
     try:
         resolved.relative_to(workspace_resolved)
-    except ValueError:
+    except ValueError as err:
         raise PermissionError(
             f"Access denied: '{path}' resolves outside the workspace ({workspace_resolved})"
-        )
+        ) from err
 
     return resolved
 

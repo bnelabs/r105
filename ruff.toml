@@ -1,0 +1,44 @@
+# Rova — ruff configuration
+# https://docs.astral.sh/ruff/
+
+target-version = "py312"
+
+line-length = 100
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort (import ordering)
+    "N",   # pep8-naming
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "B008",   # do not perform function calls in argument defaults — noisy in TUI widgets
+    "SIM108", # use ternary operator — not always clearer
+    "SIM110", # use any() — not always clearer
+    "SIM105", # use contextlib.suppress — explicit try/except is fine
+    "RUF001", # ambiguous unicode character — too aggressive
+    "RUF012", # mutable class attributes — Textual design pattern (BINDINGS, CSS_PATH)
+    "RUF059", # unused unpacked variable — fine in test assertions
+]
+
+[lint.per-file-ignores]
+"tests/*" = [
+    "N802", # function name should be lowercase — test names use underscores heavily
+    "S101", # use of assert — pytest uses assert
+    "F401", # unused import — test fixtures sometimes import for re-export
+    "F841", # unused variable — common in test assertions
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

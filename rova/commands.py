@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-import re
 import shlex
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from rova.config import save_config
+from rova.skills import list_skills, read_skill
 from rova.state import (
     DEFAULT_MODEL,
     VALID_PROFILES,
@@ -17,8 +18,6 @@ from rova.state import (
     ChatState,
     token_usage,
 )
-from rova.config import save_config
-from rova.skills import list_skills, read_skill
 
 SLASH_COMMANDS = [
     "/",

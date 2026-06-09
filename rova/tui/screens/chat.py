@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 from textual import work
@@ -14,13 +15,13 @@ from textual.screen import Screen
 from textual.widgets import Static
 
 from rova.client import RouterClient
-from rova.state import ChatState, DEFAULT_MODEL, token_usage
 from rova.commands import handle_slash_command
-from rova.tools import execute_tool_call, TOOL_DEFINITIONS
+from rova.state import DEFAULT_MODEL, ChatState, token_usage
+from rova.tools import TOOL_DEFINITIONS, execute_tool_call
 from rova.tui.widgets.chat_view import ChatView
-from rova.tui.widgets.input_area import ChatInput
-from rova.tui.widgets.command_palette import CommandPalette, COMMAND_DEFS
+from rova.tui.widgets.command_palette import COMMAND_DEFS, CommandPalette
 from rova.tui.widgets.file_explorer import FileExplorer
+from rova.tui.widgets.input_area import ChatInput
 from rova.tui.widgets.status_bar import StatusBarWidget
 
 
@@ -90,7 +91,7 @@ class ChatScreen(Screen[None]):
             chat_view.add_system(result)
             if self.state.theme != _old_theme:
                 try:
-                    self.app.apply_theme(self.state.theme)
+                    self.app.apply_theme(self.state.theme)  # type: ignore[attr-defined]
                 except Exception:
                     pass
         else:
@@ -139,7 +140,7 @@ class ChatScreen(Screen[None]):
             chat_view.add_system(result)
             if self.state.theme != _old_theme:
                 try:
-                    self.app.apply_theme(self.state.theme)
+                    self.app.apply_theme(self.state.theme)  # type: ignore[attr-defined]
                 except Exception:
                     pass
             input_widget.clear()
@@ -252,7 +253,7 @@ class ChatScreen(Screen[None]):
             )
 
             # Phase 3: Process results and update history
-            for (tc, name, args_str), tool_result_msg in zip(signatures, tool_results):
+            for (tc, name, args_str), tool_result_msg in zip(signatures, tool_results, strict=True):
                 if isinstance(tool_result_msg, BaseException):
                     chat_view.add_error(f"Tool {name} failed: {tool_result_msg}")
                     tool_result_msg = {

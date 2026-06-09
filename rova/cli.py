@@ -12,16 +12,13 @@ import httpx
 
 from rova import __version__
 from rova.client import RouterClient
+from rova.commands import _format_ingest, _format_search, _split_paths_and_urls
 from rova.config import ensure_config, load_state_overrides
 from rova.state import (
-    DEFAULT_MODEL,
-    DEFAULT_CONTEXT_TOKENS,
     VALID_PROFILES,
     VALID_QUALITIES,
     ChatState,
-    token_usage,
 )
-from rova.commands import _format_ingest, _format_search, _split_paths_and_urls
 
 DEFAULT_URL = "http://127.0.0.1:8010"
 DEFAULT_WORKSPACE = Path.home() / "rova-workspace"

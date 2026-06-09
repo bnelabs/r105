@@ -4,17 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from rova.state import (
-    ChatState,
-    TokenUsage,
-    token_usage,
-    estimate_tokens,
-    DEFAULT_MODEL,
     DEFAULT_CONTEXT_TOKENS,
     VALID_PROFILES,
     VALID_QUALITIES,
+    ChatState,
+    TokenUsage,
+    estimate_tokens,
+    token_usage,
 )
 
 

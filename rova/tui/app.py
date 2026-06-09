@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from textual.app import App, ComposeResult
+from textual.app import App
 from textual.binding import Binding
-from textual.screen import Screen
-from textual.widgets import Header, Footer
 
 from rova.client import RouterClient
 from rova.state import ChatState
