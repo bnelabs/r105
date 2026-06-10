@@ -13,6 +13,7 @@ Features:
 from __future__ import annotations
 
 from textual.binding import Binding
+from textual import events
 from textual.message import Message
 from textual.widgets import TextArea
 
@@ -93,6 +94,15 @@ class ChatInput(TextArea):
     def in_slash_mode(self) -> bool:
         """True when the current text starts with /."""
         return self.text.startswith("/")
+
+    # -- Key interception -------------------------------------------------
+
+    async def _on_key(self, event: events.Key) -> None:
+        """Intercept Enter before TextArea inserts a newline."""
+        if event.key == "enter":
+            self.action_submit()
+            return
+        await super()._on_key(event)
 
     # -- Submit -----------------------------------------------------------
 
