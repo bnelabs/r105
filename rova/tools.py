@@ -13,6 +13,10 @@ import platform
 import re
 import socket
 import subprocess
+
+# -- Tool registry (decorator-based) ---------------------------------------
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -28,12 +32,7 @@ from rova.constants import (
 )
 from rova.mcp_client import get_mcp_manager
 from rova.plugins import get_registry
-from rova.sandbox import get_sandbox, profile_for_tool, SandboxProfile
-
-# -- Tool registry (decorator-based) ---------------------------------------
-
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from rova.sandbox import SandboxProfile, get_sandbox, profile_for_tool
 
 # Handler signature: (arguments: dict, workspace_dir: Path, **kwargs) -> str
 ToolHandler = Callable[..., str]

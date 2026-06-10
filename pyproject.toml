@@ -22,7 +22,6 @@ dev = [
     "pytest-cov>=6",
     "build>=1",
     "twine>=6",
-    "tiktoken>=0.7.0",
 ]
 
 [project.urls]

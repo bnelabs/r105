@@ -610,9 +610,8 @@ async def _handle_rag_command(
         return f"rag={state.rag}"
 
     # Check if the backend supports RAG
-    if not hasattr(client, "async_ingest"):
-        if args[0] in ("ingest", "search", "list", "delete", "update"):
-            return "RAG is only available with llama-router backend (--backend router)"
+    if not hasattr(client, "async_ingest") and args and args[0] in ("ingest", "search", "list", "delete", "update"):
+        return "RAG is only available with llama-router backend (--backend router)"
 
     action = args[0]
     if action in {"on", "true", "1", "yes"}:

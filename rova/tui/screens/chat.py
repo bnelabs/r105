@@ -311,7 +311,7 @@ class ChatScreen(Screen[None]):
                         asyncio.to_thread(execute_tool_call, tc, self.workspace),
                         timeout=timeout,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     return {
                         "role": "tool",
                         "tool_call_id": tc.get("id", ""),

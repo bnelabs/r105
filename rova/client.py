@@ -35,7 +35,6 @@ from rova.constants import (
     DEFAULT_HTTP_TIMEOUT,
 )
 from rova.errors import RouterAPIError
-from rova.logging import info as log_info
 from rova.logging import error as log_error
 from rova.skills import skill_messages
 from rova.state import (

@@ -34,7 +34,7 @@ def read_skill(skills_dir: Path, name: str, params: dict[str, str] | None = None
     return text
 
 
-def skill_messages(state: "ChatState") -> list[dict[str, str]]:
+def skill_messages(state: ChatState) -> list[dict[str, str]]:
     """Build system messages from active skills for injection into the conversation.
 
     This is the canonical implementation. Both client.py and state.py use this

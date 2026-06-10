@@ -98,7 +98,7 @@ class HistoryScreen(ModalScreen[None]):
 
         name = f"history-{len(self.state.history)}msgs"
         try:
-            path = save_session(self.state, name)
+            save_session(self.state, name)
             self._show_status(f"Session saved: {name}")
         except OSError as exc:
             self._show_status(f"Save failed: {exc}")
@@ -116,7 +116,7 @@ class HistoryScreen(ModalScreen[None]):
 
 
 def _fuzzy_score(text: str, query: str) -> float:
-    """Return a fuzzy match score (0.0–1.0) between *text* and *query*.
+    """Return a fuzzy match score (0.0-1.0) between *text* and *query*.
 
     Uses difflib SequenceMatcher for the score. Case-insensitive.
     """

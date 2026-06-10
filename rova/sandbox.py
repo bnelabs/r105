@@ -21,8 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 from rova.constants import (
@@ -408,6 +407,7 @@ class NsjailSandbox(SandboxBackend):
         tmpdir: str,
         env: dict[str, str],
         profile: SandboxProfile,
+        code: str,
     ) -> list[str]:
         """Build the nsjail command-line arguments based on profile."""
         python_bin = shutil.which("python3") or shutil.which("python") or sys.executable
@@ -480,7 +480,7 @@ class NsjailSandbox(SandboxBackend):
         tmpdir = tempfile.mkdtemp(prefix="rova_nsjail_")
         try:
             env = _sanitize_env(tmpdir)
-            cmd = self._build_nsjail_cfg(tmpdir, env, p)
+            cmd = self._build_nsjail_cfg(tmpdir, env, p, code)
 
             return subprocess.run(
                 cmd,

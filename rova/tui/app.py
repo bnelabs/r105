@@ -7,7 +7,7 @@ from pathlib import Path
 from textual.app import App
 from textual.binding import Binding
 
-from rova.client import RouterClient, BaseClient
+from rova.client import BaseClient, RouterClient
 from rova.state import ChatState
 from rova.tui.screens.chat import ChatScreen
 
