@@ -13,6 +13,14 @@ Rich terminal frontend for [llama-router](https://github.com/komedi/llama-router
 
 ## Install
 
+### pipx (recommended)
+
+```sh
+pipx install rova
+```
+
+### From source
+
 ```sh
 git clone https://github.com/bnelabs/rova.git
 cd rova
@@ -21,7 +29,7 @@ python -m venv .venv
 ln -sf "$(pwd)/bin/rova" ~/.local/bin/rova
 ```
 
-Or from source:
+Or install from a local checkout:
 
 ```sh
 pip install -e /path/to/rova
@@ -188,12 +196,33 @@ PYTHONPATH=. .venv/bin/python -m pytest tests/ -v
 
 ## Docker
 
+### Build and run standalone
+
 ```sh
 docker build -t rova .
 docker run -it --rm rova --version
+docker run -it --rm \
+  -v ~/.config/rova:/root/.config/rova \
+  -v ~/rova-workspace:/root/rova-workspace \
+  rova chat
 ```
 
-Use `docker-compose.yml` for a quick-start stack with llama-router.
+### Quick-start stack with llama-router
+
+The included `docker-compose.yml` starts both rova and llama-router:
+
+```sh
+# Start the router in the background
+docker compose up -d llama-router
+
+# Launch the TUI
+docker compose run rova chat
+```
+
+The compose stack mounts `~/.config/rova` for persistent config and
+`~/.config/llama-router` for router configuration. Both services are on
+the same Docker network — rova connects to `http://llama-router:8010`
+automatically.
 
 ## Documentation
 

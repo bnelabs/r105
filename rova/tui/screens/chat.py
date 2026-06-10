@@ -79,7 +79,14 @@ class ChatScreen(Screen[None]):
         yield StatusBarWidget(id="status-bar")
 
     def on_mount(self) -> None:
+        # Periodic timer for status bar animation (sprite frames)
+        self.set_interval(0.05, self._tick_status_bar)
         self._refresh_all()
+
+    def _tick_status_bar(self) -> None:
+        """Advance status bar animation frames (streaming indicator)."""
+        status_bar = self.query_one("#status-bar", StatusBarWidget)
+        status_bar.tick()
 
     def action_copy_last_message(self) -> None:
         """Copy the last assistant message to the system clipboard."""
@@ -298,7 +305,7 @@ class ChatScreen(Screen[None]):
                 self.state.history.append(tool_result_msg)
 
             try:
-                status_bar.set_busy("Streaming...")
+                status_bar.set_streaming()
                 chat_view.start_streaming()
                 result = await self.client.async_continue(
                     self.state,

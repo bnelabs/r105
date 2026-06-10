@@ -5,29 +5,36 @@ All notable changes to Rova are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] — 2026-06
 
 ### Added
-- Dict-based command dispatch (`COMMAND_DISPATCH`) replacing if-elif chain
-- Custom exception hierarchy (`rova/errors.py`): `RovaError`, `RouterAPIError`, `ToolExecutionError`, `SandboxError`, `ConfigError`, `PluginError`, `MCPError`
-- `_async_request` / `_sync_request` helpers reducing client code duplication (~80 lines removed)
-- Centralised configuration constants (`rova/constants.py`)
-- Input validation for tool arguments (file size caps, URL scheme restrictions, SSRF prevention for `web_fetch`)
-- Symlink-aware path traversal hardening (`_validate_path`)
-- Environment variable sanitisation in sandbox (`_sanitize_env`)
-- "Did you mean?" suggestions for unknown commands, profiles, qualities, themes, and skills
-- Copy-to-clipboard support (`/copy` command, `Ctrl+Y` keybinding)
-- Multi-model support (`/model <name>`, `--model` CLI flag, `model` config key)
-- Docker image (`Dockerfile`, `.dockerignore`, `docker-compose.yml`)
-- Test coverage reporting via `pytest-cov` in CI
-- TUI structural tests (`tests/test_tui.py`)
+- NsjailSandbox backend with seccomp-bpf syscall allowlist
+- SandboxProfile system for per-tool isolation configuration
+- MCP SSE transport (MCPSSEClient) alongside existing stdio transport
+- Animated streaming indicator in status bar during SSE receive
+- Auto-save on TUI exit (`__autosave__` session)
+- Fuzzy history search in Ctrl+R browser (difflib-based live filtering)
+- Diff-aware write_file with dry_run mode and unified-diff generation
+- DiffView TUI widget with approve/reject buttons for file changes
+- Homebrew formula template in docs/homebrew.rb
 
 ### Changed
-- `handle_slash_command` now dispatches via `COMMAND_DISPATCH` dict
-- `RouterClient` methods delegate to shared `_sync_request` / `_async_request` helpers
-- Sandbox backends inherit timeout from `SANDBOX_TIMEOUT` constant
-- `ChatState.model` replaces hardcoded `DEFAULT_MODEL` in payloads
-- Hardcoded magic numbers replaced with named constants
+- Backend priority: nsjail > bwrap > rlimit > none
+- BwrapSandbox uses minimal /dev bind (null, urandom, zero, fd) instead of full /dev
+- BwrapSandbox conditionally grants network/filesystem per SandboxProfile
+- MCPClient refactored into abstract MCPClientBase + MCPStdioClient + MCPSSEClient
+- MCPServerConfig supports `transport` (stdio|sse) and `url` fields
+- HistoryScreen with fuzzy search Input, Ctrl+S quick-save
+- write_file returns 'created' for new files, diff-aware messages for edits
+- StatusBarWidget with animated streaming indicator replacing static emojis
+- Version bumped to 0.3.0
+
+### Fixed
+- Version mismatch between pyproject.toml and __init__.py
+- _sync_request passing json kwarg to GET/DELETE (broke health, profiles)
+- Sync send() not including tool_calls in history
+- execute_python returning empty string for signal-killed processes
+- test_timeout assertion always passing due to 'elapsed > 0' escape hatch
 
 ## [0.2.0] — 2025-06
 
