@@ -30,6 +30,120 @@ from rova.mcp_client import get_mcp_manager
 from rova.plugins import get_registry
 from rova.sandbox import get_sandbox, profile_for_tool, SandboxProfile
 
+# -- Tool registry (decorator-based) ---------------------------------------
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+# Handler signature: (arguments: dict, workspace_dir: Path, **kwargs) -> str
+ToolHandler = Callable[..., str]
+
+
+@dataclass
+class RegisteredTool:
+    """Metadata + handler for a registered built-in tool."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    required: list[str] = field(default_factory=list)
+    needs_network: bool = False
+    needs_filesystem: bool = False
+    needs_output_truncation: bool = True
+    needs_external_wrapping: bool = False  # XML <tool_output> tags
+    handler: ToolHandler | None = None
+
+    def to_definition(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": self.parameters,
+                    "required": self.required,
+                },
+            },
+        }
+
+
+class ToolRegistry:
+    """Decorator-based registry for built-in tools.
+
+    Usage::
+
+        registry = ToolRegistry()
+
+        @registry.register(
+            name="my_tool",
+            description="Does something useful.",
+            parameters={
+                "input": {"type": "string", "description": "Input value."},
+            },
+            required=["input"],
+        )
+        def my_tool(arguments: dict, workspace_dir: Path) -> str:
+            return f"result: {arguments['input']}"
+    """
+
+    def __init__(self) -> None:
+        self._tools: dict[str, RegisteredTool] = {}
+
+    def register(
+        self,
+        name: str,
+        description: str = "",
+        parameters: dict[str, Any] | None = None,
+        *,
+        required: list[str] | None = None,
+        needs_network: bool = False,
+        needs_filesystem: bool = False,
+        needs_output_truncation: bool = True,
+        needs_external_wrapping: bool = False,
+    ) -> Callable[[ToolHandler], ToolHandler]:
+        """Decorator that registers a function as a tool handler."""
+        def decorator(handler: ToolHandler) -> ToolHandler:
+            self._tools[name] = RegisteredTool(
+                name=name,
+                description=description,
+                parameters=parameters or {},
+                required=required or [],
+                needs_network=needs_network,
+                needs_filesystem=needs_filesystem,
+                needs_output_truncation=needs_output_truncation,
+                needs_external_wrapping=needs_external_wrapping,
+                handler=handler,
+            )
+            return handler
+        return decorator
+
+    def get(self, name: str) -> RegisteredTool | None:
+        return self._tools.get(name)
+
+    def execute(self, name: str, arguments: dict[str, Any], workspace_dir: Path, **kwargs: Any) -> str | None:
+        """Execute a registered tool. Returns None if not found."""
+        tool = self._tools.get(name)
+        if tool is None or tool.handler is None:
+            return None
+        return tool.handler(arguments, workspace_dir, **kwargs)
+
+    def get_definitions(self) -> list[dict[str, Any]]:
+        return [t.to_definition() for t in self._tools.values()]
+
+    def list_tools(self) -> list[RegisteredTool]:
+        return list(self._tools.values())
+
+
+# Module-level singleton
+_TOOL_REGISTRY = ToolRegistry()
+
+
+def get_tool_registry() -> ToolRegistry:
+    """Return the global tool registry singleton."""
+    return _TOOL_REGISTRY
+
+
 # -- Limits for tool arguments ------------------------------------------
 
 _MAX_CODE_SIZE = 100 * 1024          # 100 KB Python code
@@ -228,6 +342,22 @@ def _head_tail_truncate(text: str, max_chars: int = TOOL_MAX_OUTPUT_CHARS, tail_
     )
 
 
+# -- Prompt injection mitigation ---------------------------------------------
+
+_TOOL_OUTPUT_TAG_BEGIN = "<tool_output>\n"
+_TOOL_OUTPUT_TAG_END = "\n</tool_output>"
+
+
+def _wrap_tool_output(content: str, source: str) -> str:
+    """Wrap tool output in XML tags to mark it as untrusted data.
+
+    The LLM receives tool outputs wrapped like this so it can distinguish
+    between user-provided instructions and potentially malicious external
+    data (e.g. from web pages or uploaded files).
+    """
+    return f"{_TOOL_OUTPUT_TAG_BEGIN}{content}{_TOOL_OUTPUT_TAG_END}"
+
+
 # -- Tool result memoization (in-memory, per-session) -----------------------
 
 
@@ -292,31 +422,16 @@ def execute_tool_call(
                 "content": f"{cached}\n\n[SYSTEM NOTE: This result was cached from a previous identical call.]",
             }
 
+    # Dispatch: try built-in registry → plugins → MCP
     if name == "execute_python":
         result = execute_python(arguments, workspace_dir, profile=profile_for_tool(name))
-    elif name == "write_file":
-        result = write_file(arguments, workspace_dir)
-    elif name == "read_file":
-        result = read_file(arguments, workspace_dir)
-    elif name == "list_files":
-        result = list_files(arguments, workspace_dir)
-    elif name == "web_search":
-        result = web_search(arguments)
-    elif name == "web_fetch":
-        result = web_fetch(arguments)
-    elif name == "get_time":
-        result = get_time()
-    elif name == "calculate":
-        result = calculate(arguments)
-    elif name == "system_info":
-        result = system_info()
     else:
-        # Check plugin registry before declaring unknown
+        result = get_tool_registry().execute(name, arguments, workspace_dir)
+    if result is None:
         plugin_result = get_registry().execute(name, arguments, workspace_dir)
         if plugin_result is not None:
             result = plugin_result
         else:
-            # Check MCP tools
             mcp_result = get_mcp_manager().execute_tool(name, arguments)
             if mcp_result is not None:
                 result = mcp_result
@@ -328,6 +443,9 @@ def execute_tool_call(
     if name in ("execute_python", "read_file", "web_search", "web_fetch"):
         content = _head_tail_truncate(content)
         content = _memoize_tool(name, args_str, content)
+    # Wrap outputs from external sources in untrusted XML tags (prompt injection protection)
+    if name in ("web_fetch", "read_file"):
+        content = _wrap_tool_output(content, name)
     return {
         "role": "tool",
         "tool_call_id": call.get("id", ""),
@@ -337,9 +455,9 @@ def execute_tool_call(
 
 
 def get_tool_definitions() -> list[dict[str, Any]]:
-    """Return merged tool definitions: built-in + plugins + MCP."""
+    """Return merged tool definitions: built-in registry + plugins + MCP."""
     return [
-        *TOOL_DEFINITIONS,
+        *get_tool_registry().get_definitions(),
         *get_registry().get_definitions(),
         *get_mcp_manager().get_all_definitions(),
     ]
@@ -348,6 +466,15 @@ def get_tool_definitions() -> list[dict[str, Any]]:
 # -- Python execution (sandboxed) ---------------------------------------
 
 
+@get_tool_registry().register(
+    name="execute_python",
+    description="Execute Python code and return stdout or stderr.",
+    parameters={"code": {"type": "string", "description": "Python source code to execute."}},
+    required=["code"],
+    needs_network=False,
+    needs_filesystem=False,
+    needs_output_truncation=True,
+)
 def execute_python(
     arguments: dict[str, Any],
     workspace_dir: Path,
@@ -407,6 +534,18 @@ def _make_diff(file_path: Path, new_content: str, context_lines: int = 3) -> str
     return "".join(diff)
 
 
+@get_tool_registry().register(
+    name="write_file",
+    description="Write content to a file in the workspace.",
+    parameters={
+        "path": {"type": "string", "description": "File path (relative to workspace or absolute)."},
+        "content": {"type": "string", "description": "File content to write."},
+    },
+    required=["path", "content"],
+    needs_network=False,
+    needs_filesystem=True,
+    needs_output_truncation=False,
+)
 def write_file(
     arguments: dict[str, Any],
     workspace_dir: Path,
@@ -451,6 +590,16 @@ def write_file(
         return str(e)
 
 
+@get_tool_registry().register(
+    name="read_file",
+    description="Read the contents of a file.",
+    parameters={"path": {"type": "string", "description": "File path to read."}},
+    required=["path"],
+    needs_network=False,
+    needs_filesystem=True,
+    needs_output_truncation=True,
+    needs_external_wrapping=True,
+)
 def read_file(arguments: dict[str, Any], workspace_dir: Path) -> str:
     path = arguments.get("path", "")
     try:
@@ -463,6 +612,14 @@ def read_file(arguments: dict[str, Any], workspace_dir: Path) -> str:
         return str(e)
 
 
+@get_tool_registry().register(
+    name="list_files",
+    description="List files in a directory.",
+    parameters={"path": {"type": "string", "description": "Directory path to list (default: workspace root)."}},
+    needs_network=False,
+    needs_filesystem=True,
+    needs_output_truncation=True,
+)
 def list_files(arguments: dict[str, Any], workspace_dir: Path) -> str:
     path = arguments.get("path", ".")
     try:
@@ -512,6 +669,15 @@ def _resolve_path(path: str, workspace_dir: Path) -> Path:
 
 # -- Web tools ----------------------------------------------------------
 
+@get_tool_registry().register(
+    name="web_search",
+    description="Search the web and return results with titles, URLs, and snippets.",
+    parameters={"query": {"type": "string", "description": "Search query string."}},
+    required=["query"],
+    needs_network=True,
+    needs_filesystem=False,
+    needs_output_truncation=True,
+)
 def web_search(arguments: dict[str, Any]) -> str:
     """Search the web using DuckDuckGo HTML (no API key required)."""
     query = arguments.get("query", "")
@@ -537,6 +703,19 @@ def web_search(arguments: dict[str, Any]) -> str:
         return f"search error: {e}"
 
 
+@get_tool_registry().register(
+    name="web_fetch",
+    description="Fetch a URL and return its text content (HTML tags removed).",
+    parameters={
+        "url": {"type": "string", "description": "URL to fetch."},
+        "max_length": {"type": "integer", "description": "Maximum characters to return (default: 8000)."},
+    },
+    required=["url"],
+    needs_network=True,
+    needs_filesystem=False,
+    needs_output_truncation=True,
+    needs_external_wrapping=True,
+)
 def web_fetch(arguments: dict[str, Any]) -> str:
     """Fetch a URL and return its text content (HTML tags stripped)."""
     url = arguments.get("url", "")
@@ -692,11 +871,28 @@ def _safe_eval(node: ast.AST) -> Any:
     raise ValueError(f"unsafe expression: {type(node).__name__}")
 
 
+@get_tool_registry().register(
+    name="get_time",
+    description="Return the current system time in ISO 8601 format.",
+    parameters={},
+    needs_network=False,
+    needs_filesystem=False,
+    needs_output_truncation=False,
+)
 def get_time() -> str:
     """Return current system time in ISO format."""
     return datetime.datetime.now().isoformat()
 
 
+@get_tool_registry().register(
+    name="calculate",
+    description="Safely evaluate a mathematical expression (+, -, *, /, **, %, parentheses).",
+    parameters={"expression": {"type": "string", "description": "Arithmetic expression to evaluate."}},
+    required=["expression"],
+    needs_network=False,
+    needs_filesystem=False,
+    needs_output_truncation=False,
+)
 def calculate(arguments: dict[str, Any]) -> str:
     """Safely evaluate a mathematical expression. Only arithmetic allowed."""
     expression = arguments.get("expression", "")
@@ -710,6 +906,14 @@ def calculate(arguments: dict[str, Any]) -> str:
         return f"calculate error: {exc}"
 
 
+@get_tool_registry().register(
+    name="system_info",
+    description="Return basic OS and hardware information as JSON.",
+    parameters={},
+    needs_network=False,
+    needs_filesystem=False,
+    needs_output_truncation=False,
+)
 def system_info() -> str:
     """Return basic OS and hardware information as JSON."""
     import socket
@@ -723,155 +927,15 @@ def system_info() -> str:
     return json.dumps(info, indent=2, sort_keys=True)
 
 
-# -- Tool definitions (JSON Schema for the LLM) -------------------------
+# Backward-compatible alias — TOOL_DEFINITIONS from the registry
+TOOL_DEFINITIONS: list[dict[str, Any]] = []
 
-TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "execute_python",
-            "description": "Execute Python code and return stdout or stderr.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {
-                        "type": "string",
-                        "description": "Python source code to execute.",
-                    },
-                },
-                "required": ["code"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "Write content to a file in the workspace.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path (relative to workspace or absolute).",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "File content to write.",
-                    },
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read the contents of a file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path to read.",
-                    },
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_files",
-            "description": "List files in a directory.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Directory path to list (default: workspace root).",
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web and return results with titles, URLs, and snippets.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query string.",
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_fetch",
-            "description": "Fetch a URL and return its text content (HTML tags removed).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "URL to fetch.",
-                    },
-                    "max_length": {
-                        "type": "integer",
-                        "description": "Maximum characters to return (default: 8000).",
-                    },
-                },
-                "required": ["url"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_time",
-            "description": "Return the current system time in ISO 8601 format.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate",
-            "description": "Safely evaluate a mathematical expression (+, -, *, /, **, %, parentheses).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "Mathematical expression to evaluate, e.g. '2 + 3 * 4'.",
-                    },
-                },
-                "required": ["expression"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "system_info",
-            "description": "Return basic OS and hardware information (platform, CPU count, hostname).",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-    },
-]
+
+def _populate_tool_definitions() -> None:
+    global TOOL_DEFINITIONS
+    TOOL_DEFINITIONS[:] = get_tool_registry().get_definitions()
+
+
+# Populate TOOL_DEFINITIONS at module load time
+_populate_tool_definitions()
+

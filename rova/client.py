@@ -35,6 +35,8 @@ from rova.constants import (
     DEFAULT_HTTP_TIMEOUT,
 )
 from rova.errors import RouterAPIError
+from rova.logging import info as log_info
+from rova.logging import error as log_error
 from rova.skills import skill_messages
 from rova.state import (
     DEFAULT_MODEL,
@@ -224,6 +226,8 @@ class BaseClient(abc.ABC):
     @staticmethod
     def _check_response(response: httpx.Response) -> httpx.Response:
         """Raise RouterAPIError on non-2xx, otherwise return the response."""
+        if response.is_error:
+            log_error("api_error", status_code=response.status_code, url=str(response.url))
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:

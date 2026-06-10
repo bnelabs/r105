@@ -70,7 +70,9 @@ class ChatScreen(Screen[None]):
         self._http = httpx.AsyncClient()
 
     async def on_unmount(self) -> None:
-        auto_save(self.state)
+        saved = auto_save(self.state)
+        if saved:
+            self._notify(f"Session autosaved: {saved}", severity="info")
         await self._http.aclose()
 
     def compose(self) -> ComposeResult:
@@ -87,6 +89,18 @@ class ChatScreen(Screen[None]):
         # Periodic timer for status bar animation (sprite frames)
         self.set_interval(0.05, self._tick_status_bar)
         self._refresh_all()
+
+    # -- Toast notifications for background events -------------------------------
+
+    def _notify(self, message: str, severity: str = "info") -> None:
+        """Show a non-blocking toast notification.
+
+        Textual's built-in notify() is used — it auto-dismisses after a timeout.
+        """
+        try:
+            self.app.notify(message, severity=severity, timeout=4)
+        except Exception:
+            pass
 
     def _tick_status_bar(self) -> None:
         """Advance status bar animation frames (streaming indicator)."""

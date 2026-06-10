@@ -62,7 +62,8 @@ class TestToolDispatch:
             },
         }
         result = execute_tool_call(call, tmp_path)
-        assert result["content"] == "hello world"
+        assert "hello world" in result["content"]
+        assert "<tool_output>" in result["content"]
 
     def test_list_files_dispatch(self, tmp_path):
         (tmp_path / "a.txt").write_text("a")

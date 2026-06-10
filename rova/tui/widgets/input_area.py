@@ -38,6 +38,11 @@ class ChatInput(TextArea):
     BINDINGS = [
         Binding("enter", "submit", "Submit", show=False),
         Binding("escape", "dismiss_slash", "Dismiss", show=False),
+        Binding("ctrl+w", "delete_word_backward", "Delete word", show=False),
+        Binding("ctrl+u", "clear_line", "Clear line", show=False),
+        Binding("ctrl+a", "cursor_line_start", "Line start", show=False),
+        Binding("ctrl+e", "cursor_line_end", "Line end", show=False),
+        Binding("ctrl+k", "kill_to_end", "Kill to end", show=False),
     ]
 
     class ChatSubmitted(Message):
@@ -172,6 +177,46 @@ class ChatInput(TextArea):
             # Past the end: restore scratch
             self._history_index = -1
             self.text = self._scratch
+
+    # -- Readline keybindings -----------------------------------------------
+
+    def action_cursor_line_start(self) -> None:
+        """Ctrl+A: jump cursor to the beginning of the line."""
+        row, _col = self.cursor_location
+        self.cursor_location = (row, 0)
+
+    def action_cursor_line_end(self) -> None:
+        """Ctrl+E: jump cursor to the end of the line."""
+        row = self.cursor_location[0]
+        col = len(self.document.lines[row])
+        self.cursor_location = (row, col)
+
+    def action_delete_word_backward(self) -> None:
+        """Ctrl+W: delete word backward to the last space or punctuation."""
+        row, col = self.cursor_location
+        text = self.document.lines[row][:col]
+        # Find last word boundary (space or punctuation before a word character)
+        new_col = col
+        while new_col > 0 and text[new_col - 1] in (" ", "\t"):
+            new_col -= 1
+        while new_col > 0 and text[new_col - 1] not in (" ", "\t", "\n"):
+            new_col -= 1
+        self.document.replace(row, new_col, row, col, "")
+        self.cursor_location = (row, new_col)
+
+    def action_clear_line(self) -> None:
+        """Ctrl+U: delete all text before the cursor on the current line."""
+        row, col = self.cursor_location
+        if col > 0:
+            self.document.replace(row, 0, row, col, "")
+            self.cursor_location = (row, 0)
+
+    def action_kill_to_end(self) -> None:
+        """Ctrl+K: delete all text from cursor to end of line."""
+        row, col = self.cursor_location
+        end_col = len(self.document.lines[row])
+        if col < end_col:
+            self.document.replace(row, col, row, end_col, "")
 
     # -- Tab autocomplete (fuzzy) -----------------------------------------
 
