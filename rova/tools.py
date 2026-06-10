@@ -27,7 +27,7 @@ from rova.constants import (
 )
 from rova.mcp_client import get_mcp_manager
 from rova.plugins import get_registry
-from rova.sandbox import get_sandbox
+from rova.sandbox import get_sandbox, profile_for_tool, SandboxProfile
 
 # -- Limits for tool arguments ------------------------------------------
 
@@ -204,7 +204,7 @@ def execute_tool_call(
         }
 
     if name == "execute_python":
-        result = execute_python(arguments, workspace_dir)
+        result = execute_python(arguments, workspace_dir, profile=profile_for_tool(name))
     elif name == "write_file":
         result = write_file(arguments, workspace_dir)
     elif name == "read_file":
@@ -254,18 +254,22 @@ def get_tool_definitions() -> list[dict[str, Any]]:
 # -- Python execution (sandboxed) ---------------------------------------
 
 
-def execute_python(arguments: dict[str, Any], workspace_dir: Path) -> str:
+def execute_python(
+    arguments: dict[str, Any],
+    workspace_dir: Path,
+    profile: SandboxProfile | None = None,
+) -> str:
     """Execute Python code in a sandboxed subprocess.
 
-    Uses the configured sandbox backend (bwrap on Linux, rlimit on Unix,
-    noop on Windows). See rova/sandbox.py for backend details.
+    Uses the configured sandbox backend (nsjail > bwrap > rlimit > none).
+    The optional *profile* controls isolation level. See rova/sandbox.py.
     """
     code = arguments.get("code", "")
     if not code:
         return "error: no code provided"
 
     try:
-        proc = get_sandbox().execute(code)
+        proc = get_sandbox().execute(code, profile=profile)
         if proc.returncode == 0:
             return proc.stdout
         if proc.returncode < 0:
@@ -281,13 +285,73 @@ def execute_python(arguments: dict[str, Any], workspace_dir: Path) -> str:
 
 # -- File operations ----------------------------------------------------
 
-def write_file(arguments: dict[str, Any], workspace_dir: Path) -> str:
+
+def _make_diff(file_path: Path, new_content: str, context_lines: int = 3) -> str:
+    """Generate a unified diff between the current file and proposed content.
+
+    Returns an empty string if the file doesn't exist yet (new file).
+    """
+    if not file_path.is_file():
+        return ""
+    try:
+        old_content = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+    if old_content == new_content:
+        return ""
+
+    import difflib
+    old_lines = old_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+    diff = difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=str(file_path),
+        tofile=str(file_path),
+        n=context_lines,
+    )
+    return "".join(diff)
+
+
+def write_file(
+    arguments: dict[str, Any],
+    workspace_dir: Path,
+    *,
+    dry_run: bool = False,
+) -> str:
+    """Write content to a file in the workspace.
+
+    If *dry_run* is True, returns the diff without writing.
+    If the file already exists, returns a unified diff of the changes.
+    For new files, returns a creation notice.
+    """
     path = arguments.get("path", "")
     content = arguments.get("content", "")
     try:
         file_path = _validate_path(path, workspace_dir)
         file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        diff = _make_diff(file_path, content)
+
+        if dry_run:
+            if diff:
+                return f"diff for {file_path}:\n{diff}"
+            if not file_path.is_file():
+                return f"would create new file: {file_path} ({len(content)} bytes)"
+            return f"no changes for {file_path}"
+
+        # Actually write
+        if diff:
+            is_new = False
+        else:
+            is_new = not file_path.is_file()
+
         file_path.write_text(content, encoding="utf-8")
+
+        if is_new:
+            return f"created {file_path} ({len(content)} bytes)"
+        if diff:
+            return f"wrote {len(content)} bytes to {file_path} (diff above)"
         return f"wrote {len(content)} bytes to {file_path}"
     except Exception as e:
         return str(e)

@@ -21,6 +21,7 @@ from rova.constants import (
     MAX_TOOL_LOOP_ITERATIONS,
     RECENT_CALL_TRACKING_SIZE,
 )
+from rova.sessions import auto_save
 from rova.state import ChatState, token_usage
 from rova.tools import execute_tool_call, get_tool_definitions
 from rova.tui.widgets.chat_view import ChatView
@@ -64,6 +65,7 @@ class ChatScreen(Screen[None]):
         self._http = httpx.AsyncClient()
 
     async def on_unmount(self) -> None:
+        auto_save(self.state)
         await self._http.aclose()
 
     def compose(self) -> ComposeResult:

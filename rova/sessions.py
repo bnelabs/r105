@@ -13,6 +13,35 @@ from rova.state import ChatState
 SESSION_DIR = CONFIG_DIR / "sessions"
 
 
+_AUTO_SAVE_ENABLED: bool = True
+
+
+def set_auto_save(enabled: bool) -> None:
+    """Enable or disable auto-save on exit."""
+    global _AUTO_SAVE_ENABLED
+    _AUTO_SAVE_ENABLED = enabled
+
+
+def get_auto_save() -> bool:
+    return _AUTO_SAVE_ENABLED
+
+
+def auto_save(state: ChatState) -> str | None:
+    """Auto-save the current conversation if auto-save is enabled.
+
+    Returns the path as a string if saved, None if skipped.
+    """
+    if not _AUTO_SAVE_ENABLED:
+        return None
+    if not state.history:
+        return None
+    try:
+        path = save_session(state, "__autosave__")
+        return str(path)
+    except OSError:
+        return None
+
+
 def _ensure_dir() -> None:
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -49,7 +49,7 @@ class TestToolDispatch:
             },
         }
         result = execute_tool_call(call, tmp_path)
-        assert "wrote" in result["content"]
+        assert "wrote" in result["content"] or "created" in result["content"]
         assert (tmp_path / "test.txt").read_text() == "hello"
 
     def test_read_file_dispatch(self, tmp_path):
