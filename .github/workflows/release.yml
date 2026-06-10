@@ -89,6 +89,7 @@ jobs:
       - name: Install dependencies
         run: pip install pyinstaller .
       - name: Build standalone binary
+        shell: cmd
         run: |
           pyinstaller --onefile --name r105 ^
             --hidden-import=r105.cli ^
@@ -97,7 +98,7 @@ jobs:
             --hidden-import=r105.tui.widgets ^
             --hidden-import=r105.themes ^
             --add-data "r105/themes;r105/themes" ^
-            r105/__main__.py
+            r105\__main__.py
       - uses: actions/upload-artifact@v4
         with:
           name: r105-windows
@@ -123,7 +124,6 @@ jobs:
             --hidden-import=r105.tui.widgets \
             --hidden-import=r105.themes \
             --add-data "r105/themes:r105/themes" \
-            --target-arch arm64 \
             r105/__main__.py
       - uses: actions/upload-artifact@v4
         with:
