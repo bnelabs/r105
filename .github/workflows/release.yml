@@ -1,0 +1,97 @@
+name: Release (PyPI + Binaries)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rova
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine && python -m build && twine check dist/*
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  binary-linux:
+    name: Build Linux binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller .
+      - name: Build standalone binary
+        run: |
+          pyinstaller --onefile --name rova \
+            --hidden-import=rova.cli \
+            --hidden-import=rova.tui \
+            --hidden-import=rova.tui.screens \
+            --hidden-import=rova.tui.widgets \
+            --hidden-import=rova.themes \
+            --add-data "rova/themes:rova/themes" \
+            rova/__main__.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rova-linux
+          path: dist/rova
+
+  binary-macos:
+    name: Build macOS binary
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller .
+      - name: Build standalone binary
+        run: |
+          pyinstaller --onefile --name rova \
+            --hidden-import=rova.cli \
+            --hidden-import=rova.tui \
+            --hidden-import=rova.tui.screens \
+            --hidden-import=rova.tui.widgets \
+            --hidden-import=rova.themes \
+            --add-data "rova/themes:rova/themes" \
+            rova/__main__.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rova-macos
+          path: dist/rova
+
+  release:
+    name: Create GitHub Release
+    needs: [pypi, binary-linux, binary-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rova-linux
+          path: artifacts/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: rova-macos
+          path: artifacts/macos
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/linux/rova
+            artifacts/macos/rova
+          generate_release_notes: true

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/lukesampson/scoop/master/schema.json",
+  "homepage": "https://github.com/bnelabs/rova",
+  "description": "Rova — Rapid On-demand Virtual Assistant: rich terminal frontend for llama-router",
+  "license": "MIT",
+  "version": "0.3.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/bnelabs/rova/releases/download/v$version/rova-windows-x64.exe#/rova.exe",
+      "hash": ""
+    }
+  },
+  "bin": "rova.exe",
+  "checkver": {
+    "github": "https://github.com/bnelabs/rova"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/bnelabs/rova/releases/download/v$version/rova-windows-x64.exe#/rova.exe"
+      }
+    }
+  }
+}
