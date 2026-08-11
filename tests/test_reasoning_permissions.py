@@ -10,9 +10,9 @@ import pytest
 from r105.client import _build_payload, _inject_reasoning_effort
 from r105.commands import handle_slash_command
 from r105.sandbox import (
+    current_posture,
     posture_allows_tool,
     set_posture,
-    current_posture,
 )
 from r105.state import (
     VALID_PERMISSION_POSTURES,
@@ -55,7 +55,7 @@ class TestReasoningEffortPayload:
         assert payload["reasoning_effort"] == "medium"
 
     def test_valid_efforts(self) -> None:
-        assert VALID_REASONING_EFFORTS == {"auto", "off", "low", "medium", "high"}
+        assert {"auto", "off", "low", "medium", "high"} == VALID_REASONING_EFFORTS
 
 
 class TestReasoningCommand:
@@ -107,7 +107,7 @@ class TestPermissionsCommand:
         assert state.permission_posture == "sandboxed"
 
     def test_valid_postures(self) -> None:
-        assert VALID_PERMISSION_POSTURES == {"full-access", "restricted", "sandboxed", "off"}
+        assert {"full-access", "restricted", "sandboxed", "off"} == VALID_PERMISSION_POSTURES
 
 
 class TestPostureMapping:
