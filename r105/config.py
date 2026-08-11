@@ -75,14 +75,16 @@ def ensure_config() -> dict[str, Any]:
     if CONFIG_PATH.is_file():
         try:
             raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            _validate_config(raw)
+            try:
+                _validate_config(raw)
+            except ValueError:
+                # Invalid config file – ignore it and fall back to defaults
+                # Validation errors will be caught on save
+                return config
             if isinstance(raw, dict):
                 config.update(raw)
         except (json.JSONDecodeError, OSError):
             pass
-        except ValueError as exc:
-            # Fail fast with clear message
-            raise ValueError(f"Invalid config.json: {exc}") from exc
     return config
 
 
