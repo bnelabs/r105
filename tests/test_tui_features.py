@@ -50,10 +50,18 @@ class TestHelpScreenEscapeBinding:
 
 
 class TestChatViewThinkingCapture:
-    """Thinking blocks are captured and rendered as a panel, not lost."""
+    """Thinking blocks are captured and rendered as a panel, not lost.
+
+    Capture only applies when ``gemma4_channel_syntax`` is enabled (Gemma-4
+    family models). The default is OFF — model-agnostic passthrough.
+    """
 
     def test_blocks_split_across_chunks_are_captured(self) -> None:
-        view = ChatView(show_thinking=True, thinking_default_expanded=False)
+        view = ChatView(
+            show_thinking=True,
+            thinking_default_expanded=False,
+            gemma4_channel_syntax=True,
+        )
         view.start_streaming()
         view.stream_chunk("answer. <|channel|>thought")
         view.stream_chunk("half of the reasoning ")
@@ -65,7 +73,7 @@ class TestChatViewThinkingCapture:
         assert "<channel|>" not in view._stream_buffer
 
     def test_pending_held_across_chunks(self) -> None:
-        view = ChatView(show_thinking=True)
+        view = ChatView(show_thinking=True, gemma4_channel_syntax=True)
         view.start_streaming()
         view.stream_chunk("start <|channel|>thought")
         assert view._pending_thinking == "<|channel|>thought"
@@ -74,18 +82,18 @@ class TestChatViewThinkingCapture:
         assert view._pending_thinking == ""
 
     def test_complete_block_single_chunk(self) -> None:
-        view = ChatView(show_thinking=True)
+        view = ChatView(show_thinking=True, gemma4_channel_syntax=True)
         view.add_assistant("result <|channel|>thought reasoning<channel|> visible")
         assert view._pending_thinking == ""
 
     def test_show_thinking_false_strips(self) -> None:
-        view = ChatView(show_thinking=False)
+        view = ChatView(show_thinking=False, gemma4_channel_syntax=True)
         view.add_assistant("result <|channel|>thought hidden<channel|> visible")
         # No crash; pending is empty
         assert view._pending_thinking == ""
 
     def test_stray_tokens_stripped_from_user_text(self) -> None:
-        view = ChatView()
+        view = ChatView(gemma4_channel_syntax=True)
         view.add_user("<|tool_call|>nope")
         assert view._pending_thinking == ""
 
@@ -93,6 +101,44 @@ class TestChatViewThinkingCapture:
         view = ChatView()
         assert view.show_thinking is True
         assert view.thinking_default_expanded is False
+        # Model-agnostic safety: channel-syntax handling is OFF by default
+        assert view.gemma4_channel_syntax is False
+
+
+class TestModelAgnosticPassthrough:
+    """Non-Gemma-4 models: content is opaque text, never rewritten.
+
+    This is the model-agnostic guarantee: with ``gemma4_channel_syntax``
+    off (the default for every non-Gemma-4 model), markers such as
+    ``<|tool_call|>`` and ``<|channel|>thought`` pass through verbatim —
+    no capture, no stripping, no interpretation.
+    """
+
+    def test_streamed_content_passes_through_verbatim(self) -> None:
+        view = ChatView()  # default: gemma4_channel_syntax=False
+        view.start_streaming()
+        raw = 'answer <|tool_call|>{"name":"x","arguments":{}}<|tool_result|> <|channel|>thought hi<channel|>'
+        view.stream_chunk(raw)
+        assert view._stream_buffer == raw
+        assert view._thinking_parts == []
+
+    def test_add_assistant_passes_through_verbatim(self) -> None:
+        view = ChatView()
+        raw = 'result <|tool_call|>{"name":"x"}<|tool_result|> done'
+        view.add_assistant(raw)
+        assert view._pending_thinking == ""
+
+    def test_add_user_passes_through_verbatim(self) -> None:
+        view = ChatView()
+        raw = "<|tool_call|>not stripped for opaque models"
+        view.add_user(raw)
+        assert view._pending_thinking == ""
+
+    def test_capability_is_per_instance(self) -> None:
+        opaque = ChatView()                       # default off
+        gemma = ChatView(gemma4_channel_syntax=True)
+        assert opaque.gemma4_channel_syntax is False
+        assert gemma.gemma4_channel_syntax is True
 
 
 class TestStartupFocus:

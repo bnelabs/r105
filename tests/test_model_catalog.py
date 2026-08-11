@@ -7,8 +7,10 @@ import pytest
 from r105.model_catalog import (
     _catalog_context,
     _extract_context_from_model_entry,
+    model_family,
     normalize_model_name,
     resolve_context_tokens,
+    uses_gemma4_channel_syntax,
 )
 from r105.state import DEFAULT_CONTEXT_TOKENS
 
@@ -111,3 +113,52 @@ class TestExtractContextFromModelEntry:
     def test_negative_ignored(self) -> None:
         entry = {"id": "m", "max_model_len": -1}
         assert _extract_context_from_model_entry(entry) is None
+
+
+class TestModelFamily:
+    """Model-family detection — the gate for model-specific behavior."""
+
+    def test_gemma4_detected(self) -> None:
+        assert model_family("gemma-4-12b-it-UD-Q8_K_XL") == "gemma-4"
+        assert model_family("gemma4-v2-Q8_0.gguf") == "gemma-4"
+        assert model_family("gemma-4-31b-q4_0-it-fixed.gguf") == "gemma-4"
+
+    def test_glimmer_is_gemma4_family(self) -> None:
+        # muse-glimmer uses Gemma-4-style chat templates
+        assert model_family("muse-glimmer-30B-kquant-17gb.gguf") == "gemma-4"
+
+    def test_other_families(self) -> None:
+        assert model_family("qwen3.6-35B") == "qwen"
+        assert model_family("deepseek-v3.1") == "deepseek"
+        assert model_family("llama-3.1-8b") == "llama"
+        assert model_family("gpt-4o") == "gpt"
+
+    def test_unknown_returns_none(self) -> None:
+        assert model_family("totally-unknown-model") is None
+        assert model_family("") is None
+
+
+class TestGemma4ChannelSyntaxGate:
+    """Only Gemma-4-family models may get channel-syntax handling."""
+
+    def test_gemma4_models_opt_in(self) -> None:
+        assert uses_gemma4_channel_syntax("gemma-4-12b-it") is True
+        assert uses_gemma4_channel_syntax("gemma4-v2") is True
+        assert uses_gemma4_channel_syntax("muse-glimmer-30B") is True
+
+    def test_all_other_models_are_opaque(self) -> None:
+        for name in (
+            "qwen3.6-35B",
+            "qwen2.5",
+            "deepseek-v3",
+            "llama-3.1",
+            "mistral",
+            "gpt-4o",
+            "gpt-4.1",
+            "claude-sonnet",
+            "glm-5",
+            "phi-4",
+            "totally-unknown-model",
+            "",
+        ):
+            assert uses_gemma4_channel_syntax(name) is False, f"{name!r} must be opaque"

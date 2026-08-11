@@ -37,7 +37,10 @@ from r105.constants import (
 )
 from r105.errors import RouterAPIError
 from r105.logging import error as log_error
-from r105.model_catalog import _extract_context_from_model_entry
+from r105.model_catalog import (
+    _extract_context_from_model_entry,
+    uses_gemma4_channel_syntax,
+)
 from r105.skills import skill_messages
 from r105.state import (
     DEFAULT_MODEL,
@@ -525,10 +528,15 @@ class BaseClient(abc.ABC):
         if not content and not tool_calls and reasoning_parts:
             content = "".join(reasoning_parts)
 
-        # Fallback: parse Gemma 4 native tool-call format from content
-        # (used when the backend returns <|tool_call|> JSON in plain text instead
-        # of OpenAI-compatible delta.tool_calls — e.g. llama.cpp without --jinja)
-        if not tool_calls:
+        # Gemma-4-family models: parse native <|tool_call|> blocks from content
+        # when the backend returns them inline instead of OpenAI-compatible
+        # delta.tool_calls (e.g. llama.cpp without --jinja). Strictly gated on
+        # model family — for every other model the content is opaque text and
+        # is never regex-interpreted.
+        if (
+            not tool_calls
+            and uses_gemma4_channel_syntax(str(payload.get("model", "")))
+        ):
             native_calls = _parse_gemma4_tool_calls(content)
             if native_calls:
                 tool_calls = native_calls
