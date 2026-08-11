@@ -192,3 +192,91 @@ class TestStartupFocus:
                 assert input_widget.text == "hello"
 
         asyncio.run(scenario())
+
+
+class TestEditKeybindings:
+    """Readline edit bindings (Ctrl+U/W/K) must not crash on Textual 8.
+
+    Regression: action_clear_line / action_delete_word_backward /
+    action_kill_to_end called ``self.document.replace(...)``, an API that
+    does not exist on Textual 8's Document (it is ``replace_range``), so any
+    of the three keys crashed the TUI into the error screen whenever the
+    input held text.
+    """
+
+    @staticmethod
+    def _make_app():
+        from pathlib import Path
+
+        from r105.client import DirectClient
+        from r105.state import ChatState
+        from r105.tui.app import R105App
+
+        client = DirectClient(base_url="http://127.0.0.1:8090", timeout=5.0)
+        return R105App(client, ChatState(model="test-model"), Path("/tmp"))
+
+    def test_ctrl_u_clears_line_without_crash(self) -> None:
+        from r105.tui.screens.chat import ChatScreen
+        from r105.tui.widgets.input_area import ChatInput
+
+        async def scenario() -> None:
+            app = self._make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                for _ in range(50):
+                    await pilot.pause()
+                    if isinstance(app.screen, ChatScreen):
+                        break
+                input_widget = app.screen.query_one("#chat-input", ChatInput)
+                await pilot.press("h", "e", "l", "l", "o")
+                await pilot.pause()
+                assert input_widget.text == "hello"
+                await pilot.press("ctrl+u")
+                await pilot.pause()
+                assert input_widget.text == ""
+
+        asyncio.run(scenario())
+
+    def test_ctrl_w_deletes_word_backward_without_crash(self) -> None:
+        from r105.tui.screens.chat import ChatScreen
+        from r105.tui.widgets.input_area import ChatInput
+
+        async def scenario() -> None:
+            app = self._make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                for _ in range(50):
+                    await pilot.pause()
+                    if isinstance(app.screen, ChatScreen):
+                        break
+                input_widget = app.screen.query_one("#chat-input", ChatInput)
+                for ch in "one two three":
+                    await pilot.press(ch)
+                await pilot.pause()
+                await pilot.press("ctrl+w")
+                await pilot.pause()
+                # last word ("three") deleted, trailing space trimmed by the action
+                assert input_widget.text == "one two "
+
+        asyncio.run(scenario())
+
+    def test_ctrl_k_kills_to_end_without_crash(self) -> None:
+        from r105.tui.screens.chat import ChatScreen
+        from r105.tui.widgets.input_area import ChatInput
+
+        async def scenario() -> None:
+            app = self._make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                for _ in range(50):
+                    await pilot.pause()
+                    if isinstance(app.screen, ChatScreen):
+                        break
+                input_widget = app.screen.query_one("#chat-input", ChatInput)
+                for ch in "hello":
+                    await pilot.press(ch)
+                await pilot.pause()
+                await pilot.press("ctrl+a")   # cursor to line start
+                await pilot.pause()
+                await pilot.press("ctrl+k")   # kill to end of line
+                await pilot.pause()
+                assert input_widget.text == ""
+
+        asyncio.run(scenario())
