@@ -191,6 +191,7 @@ class ChatView(RichLog):
         """Begin a streaming assistant response."""
         self._streaming = True
         self._stream_buffer = ""
+        self._received_content = False
         self._last_render = time.monotonic()
 
     def stream_chunk(self, text: str) -> None:

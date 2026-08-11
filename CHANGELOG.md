@@ -38,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - HelpScreen escape-dismiss regression (Textual 8 modal trap)
 
+## [0.4.1] — 2026-08
+
+### Fixed
+- TUI ignored keyboard input at startup on Textual 8 (RichLog stole focus from
+  the chat input); the input is now focused explicitly on mount
+- Blank assistant replies from thinking models (Qwen3, DeepSeek, Glimmer, etc.)
+  that emit output in `reasoning_content`; r105 now falls back to
+  reasoning_content when content is empty and renders it in the TUI
+
+
 ## [0.4.0] — 2026-08
 
 ### Added
