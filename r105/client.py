@@ -213,7 +213,16 @@ class BaseClient(abc.ABC):
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self.timeout = timeout
+        # Per-phase timeouts: short connect/pool so a dead or half-dead
+        # backend fails fast (seconds, not the full read budget), while
+        # the read phase keeps the full budget for long generations
+        # (default 300s).
+        self.timeout = httpx.Timeout(
+            connect=2.0,
+            read=timeout,
+            write=60.0,
+            pool=10.0,
+        )
 
     @property
     @abc.abstractmethod
@@ -712,10 +721,13 @@ class DirectClient(BaseClient):
           2. ``/v1/models`` entry metadata (``meta.n_ctx``, ``context_window``,
              ``context_length``, ``max_model_len``)
         Returns None if the backend exposes no context metadata.
+
+        Probing is best-effort with short (connect, read) timeouts so a slow
+        or half-dead backend can never stall startup for more than ~2s total.
         """
         # 1. llama.cpp-style /props probe
         try:
-            response = self._sync_request("GET", "/props", timeout=3.0)
+            response = self._sync_request("GET", "/props", timeout=(1.0, 1.0))
             if response.status_code == 200:
                 data = response.json()
                 n_ctx = (data.get("default_generation_settings") or {}).get("n_ctx")
@@ -728,9 +740,13 @@ class DirectClient(BaseClient):
         except (httpx.HTTPError, ValueError, OSError):
             pass
 
-        # 2. /v1/models metadata probe
+        # 2. /v1/models metadata probe (direct request: list_models() uses a
+        # long timeout that would stall startup on an unresponsive backend)
         try:
-            data = self.list_models()
+            response = self._sync_request("GET", "/v1/models", timeout=(1.0, 1.0))
+            if response.status_code != 200:
+                return None
+            data = response.json()
             for entry in data.get("data") or []:
                 entry_id = str(entry.get("id", ""))
                 if entry_id and (entry_id == model_name or entry_id in model_name):
@@ -748,7 +764,7 @@ class DirectClient(BaseClient):
         """Async variant of :meth:`probe_context`."""
         # 1. llama.cpp-style /props probe
         try:
-            response = await self._async_request("GET", "/props", client=client, timeout=3.0)
+            response = await self._async_request("GET", "/props", client=client, timeout=(1.0, 1.0))
             if response.status_code == 200:
                 data = response.json()
                 n_ctx = (data.get("default_generation_settings") or {}).get("n_ctx")
@@ -761,9 +777,12 @@ class DirectClient(BaseClient):
         except (httpx.HTTPError, ValueError, OSError):
             pass
 
-        # 2. /v1/models metadata probe
+        # 2. /v1/models metadata probe (direct request, short timeout)
         try:
-            data = await self.async_list_models(client)
+            response = await self._async_request("GET", "/v1/models", client=client, timeout=(1.0, 1.0))
+            if response.status_code != 200:
+                return None
+            data = response.json()
             for entry in data.get("data") or []:
                 entry_id = str(entry.get("id", ""))
                 if entry_id and (entry_id == model_name or entry_id in model_name):
