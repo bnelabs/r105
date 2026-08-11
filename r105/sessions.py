@@ -174,9 +174,9 @@ def _ensure_export_deps() -> None:
     Raises RuntimeError with a helpful install hint if missing.
     """
     try:
-        import python_pptx  # noqa: F401
         import docx  # noqa: F401
         import fpdf2  # noqa: F401
+        import python_pptx  # noqa: F401
         from PIL import Image  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
