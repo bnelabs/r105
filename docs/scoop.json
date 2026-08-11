@@ -3,13 +3,13 @@
   "homepage": "https://github.com/bnelabs/r105",
   "description": "r105 — Beyond the prompt. Rich terminal AI assistant for any OpenAI-compatible backend.",
   "license": "MIT",
-  "version": "0.5.0",
-  "url": "https://files.pythonhosted.org/packages/source/r/r105/r105-0.5.0.tar.gz",
-  "hash": "df6352041befa936163d4b7b93bc917110d233202c1429032ac07209faf00c79",
+  "version": "0.6.0",
+  "url": "https://files.pythonhosted.org/packages/source/r/r105/r105-0.6.0.tar.gz",
+  "hash": "17997b2cc89c8e4271818eed0189eeb1c3d8491c9e71d8ec3c2662a58f666882",
   "architecture": {
     "64bit": {
       "url": "https://github.com/bnelabs/r105/releases/download/v$version/r105-windows-x64.exe#/r105.exe",
-      "hash": "6c21ae4178fd3df7c650212e68156808a2c93a8b79960cce719553f6a95371fd"
+      "hash": "808f91a4a92ec8720d0f5e60550c7390b8ac3223b4f0d5fec50ebb96f61edc39"
     }
   },
   "bin": "r105.exe",
