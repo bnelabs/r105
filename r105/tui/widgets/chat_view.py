@@ -24,6 +24,7 @@ class ChatView(RichLog):
         self._streaming = False
         self._stream_buffer = ""
         self._last_render = 0.0
+        self._received_content = False
 
     def add_user(self, text: str) -> None:
         panel = Panel(
@@ -95,6 +96,12 @@ class ChatView(RichLog):
         self._streaming = True
         self._stream_buffer = ""
         self._last_render = time.monotonic()
+        self._received_content = False
+
+    @property
+    def received_content(self) -> bool:
+        """True if at least one content delta was streamed for this reply."""
+        return self._received_content
 
     def stream_chunk(self, text: str) -> None:
         """Accumulate a content delta and debounce the widget update.
@@ -104,6 +111,8 @@ class ChatView(RichLog):
         """
         if not getattr(self, "_streaming", False):
             self.start_streaming()
+        if text:
+            self._received_content = True
         self._stream_buffer += text
 
         now = time.monotonic()
