@@ -37,7 +37,6 @@ class ChatInput(TextArea):
     """
 
     BINDINGS = [
-        Binding("enter", "submit", "Submit", show=False),
         Binding("escape", "dismiss_slash", "Dismiss", show=False),
         Binding("ctrl+w", "delete_word_backward", "Delete word", show=False),
         Binding("ctrl+u", "clear_line", "Clear line", show=False),
@@ -98,9 +97,27 @@ class ChatInput(TextArea):
     # -- Key interception -------------------------------------------------
 
     async def _on_key(self, event: events.Key) -> None:
-        """Intercept Enter before TextArea inserts a newline."""
+        """Own Enter handling so TextArea never inserts a stray newline.
+
+        Textual 8's TextArea maps the ``enter`` key to ``"\\n"`` insertion.
+        If a binding or this override runs ``action_submit`` without stopping
+        the event, TextArea's ``_on_key`` still fires afterward and leaves a
+        stray newline in the document (cursor on an invisible second line),
+        which makes the input appear dead until the user presses Enter again.
+
+        We therefore consume ``enter`` (submit / palette-select) and
+        ``shift+enter`` (explicit newline, as documented) here, and the
+        ``enter`` binding is removed so the action never double-fires.
+        """
         if event.key == "enter":
+            event.stop()
+            event.prevent_default()
             self.action_submit()
+            return
+        if event.key == "shift+enter":
+            event.stop()
+            event.prevent_default()
+            self.insert("\n")
             return
         await super()._on_key(event)
 

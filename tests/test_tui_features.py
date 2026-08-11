@@ -280,3 +280,103 @@ class TestEditKeybindings:
                 assert input_widget.text == ""
 
         asyncio.run(scenario())
+
+
+class TestSubmitCleanliness:
+    """Enter must not leave a stray newline in the input document.
+
+    Regression: TextArea maps ``enter`` to ``"\\n"`` insertion. If the enter
+    key is handled by a binding/``_on_key`` without stopping the event,
+    TextArea's ``_on_key`` fires afterward and leaves a stray newline in the
+    document — the cursor ends on an invisible second line and subsequent
+    typed text never appears in the visible input row (the TUI looks like it
+    stopped accepting input after the first message).
+    """
+
+    @staticmethod
+    def _make_app():
+        from pathlib import Path
+
+        from r105.client import DirectClient
+        from r105.state import ChatState
+        from r105.tui.app import R105App
+
+        client = DirectClient(base_url="http://127.0.0.1:8090", timeout=5.0)
+        return R105App(client, ChatState(model="test-model"), Path("/tmp"))
+
+    def test_enter_leaves_clean_document(self) -> None:
+        from r105.tui.screens.chat import ChatScreen
+        from r105.tui.widgets.input_area import ChatInput
+
+        async def scenario() -> None:
+            app = self._make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                for _ in range(50):
+                    await pilot.pause()
+                    if isinstance(app.screen, ChatScreen):
+                        break
+                input_widget = app.screen.query_one("#chat-input", ChatInput)
+                for ch in "hello":
+                    await pilot.press(ch)
+                await pilot.pause()
+                await pilot.press("enter")
+                for _ in range(30):
+                    await pilot.pause()
+                assert input_widget.text == "", (
+                    f"expected clean input after submit, got {input_widget.text!r} "
+                    f"(lines={input_widget.document.line_count})"
+                )
+                assert input_widget.cursor_location == (0, 0)
+
+        asyncio.run(scenario())
+
+    def test_typing_visible_after_submit(self) -> None:
+        """Typed characters land on line 1 after a submit (no invisible line 2)."""
+        from r105.tui.screens.chat import ChatScreen
+        from r105.tui.widgets.input_area import ChatInput
+
+        async def scenario() -> None:
+            app = self._make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                for _ in range(50):
+                    await pilot.pause()
+                    if isinstance(app.screen, ChatScreen):
+                        break
+                input_widget = app.screen.query_one("#chat-input", ChatInput)
+                await pilot.press("h", "i")
+                await pilot.pause()
+                await pilot.press("enter")
+                for _ in range(30):
+                    await pilot.pause()
+                await pilot.press("x", "y")
+                await pilot.pause()
+                assert input_widget.text == "xy", (
+                    f"expected 'xy' on line 1, got {input_widget.text!r}"
+                )
+                assert input_widget.cursor_location == (0, 2)
+
+        asyncio.run(scenario())
+
+    def test_shift_enter_inserts_newline(self) -> None:
+        """Shift+Enter inserts a newline (documented in ChatInput docstring)."""
+        from r105.tui.screens.chat import ChatScreen
+        from r105.tui.widgets.input_area import ChatInput
+
+        async def scenario() -> None:
+            app = self._make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                for _ in range(50):
+                    await pilot.pause()
+                    if isinstance(app.screen, ChatScreen):
+                        break
+                input_widget = app.screen.query_one("#chat-input", ChatInput)
+                await pilot.press("a", "b")
+                await pilot.pause()
+                await pilot.press("shift+enter")
+                await pilot.pause()
+                assert input_widget.text == "ab\n", (
+                    f"expected 'ab\\n' after shift+enter, got {input_widget.text!r}"
+                )
+                assert input_widget.document.line_count == 2
+
+        asyncio.run(scenario())
