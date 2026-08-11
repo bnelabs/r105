@@ -27,6 +27,44 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "url": None,
 }
 
+VALID_THEMES = {"r105", "dracula", "solarized-dark", "high-contrast"}
+VALID_SANDBOX_BACKENDS = {"auto", "nsjail", "bwrap", "rlimit", "none"}
+
+
+def _validate_config(raw: dict[str, Any]) -> None:
+    """Validate config keys and values. Raises ValueError with helpful message on failure."""
+    if not isinstance(raw, dict):
+        raise ValueError("config.json must be a JSON object")
+
+    # Validate known keys
+    for key in raw:
+        if key not in DEFAULT_CONFIG:
+            raise ValueError(f"Unknown config key: '{key}'. Valid keys are: {', '.join(sorted(DEFAULT_CONFIG.keys()))}")
+
+    # Validate specific fields
+    if "theme" in raw and raw["theme"] is not None:
+        if raw["theme"] not in VALID_THEMES:
+            raise ValueError(f"Invalid theme '{raw['theme']}'. Valid themes: {', '.join(sorted(VALID_THEMES))}")
+
+    if "sandbox_backend" in raw and raw["sandbox_backend"] is not None:
+        if raw["sandbox_backend"] not in VALID_SANDBOX_BACKENDS:
+            raise ValueError(
+                f"Invalid sandbox_backend '{raw['sandbox_backend']}'. Valid: {', '.join(sorted(VALID_SANDBOX_BACKENDS))}"
+            )
+
+    if "auto_compact" in raw:
+        if not isinstance(raw["auto_compact"], bool):
+            raise ValueError("auto_compact must be true or false")
+
+    if "mcp_servers" in raw:
+        if not isinstance(raw["mcp_servers"], list):
+            raise ValueError("mcp_servers must be a list")
+        for i, srv in enumerate(raw["mcp_servers"]):
+            if not isinstance(srv, dict):
+                raise ValueError(f"mcp_servers[{i}] must be an object")
+            if "name" not in srv:
+                raise ValueError(f"mcp_servers[{i}] missing required field 'name'")
+
 
 def ensure_config() -> dict[str, Any]:
     """Read the config file, creating a default one if it doesn't exist.
@@ -37,10 +75,14 @@ def ensure_config() -> dict[str, Any]:
     if CONFIG_PATH.is_file():
         try:
             raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            _validate_config(raw)
             if isinstance(raw, dict):
                 config.update(raw)
         except (json.JSONDecodeError, OSError):
             pass
+        except ValueError as exc:
+            # Fail fast with clear message
+            raise ValueError(f"Invalid config.json: {exc}") from exc
     return config
 
 
@@ -51,6 +93,8 @@ def save_config(overrides: dict[str, Any]) -> None:
     """
     config = ensure_config()
     config.update(overrides)
+    # Validate before writing
+    _validate_config(config)
     # Remove keys that match defaults (keep config file lean)
     for k, v in DEFAULT_CONFIG.items():
         if k in config and config[k] == v:
