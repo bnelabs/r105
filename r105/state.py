@@ -43,6 +43,7 @@ class ChatState:
     active_skills: list[str] = field(default_factory=list)
     skill_params: dict[str, dict[str, str]] = field(default_factory=dict)
     model_contexts: dict[str, int] = field(default_factory=dict)
+    model_families: dict[str, str | None] = field(default_factory=dict)
     context_tokens: int = DEFAULT_CONTEXT_TOKENS
     history: list[dict[str, str]] = field(default_factory=list)
 

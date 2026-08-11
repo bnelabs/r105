@@ -451,8 +451,14 @@ class BaseClient(abc.ABC):
         payload: dict[str, Any],
         client: httpx.AsyncClient | None,
         on_chunk: Callable[[str], None],
+        config_families: dict[str, str | None] | None = None,
     ) -> ChatResult:
-        """Shared SSE streaming core used by DirectClient and RouterClient."""
+        """Shared SSE streaming core used by DirectClient and RouterClient.
+
+        ``config_families`` (from the ``model_families`` config key) is passed
+        to the family gate so config-driven family overrides also apply to
+        native Gemma-4 tool-call parsing.
+        """
         started = time.perf_counter()
 
         content_parts: list[str] = []
@@ -535,7 +541,9 @@ class BaseClient(abc.ABC):
         # is never regex-interpreted.
         if (
             not tool_calls
-            and uses_gemma4_channel_syntax(str(payload.get("model", "")))
+            and uses_gemma4_channel_syntax(
+                str(payload.get("model", "")), config_families
+            )
         ):
             native_calls = _parse_gemma4_tool_calls(content)
             if native_calls:
@@ -656,7 +664,7 @@ class DirectClient(BaseClient):
         _inject_reasoning_effort(payload, state)
 
         if on_chunk is not None:
-            result = await self._stream_sse(payload, client, on_chunk)
+            result = await self._stream_sse(payload, client, on_chunk, config_families=state.model_families)
         else:
             started = time.perf_counter()
             response = await self._async_request(
@@ -682,7 +690,7 @@ class DirectClient(BaseClient):
     ) -> ChatResult:
         payload = _build_payload(message, state, tools)
         payload["stream"] = True
-        result = await self._stream_sse(payload, client, on_chunk or (lambda _: None))
+        result = await self._stream_sse(payload, client, on_chunk or (lambda _: None), config_families=state.model_families)
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
         if result.tool_calls:
             assistant_msg["tool_calls"] = result.tool_calls
@@ -992,7 +1000,7 @@ class RouterClient(DirectClient):
         _inject_reasoning_effort(payload, state)
 
         if on_chunk is not None:
-            result = await self._stream_sse(payload, client, on_chunk)
+            result = await self._stream_sse(payload, client, on_chunk, config_families=state.model_families)
         else:
             started = time.perf_counter()
             response = await self._async_request(
@@ -1019,7 +1027,7 @@ class RouterClient(DirectClient):
         payload = _build_payload(message, state, tools)
         self._inject_metadata(payload, state)
         payload["stream"] = True
-        result = await self._stream_sse(payload, client, on_chunk or (lambda _: None))
+        result = await self._stream_sse(payload, client, on_chunk or (lambda _: None), config_families=state.model_families)
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
         if result.tool_calls:
             assistant_msg["tool_calls"] = result.tool_calls

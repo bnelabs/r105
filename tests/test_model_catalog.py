@@ -162,3 +162,40 @@ class TestGemma4ChannelSyntaxGate:
             "",
         ):
             assert uses_gemma4_channel_syntax(name) is False, f"{name!r} must be opaque"
+
+
+class TestConfigFamilyOverrides:
+    """``model_families`` config overrides family classification.
+
+    Keys are model-name fragments (longest match wins); values are family
+    names (opt-in to a family's handling) or None (force opaque passthrough).
+    Overrides take precedence over the built-in catalog.
+    """
+
+    def test_override_opts_custom_finetune_into_gemma4(self) -> None:
+        overrides = {"my-gemma4-finetune": "gemma-4"}
+        assert model_family("my-gemma4-finetune-v2", config_families=overrides) == "gemma-4"
+        assert uses_gemma4_channel_syntax("my-gemma4-finetune-v2", overrides) is True
+
+    def test_override_reclassifies_catalog_model(self) -> None:
+        overrides = {"gemma-4-12b": "qwen"}
+        assert model_family("gemma-4-12b-it", config_families=overrides) == "qwen"
+        assert uses_gemma4_channel_syntax("gemma-4-12b-it", overrides) is False
+
+    def test_null_override_forces_opaque(self) -> None:
+        overrides = {"gemma-4-12b": None}
+        assert model_family("gemma-4-12b-it", config_families=overrides) is None
+        assert uses_gemma4_channel_syntax("gemma-4-12b-it", overrides) is False
+
+    def test_longest_override_fragment_wins(self) -> None:
+        overrides = {"gemma": "qwen", "gemma-4-r1": "gemma-4"}
+        assert model_family("gemma-4-r1-7b", config_families=overrides) == "gemma-4"
+
+    def test_unrelated_models_unaffected(self) -> None:
+        overrides = {"gemma-4": "gemma-4"}
+        assert model_family("qwen3.6-35B", config_families=overrides) == "qwen"
+        assert uses_gemma4_channel_syntax("qwen3.6-35B", overrides) is False
+
+    def test_no_overrides_leaves_builtin_behavior(self) -> None:
+        assert uses_gemma4_channel_syntax("gemma-4-12b-it") is True
+        assert model_family("gemma-4-12b-it", config_families={}) == "gemma-4"

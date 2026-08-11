@@ -83,7 +83,9 @@ class ChatScreen(Screen[None]):
             yield ChatView(
                 show_thinking=self.state.show_thinking,
                 thinking_default_expanded=self.state.thinking_default_expanded,
-                gemma4_channel_syntax=uses_gemma4_channel_syntax(self.state.model),
+                gemma4_channel_syntax=uses_gemma4_channel_syntax(
+                    self.state.model, self.state.model_families
+                ),
                 id="chat-view",
             )
             with Vertical(id="right-pane"):
@@ -147,6 +149,13 @@ class ChatScreen(Screen[None]):
         if text in {"/exit", "/quit"}:
             self.app.exit()
             return
+        # /model <name> switches the model: re-resolve the channel-syntax
+        # capability (respecting model_families config overrides) so the
+        # transcript handles the new model's output correctly.
+        if text.startswith("/model"):
+            chat_view.set_gemma4_channel_syntax(
+                uses_gemma4_channel_syntax(self.state.model, self.state.model_families)
+            )
         chat_view.add_system(result)
         if self.state.theme != old_theme:
             try:

@@ -29,6 +29,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "thinking_default_expanded": False,
     "model_contexts": {},
     "context_tokens": None,
+    "model_families": {},
     "mcp_servers": [],
     "url": None,
 }
@@ -103,6 +104,21 @@ def _validate_config(raw: dict[str, Any]) -> None:
                 ) from None
             if ivalue <= 0:
                 raise ValueError(f"model_contexts['{frag}'] must be a positive integer, got {value!r}")
+
+    if "model_families" in raw:
+        if not isinstance(raw["model_families"], dict):
+            raise ValueError(
+                "model_families must be an object mapping name fragments to family names (or null)"
+            )
+        for frag, family in raw["model_families"].items():
+            if not isinstance(frag, str) or not frag.strip():
+                raise ValueError(
+                    f"model_families keys must be non-empty strings, got {frag!r}"
+                )
+            if family is not None and not isinstance(family, str):
+                raise ValueError(
+                    f"model_families['{frag}'] must be a family name string or null, got {family!r}"
+                )
 
     if "context_tokens" in raw and raw["context_tokens"] is not None:
         try:
@@ -185,6 +201,8 @@ def load_state_overrides() -> dict[str, Any]:
         overrides["thinking_default_expanded"] = config["thinking_default_expanded"]
     if config.get("model_contexts"):
         overrides["model_contexts"] = config["model_contexts"]
+    if config.get("model_families"):
+        overrides["model_families"] = config["model_families"]
     if config.get("context_tokens") is not None:
         overrides["context_tokens"] = config["context_tokens"]
     return overrides
