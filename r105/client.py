@@ -66,8 +66,18 @@ def _extract_assistant_content(raw: dict[str, Any]) -> str:
     message = choices[0].get("message") or {}
     content = message.get("content", "")
     if isinstance(content, str):
-        return content.strip()
-    return str(content).strip()
+        content = content.strip()
+    else:
+        content = str(content).strip()
+    # Model-agnostic fallback: thinking models (Qwen3, DeepSeek, etc.) emit
+    # their output in `reasoning_content`; when they run out of tokens during
+    # reasoning, `content` stays empty. Surface the reasoning instead of a
+    # blank reply.
+    if not content:
+        reasoning = message.get("reasoning_content")
+        if isinstance(reasoning, str):
+            content = reasoning.strip()
+    return content
 
 
 def _extract_tool_calls(raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -371,10 +381,11 @@ class BaseClient(abc.ABC):
         started = time.perf_counter()
 
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_call_deltas: dict[int, dict[str, Any]] = {}
 
         async def _read(http: httpx.AsyncClient) -> None:
-            nonlocal content_parts, tool_call_deltas
+            nonlocal content_parts, reasoning_parts, tool_call_deltas
             async with http.stream(
                 "POST",
                 self._url("/v1/chat/completions"),
@@ -405,6 +416,10 @@ class BaseClient(abc.ABC):
                         content_parts.append(content_delta)
                         on_chunk(content_delta)
 
+                    reasoning_delta = delta.get("reasoning_content", "")
+                    if isinstance(reasoning_delta, str) and reasoning_delta:
+                        reasoning_parts.append(reasoning_delta)
+
                     tc_deltas = delta.get("tool_calls") or []
                     for tc in tc_deltas:
                         idx = tc.get("index", 0)
@@ -431,6 +446,12 @@ class BaseClient(abc.ABC):
 
         content = "".join(content_parts)
         tool_calls = [tool_call_deltas[i] for i in sorted(tool_call_deltas)]
+
+        # Model-agnostic fallback: when the model produced no content (e.g. it
+        # exhausted its token budget during reasoning) and made no tool calls,
+        # surface the reasoning instead of an empty reply.
+        if not content and not tool_calls and reasoning_parts:
+            content = "".join(reasoning_parts)
 
         raw: dict[str, Any] = {
             "choices": [{

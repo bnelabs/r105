@@ -89,6 +89,7 @@ class ChatScreen(Screen[None]):
         # Periodic timer for status bar animation (sprite frames)
         self.set_interval(0.05, self._tick_status_bar)
         self._refresh_all()
+        self.query_one("#chat-input", ChatInput).focus()
 
     # -- Toast notifications for background events -------------------------------
 
@@ -370,6 +371,12 @@ class ChatScreen(Screen[None]):
         # (the first streaming response was just an intermediate message).
         # When no tools were needed, the streamed content IS the final answer.
         if had_tools:
+            chat_view.add_assistant(result.content, result.wall_seconds)
+        elif result.content and not chat_view.received_content:
+            # Nothing streamed (thinking models can exhaust their budget during
+            # reasoning, leaving content empty in every delta). The client
+            # falls back to reasoning_content; render it here since no live
+            # text was shown.
             chat_view.add_assistant(result.content, result.wall_seconds)
 
         # Auto-compaction check
