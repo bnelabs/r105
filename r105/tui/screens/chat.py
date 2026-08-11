@@ -18,6 +18,7 @@ from r105.client import BaseClient, RouterClient
 from r105.commands import copy_to_clipboard, handle_slash_command
 from r105.constants import (
     AUTO_COMPACT_THRESHOLD_PCT,
+    MAX_REPEATED_TOOL_CALLS,
     MAX_TOOL_LOOP_ITERATIONS,
     RECENT_CALL_TRACKING_SIZE,
     TOOL_TIMEOUT_DEFAULT,
@@ -254,6 +255,7 @@ class ChatScreen(Screen[None]):
         iteration = 0
         had_tools = bool(result.tool_calls)
         recent_calls: list[tuple[str, str]] = []  # track (name, args) for cross-iteration dedup
+        repeat_counts: dict[tuple[str, str], int] = {}  # call_key → consecutive repeat count
         while result.tool_calls and iteration < max_iterations:
             iteration += 1
             # Assistant message (with tool_calls) already recorded by async_send/async_continue.
@@ -273,19 +275,39 @@ class ChatScreen(Screen[None]):
 
             # Phase 1: UI updates and dedup checks (main thread)
             call_keys: list[tuple[str, str]] = []
+            stuck = False
             for _tc, name, args_str in signatures:
                 chat_view.add_tool_call(name, args_str)
 
                 call_key = (name, args_str)
                 call_keys.append(call_key)
-                if call_key in recent_calls:
+                count = repeat_counts.get(call_key, 0) + 1
+                repeat_counts[call_key] = count
+                if count > MAX_REPEATED_TOOL_CALLS:
+                    stuck = True
                     chat_view.add_system(
-                        f"[dim]⚠️ Repeated call to {name} with same args — "
-                        "injecting reminder to try a different approach[/dim]"
+                        f"[bold red]🛑 Repeated call to {name} ({count}x) — "
+                        "forcing tool loop break[/bold red]"
+                    )
+                    self.state.history.append({
+                        "role": "system",
+                        "content": (
+                            f"[STOP LOOP] You called {name} with the same arguments "
+                            f"{count} times in a row. Do NOT repeat it again. "
+                            "Answer directly or try a completely different approach."
+                        ),
+                    })
+                elif count > 1 and call_key in recent_calls:
+                    chat_view.add_system(
+                        f"[dim]⚠️ Repeated call to {name} with same args ({count}x) — "
+                        "try a different approach[/dim]"
                     )
                 recent_calls.append(call_key)
                 if len(recent_calls) > RECENT_CALL_TRACKING_SIZE:
                     recent_calls.pop(0)
+
+            if stuck:
+                break
 
                 status_bar.set_busy(f"Executing {name}...")
                 chat_view.add_tool_status(f"Running {name}...")

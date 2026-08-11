@@ -36,6 +36,7 @@ WEB_SEARCH_MAX_RESULTS: int = 10
 
 AUTO_COMPACT_THRESHOLD_PCT: int = 80
 MAX_TOOL_LOOP_ITERATIONS: int = 10
+MAX_REPEATED_TOOL_CALLS: int = 3
 RECENT_CALL_TRACKING_SIZE: int = 6
 
 # -- HTTP client --------------------------------------------------------
