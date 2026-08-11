@@ -16,7 +16,6 @@ from textual.widgets import Static
 
 from r105.client import BaseClient, RouterClient
 from r105.commands import copy_to_clipboard, handle_slash_command
-from r105.model_catalog import uses_gemma4_channel_syntax
 from r105.constants import (
     AUTO_COMPACT_THRESHOLD_PCT,
     MAX_REPEATED_TOOL_CALLS,
@@ -28,6 +27,7 @@ from r105.constants import (
     TOOL_TIMEOUT_WEB_FETCH,
     TOOL_TIMEOUT_WEB_SEARCH,
 )
+from r105.model_catalog import uses_gemma4_channel_syntax
 from r105.sessions import auto_save
 from r105.state import ChatState, token_usage
 from r105.tools import execute_tool_call, get_tool_definitions
