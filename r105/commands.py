@@ -796,6 +796,8 @@ def _handle_export_command(
 
     try:
         content = export_conversation(state, fmt)
+    except RuntimeError as exc:
+        return str(exc)
     except Exception as exc:
         return f"export failed: {exc}"
 
@@ -803,7 +805,6 @@ def _handle_export_command(
     output_path.write_text(content, encoding="utf-8")
 
     return f"exported {len(state.history)} messages to {output_path}"
-
 
 
 def _handle_plugin_command(args: list[str]) -> str:
