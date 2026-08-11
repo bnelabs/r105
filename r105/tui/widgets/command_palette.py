@@ -18,6 +18,8 @@ COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     ("Chat", "/json", "[on|off]", "Toggle JSON object response mode"),
     ("Chat", "/max", "<tokens>", "Override max_tokens, or omit for auto"),
     ("Chat", "/autocompact", "[on|off]", "Toggle auto-compaction at 80% context"),
+    ("Chat", "/reasoning", "auto|off|low|medium|high", "Set reasoning effort (sent to model-capable backends)"),
+    ("Chat", "/permissions", "full-access|restricted|sandboxed|off", "Set permission posture for tool execution"),
     # RAG
     ("RAG", "/rag", "on|off", "Toggle RAG metadata for chat requests"),
     ("RAG", "/rag ingest", "<path-or-url>...", "Ingest local files/directories or URLs"),

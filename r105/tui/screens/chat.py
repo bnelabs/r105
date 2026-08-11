@@ -79,7 +79,11 @@ class ChatScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield Static(self._render_header(), id="r105-header")
         with Horizontal(id="main-content"):
-            yield ChatView(id="chat-view")
+            yield ChatView(
+                show_thinking=self.state.show_thinking,
+                thinking_default_expanded=self.state.thinking_default_expanded,
+                id="chat-view",
+            )
             with Vertical(id="right-pane"):
                 yield FileExplorer(self.workspace, id="file-explorer")
         yield CommandPalette(id="command-palette")

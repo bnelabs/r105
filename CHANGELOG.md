@@ -5,6 +5,39 @@ All notable changes to r105 are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-08
+
+### Added
+- Model-agnostic context window: context capacity is resolved from the active
+  model (config override → backend probe → built-in catalog → default) instead
+  of a hardcoded 262144 — fixes wrong ctx reported for models like
+  muse-glimmer-30B (131072). New `r105/model_catalog.py`; overridable via
+  `model_contexts` and `context_tokens` in config.json
+- `reasoning_effort` chat setting (`auto|off|low|medium|high`): explicit levels
+  are sent to reasoning-capable backends; `/reasoning` slash command; persists
+  to config.json
+- Thinking-model support in the TUI: Gemma-4-style thinking blocks
+  (`<|channel|>thought…<channel|>`) are captured across stream chunks and
+  rendered as a collapsible `💭 THINKING` panel (folded by default) instead of
+  being silently stripped; `show_thinking` / `thinking_default_expanded`
+  settings
+- Permission posture (`full-access|restricted|sandboxed|off`): user-selectable
+  tool-execution policy mapped onto the sandbox backends; `restricted` blocks
+  code execution and network tools, `off` disables all tools; `/permissions`
+  slash command
+- HelpScreen (F1) is now dismissible with Escape or `q` — previously the modal
+  could only be closed via the Close button
+
+### Changed
+- `/model <name>` re-resolves the context capacity for the newly selected model
+- Default permission posture is `sandboxed` (preserves prior auto-detect
+  behavior); `sandbox_backend` config still selects the backend
+- Gemma-4 native tool-call parsing and the repeated-tool-call loop guard
+  (previously uncommitted WIP) are now part of the release
+
+### Fixed
+- HelpScreen escape-dismiss regression (Textual 8 modal trap)
+
 ## [0.4.0] — 2026-08
 
 ### Added

@@ -10,6 +10,22 @@ from r105.client import RouterClient
 from r105.state import ChatState
 
 
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect r105 config writes to a temp dir so tests never touch
+    ``~/.config/r105/config.json``.
+
+    Slash commands that persist settings (``/theme``, ``/reasoning``,
+    ``/permissions``, …) call ``save_config`` which writes through the
+    module-level ``CONFIG_DIR``/``CONFIG_PATH`` globals.
+    """
+    from r105 import config as r105_config
+
+    config_dir = tmp_path / "r105-config"
+    monkeypatch.setattr(r105_config, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(r105_config, "CONFIG_PATH", config_dir / "config.json")
+
+
 @pytest.fixture
 def chat_state() -> ChatState:
     """Return a fresh ChatState with defaults and a temp skills dir."""

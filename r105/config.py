@@ -23,12 +23,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "model": None,
     "auto_compact": True,
     "sandbox_backend": "auto",
+    "permission_posture": "sandboxed",
+    "reasoning_effort": "auto",
+    "show_thinking": True,
+    "thinking_default_expanded": False,
+    "model_contexts": {},
+    "context_tokens": None,
     "mcp_servers": [],
     "url": None,
 }
 
 VALID_THEMES = {"r105", "dracula", "solarized-dark", "high-contrast"}
 VALID_SANDBOX_BACKENDS = {"auto", "nsjail", "bwrap", "rlimit", "none"}
+VALID_PERMISSION_POSTURES = {"full-access", "restricted", "sandboxed", "off"}
+VALID_REASONING_EFFORTS = {"auto", "off", "low", "medium", "high"}
 
 
 def _validate_config(raw: dict[str, Any]) -> None:
@@ -56,6 +64,53 @@ def _validate_config(raw: dict[str, Any]) -> None:
 
     if "auto_compact" in raw and not isinstance(raw["auto_compact"], bool):
         raise ValueError("auto_compact must be true or false")
+
+    if (
+        "permission_posture" in raw
+        and raw["permission_posture"] is not None
+        and raw["permission_posture"] not in VALID_PERMISSION_POSTURES
+    ):
+        raise ValueError(
+            f"Invalid permission_posture '{raw['permission_posture']}'. "
+            f"Valid: {', '.join(sorted(VALID_PERMISSION_POSTURES))}"
+        )
+
+    if (
+        "reasoning_effort" in raw
+        and raw["reasoning_effort"] is not None
+        and raw["reasoning_effort"] not in VALID_REASONING_EFFORTS
+    ):
+        raise ValueError(
+            f"Invalid reasoning_effort '{raw['reasoning_effort']}'. "
+            f"Valid: {', '.join(sorted(VALID_REASONING_EFFORTS))}"
+        )
+
+    if "show_thinking" in raw and not isinstance(raw["show_thinking"], bool):
+        raise ValueError("show_thinking must be true or false")
+
+    if "thinking_default_expanded" in raw and not isinstance(raw["thinking_default_expanded"], bool):
+        raise ValueError("thinking_default_expanded must be true or false")
+
+    if "model_contexts" in raw:
+        if not isinstance(raw["model_contexts"], dict):
+            raise ValueError("model_contexts must be an object mapping name fragments to token counts")
+        for frag, value in raw["model_contexts"].items():
+            try:
+                ivalue = int(value)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"model_contexts['{frag}'] must be a positive integer, got {value!r}"
+                ) from None
+            if ivalue <= 0:
+                raise ValueError(f"model_contexts['{frag}'] must be a positive integer, got {value!r}")
+
+    if "context_tokens" in raw and raw["context_tokens"] is not None:
+        try:
+            ivalue = int(raw["context_tokens"])
+        except (TypeError, ValueError):
+            raise ValueError(f"context_tokens must be a positive integer, got {raw['context_tokens']!r}") from None
+        if ivalue <= 0:
+            raise ValueError(f"context_tokens must be a positive integer, got {raw['context_tokens']!r}")
 
     if "mcp_servers" in raw:
         if not isinstance(raw["mcp_servers"], list):
@@ -120,4 +175,16 @@ def load_state_overrides() -> dict[str, Any]:
         overrides["model"] = config["model"]
     if "auto_compact" in config:
         overrides["auto_compact"] = config["auto_compact"]
+    if config.get("reasoning_effort") is not None:
+        overrides["reasoning_effort"] = config["reasoning_effort"]
+    if config.get("permission_posture") is not None:
+        overrides["permission_posture"] = config["permission_posture"]
+    if "show_thinking" in config:
+        overrides["show_thinking"] = config["show_thinking"]
+    if "thinking_default_expanded" in config:
+        overrides["thinking_default_expanded"] = config["thinking_default_expanded"]
+    if config.get("model_contexts"):
+        overrides["model_contexts"] = config["model_contexts"]
+    if config.get("context_tokens") is not None:
+        overrides["context_tokens"] = config["context_tokens"]
     return overrides

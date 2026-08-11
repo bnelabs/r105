@@ -10,10 +10,10 @@ from rich.panel import Panel
 from rich.text import Text
 from textual.widgets import RichLog
 
-# Strip Gemma 4 thinking blocks: <|channel|>thought ... <channel|>
-_THINKING_BLOCK = re.compile(r"<\|channel\|?>thought.*?<channel\|?>", re.DOTALL)
-# Strip stray Gemma 4 token artifacts
-_STRAY_TOKENS = re.compile(r"<\|?(?:channel|tool_call|tool_result)\|?>")
+# Gemma 4 thinking blocks: <|channel|>thought ... <channel|> (or <channel|>thought opener)
+_THINKING_BLOCK_RE = re.compile(r"<\|?channel\|?>thought(.*?)<channel\|?>", re.DOTALL)
+# Stray Gemma 4 token artifacts (bare channel markers, tool-call/result markers)
+_STRAY_TOKENS_RE = re.compile(r"<\|?(?:channel|tool_call|tool_result)\|?>")
 
 
 class ChatView(RichLog):
@@ -21,30 +21,88 @@ class ChatView(RichLog):
 
     Streaming is debounced: incoming tokens are buffered and the Markdown
     widget is updated every ~50ms, preventing CPU thrashing on long responses.
+
+    Thinking blocks (``<|channel|>thought ... <channel|>``) are captured and
+    rendered as a collapsible ``THINKING`` panel instead of being silently
+    stripped — controlled by ``show_thinking`` (render at all) and
+    ``thinking_default_expanded`` (show the full text vs. a folded preview).
     """
 
     _DEBOUNCE_MS = 0.05  # 50ms
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(
+        self,
+        show_thinking: bool = True,
+        thinking_default_expanded: bool = False,
+        **kwargs,
+    ) -> None:
         super().__init__(highlight=True, markup=True, **kwargs)
+        self.show_thinking = show_thinking
+        self.thinking_default_expanded = thinking_default_expanded
         self._streaming = False
         self._stream_buffer = ""
+        self._thinking_parts: list[str] = []
+        self._pending_thinking = ""
         self._last_render = 0.0
 
-    @staticmethod
-    def _sanitize(text: str) -> str:
-        """Strip Gemma 4 thinking blocks and stray special tokens from output.
+    # -- Thinking capture --------------------------------------------------
 
-        Removes:
-          - <|channel|>thought...<channel|>  (thinking blocks)
-          - <|channel>, <channel|>, <|tool_call|>, <|tool_result|>  (stray tokens)
+    def _extract_thinking(self, text: str) -> tuple[str, str]:
+        """Split *text* into (displayable, thinking).
+
+        Complete thinking blocks are removed from the display text and
+        returned separately. A trailing unterminated block opener is held
+        in ``_pending_thinking`` so blocks split across streaming chunks
+        are captured correctly.
         """
-        text = _THINKING_BLOCK.sub("", text)
-        text = _STRAY_TOKENS.sub("", text)
-        return text.strip()
+        combined = self._pending_thinking + text
+        display_parts: list[str] = []
+        thinking_parts: list[str] = []
+        last_end = 0
+        for match in _THINKING_BLOCK_RE.finditer(combined):
+            display_parts.append(combined[last_end : match.start()])
+            thinking_parts.append(match.group(1))
+            last_end = match.end()
+        tail = combined[last_end:]
+        # Find the *last* unterminated opener marker in the tail
+        tail_openers = list(re.finditer(r"<\|?channel\|?>thought", tail))
+        if tail_openers and "<channel|>" not in tail[tail_openers[-1].start() :]:
+            # Unterminated block — hold everything from the opener marker
+            start = tail_openers[-1].start()
+            self._pending_thinking = tail[start:]
+            display_parts.append(tail[:start])
+            return "".join(display_parts), "".join(thinking_parts)
+        self._pending_thinking = ""
+        display_parts.append(tail)
+        return "".join(display_parts), "".join(thinking_parts)
+
+    def _render_thinking(self, text: str) -> None:
+        """Render a captured thinking block as a collapsible panel."""
+        text = _STRAY_TOKENS_RE.sub("", text).strip()
+        if not text:
+            return
+        if self.thinking_default_expanded:
+            content = f"[dim]{text}[/dim]"
+        else:
+            preview = text if len(text) <= 300 else text[:300] + "…"
+            content = (
+                f"[dim]💭 {len(text)} chars of thinking — folded[/dim]\n"
+                f"[dim #6c7086]{preview}[/dim #6c7086]"
+            )
+        self.write(Panel(content, title="💭 THINKING", border_style="cyan", padding=(0, 1)))
+
+    def flush_thinking(self) -> None:
+        """Render any captured thinking fragments and reset the accumulator."""
+        if self._thinking_parts and self.show_thinking:
+            self._render_thinking(" ".join(self._thinking_parts))
+        self._thinking_parts = []
+        # Discard an unterminated trailing block at stream end
+        self._pending_thinking = ""
+
+    # -- Message rendering -------------------------------------------------
 
     def add_user(self, text: str) -> None:
-        text = self._sanitize(text)
+        text = _STRAY_TOKENS_RE.sub("", text).strip()
         panel = Panel(
             Text(text, style="bold"),
             title="YOU",
@@ -54,11 +112,14 @@ class ChatView(RichLog):
         self.write(panel)
 
     def add_assistant(self, text: str, wall_seconds: float | None = None) -> None:
-        text = self._sanitize(text)
-        if not text:
+        clean, thinking = self._extract_thinking(text)
+        clean = _STRAY_TOKENS_RE.sub("", clean).strip()
+        if thinking and self.show_thinking:
+            self._render_thinking(thinking)
+        if not clean:
             self.write(Panel("(empty response)", title="ASSISTANT", border_style="yellow"))
             return
-        markdown = Markdown(text, code_theme="monokai")
+        markdown = Markdown(clean, code_theme="monokai")
         timing = f"\n[dim][wall={wall_seconds:.2f}s][/dim]" if wall_seconds is not None else ""
         content = Panel(
             markdown,
@@ -120,14 +181,17 @@ class ChatView(RichLog):
         """Accumulate a content delta and debounce the widget update.
 
         The Markdown widget is updated at most every 50ms, preventing
-        UI thread saturation during fast SSE streams.
+        UI thread saturation during fast SSE streams. Thinking blocks are
+        captured separately and rendered on flush.
         """
-        text = self._sanitize(text)
-        if not text:
+        clean, thinking = self._extract_thinking(text)
+        if thinking:
+            self._thinking_parts.append(thinking)
+        if not clean:
             return
         if not getattr(self, "_streaming", False):
             self.start_streaming()
-        self._stream_buffer += text
+        self._stream_buffer += clean
 
         now = time.monotonic()
         if now - self._last_render >= self._DEBOUNCE_MS:
@@ -143,8 +207,9 @@ class ChatView(RichLog):
         if not getattr(self, "_streaming", False):
             return
         # Flush remaining line
-        remaining = self._sanitize(self._stream_buffer)
+        remaining = self._stream_buffer.strip()
         if remaining:
             self.write(remaining)
         self._streaming = False
         self._stream_buffer = ""
+        self.flush_thinking()

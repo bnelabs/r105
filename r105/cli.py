@@ -15,10 +15,12 @@ from r105.client import BaseClient, create_client
 from r105.commands import _format_ingest, _format_search, _split_paths_and_urls
 from r105.config import ensure_config, load_state_overrides
 from r105.mcp_client import load_mcp_servers
+from r105.model_catalog import resolve_context_tokens
 from r105.plugins import init_registry
-from r105.sandbox import detect_backend, set_sandbox
+from r105.sandbox import detect_backend, set_posture
 from r105.sessions import load_session
 from r105.state import (
+    DEFAULT_MODEL,
     VALID_PROFILES,
     VALID_QUALITIES,
     ChatState,
@@ -121,12 +123,14 @@ def main(argv: list[str] | None = None) -> int:
         else config.get("skills_dir", str(DEFAULT_SKILLS_DIR))
     )
 
-    # Initialize sandbox backend
+    # Initialize permission posture + sandbox backend
+    posture = config.get("permission_posture", "sandboxed")
     sandbox_name = config.get("sandbox_backend", "auto")
-    if sandbox_name == "auto":
-        detect_backend()  # selects best available and caches it
-    else:
-        set_sandbox(sandbox_name)
+    try:
+        set_posture(posture, backend=sandbox_name)
+    except Exception:
+        # Fall back to auto-detection if the posture cannot be applied
+        detect_backend()
 
     # Initialize plugin registry
     plugins_str = (
@@ -155,6 +159,22 @@ def main(argv: list[str] | None = None) -> int:
 
     # Load state-level overrides from config, then apply CLI args on top
     state_overrides = load_state_overrides()
+    model = args.model or state_overrides.get("model") or DEFAULT_MODEL
+
+    # Resolve the model's context-window capacity:
+    #   config override > backend probe > built-in catalog > default
+    backend_context: int | None = None
+    try:
+        backend_context = client.probe_context(model)
+    except Exception:
+        backend_context = None
+    context_tokens = resolve_context_tokens(
+        model,
+        config_contexts=state_overrides.get("model_contexts"),
+        global_override=state_overrides.get("context_tokens"),
+        backend_context=backend_context,
+    )
+
     state = ChatState(
         profile=args.profile or state_overrides.get("profile"),
         rag=True if args.rag else None,
@@ -163,7 +183,13 @@ def main(argv: list[str] | None = None) -> int:
         json_mode=args.json_mode,
         auto_compact=state_overrides.get("auto_compact", True),
         theme=state_overrides.get("theme", "r105"),
-        model=args.model or state_overrides.get("model", "gemma-4-12b-it"),
+        model=model,
+        reasoning_effort=state_overrides.get("reasoning_effort", "auto"),
+        show_thinking=state_overrides.get("show_thinking", True),
+        thinking_default_expanded=state_overrides.get("thinking_default_expanded", False),
+        permission_posture=state_overrides.get("permission_posture", "full-access"),
+        model_contexts=state_overrides.get("model_contexts") or {},
+        context_tokens=context_tokens,
         skills_dir=skills_dir,
     )
 
