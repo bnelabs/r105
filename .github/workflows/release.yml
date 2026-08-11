@@ -83,14 +83,14 @@ jobs:
             --hidden-import=r105.themes ^
             --add-data "r105/themes;r105/themes" ^
             r105\__main__.py
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.path }}
 
   update-formulas:
     name: Update Homebrew & Scoop formulas
-    needs: [pypi]
+    needs: [pypi, binary]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -131,11 +131,16 @@ jobs:
           end
           EOF
           envsubst < docs/homebrew.rb > docs/homebrew.rb.tmp && mv docs/homebrew.rb.tmp docs/homebrew.rb
+      - uses: actions/download-artifact@v7
+        with:
+          name: r105-windows
+          path: artifacts/windows
       - name: Update Scoop formula
         run: |
           PYPI_URL="https://files.pythonhosted.org/packages/source/r/r105/r105-${RELEASE_VERSION}.tar.gz"
-          jq --arg url "$PYPI_URL" --arg sha "${SDIST_SHA256}" \
-            '.url = $url | .hash = $sha' \
+          WIN_SHA256=$(sha256sum artifacts/windows/r105.exe | cut -d' ' -f1)
+          jq --arg url "$PYPI_URL" --arg sha "${SDIST_SHA256}" --arg ver "${RELEASE_VERSION}" --arg win_sha "$WIN_SHA256" \
+            '.url = $url | .hash = $sha | .version = $ver | .architecture["64bit"].hash = $win_sha' \
             docs/scoop.json > docs/scoop.json.tmp && mv docs/scoop.json.tmp docs/scoop.json
       - name: Commit and push formula updates
         run: |
@@ -152,19 +157,19 @@ jobs:
     needs: [binary]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: r105-linux
           path: artifacts/linux
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: r105-macos
           path: artifacts/macos
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: r105-windows
           path: artifacts/windows
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: r105-macos-arm
           path: artifacts/macos-arm
