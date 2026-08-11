@@ -42,19 +42,20 @@ def _validate_config(raw: dict[str, Any]) -> None:
             raise ValueError(f"Unknown config key: '{key}'. Valid keys are: {', '.join(sorted(DEFAULT_CONFIG.keys()))}")
 
     # Validate specific fields
-    if "theme" in raw and raw["theme"] is not None:
-        if raw["theme"] not in VALID_THEMES:
-            raise ValueError(f"Invalid theme '{raw['theme']}'. Valid themes: {', '.join(sorted(VALID_THEMES))}")
+    if "theme" in raw and raw["theme"] is not None and raw["theme"] not in VALID_THEMES:
+        raise ValueError(f"Invalid theme '{raw['theme']}'. Valid themes: {', '.join(sorted(VALID_THEMES))}")
 
-    if "sandbox_backend" in raw and raw["sandbox_backend"] is not None:
-        if raw["sandbox_backend"] not in VALID_SANDBOX_BACKENDS:
-            raise ValueError(
-                f"Invalid sandbox_backend '{raw['sandbox_backend']}'. Valid: {', '.join(sorted(VALID_SANDBOX_BACKENDS))}"
-            )
+    if (
+        "sandbox_backend" in raw
+        and raw["sandbox_backend"] is not None
+        and raw["sandbox_backend"] not in VALID_SANDBOX_BACKENDS
+    ):
+        raise ValueError(
+            f"Invalid sandbox_backend '{raw['sandbox_backend']}'. Valid: {', '.join(sorted(VALID_SANDBOX_BACKENDS))}"
+        )
 
-    if "auto_compact" in raw:
-        if not isinstance(raw["auto_compact"], bool):
-            raise ValueError("auto_compact must be true or false")
+    if "auto_compact" in raw and not isinstance(raw["auto_compact"], bool):
+        raise ValueError("auto_compact must be true or false")
 
     if "mcp_servers" in raw:
         if not isinstance(raw["mcp_servers"], list):
@@ -78,7 +79,7 @@ def ensure_config() -> dict[str, Any]:
             try:
                 _validate_config(raw)
             except ValueError:
-                # Invalid config file – ignore it and fall back to defaults
+                # Invalid config file - ignore it and fall back to defaults
                 # Validation errors will be caught on save
                 return config
             if isinstance(raw, dict):
