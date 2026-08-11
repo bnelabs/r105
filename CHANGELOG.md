@@ -26,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Stale `build/` output that was tracked in the repository
 
+## [0.3.1] — 2026-06
+
+### Added
+- Windows x64 binary build
+- macOS ARM binary build
+
+### Changed
+- Binary naming fixed (platform-suffixed release assets)
+- Stale publish workflow removed
+
 ## [0.3.0] — 2026-06
 
 ### Added

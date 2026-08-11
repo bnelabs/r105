@@ -5,7 +5,7 @@ r105 is a rich terminal AI assistant built on [Textual](https://textual.textuali
 <p align="center">
   <img src="https://img.shields.io/pypi/v/r105?color=cba6f7" alt="PyPI">
   <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-165%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-176%20passed-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
 
@@ -55,6 +55,9 @@ r105 is a rich terminal AI assistant built on [Textual](https://textual.textuali
 
 ```sh
 pipx install r105
+
+# With optional export support (docx/pptx/pdf):
+pipx install "r105[export]"
 ```
 
 ### Homebrew (macOS / Linux)
@@ -65,12 +68,12 @@ brew install bnelabs/tap/r105
 
 ### Standalone binary
 
-Pre-built single-file executables are attached to [GitHub Releases](https://github.com/bnelabs/r105/releases) for Linux and macOS. Download, `chmod +x`, and run — no Python install needed.
+Pre-built single-file executables are attached to [GitHub Releases](https://github.com/bnelabs/r105/releases) for Linux, macOS (x64 and ARM64), and Windows. Download the one for your platform, make it executable, and run — no Python install needed. The binaries are named `r105-linux-x64`, `r105-macos-x64`, `r105-macos-arm64`, and `r105-windows-x64.exe`.
 
 ### From source
 
 ```sh
-git clone https://github.com/bnelabs/r105.git.git
+git clone https://github.com/bnelabs/r105.git
 cd r105
 python -m venv .venv
 .venv/bin/pip install -e .
@@ -100,13 +103,13 @@ docker compose run r105 chat
 
 ```sh
 # Launch the TUI (requires llama-router on http://127.0.0.1:8010)
-`r105 chat
+r105 chat
 
 # One-shot: ask a question and get a response without the TUI
-`r105 send "explain quicksort in 3 sentences"
+r105 send "explain quicksort in 3 sentences"
 
 # Connect to a different router or any OpenAI-compatible API
-`r105 --url http://my-router:8010 chat
+r105 --url http://my-router:8010 chat
 OPENAI_API_KEY=sk-... r105 --url https://api.openai.com/v1 chat
 ```
 
@@ -118,28 +121,28 @@ r105 supports both one-shot prompts and management commands at the command line.
 
 ```sh
 # Interactive chat (default, opens TUI)
-`r105 chat
+r105 chat
 
 # One-shot prompt
-`r105 send "explain quicksort in 3 sentences"
+r105 send "explain quicksort in 3 sentences"
 
 # Check router health
-`r105 health
+r105 health
 
 # List available task profiles
-`r105 profiles
+r105 profiles
 
 # Ingest documents for RAG
-`r105 ingest /path/to/docs https://example.com/page
+r105 ingest /path/to/docs https://example.com/page
 
 # Search the RAG index
-`r105 search "query terms"
+r105 search "query terms"
 
 # Load a saved session on startup
-`r105 --session my-session chat
+r105 --session my-session chat
 
 # Version info
-`r105 --version
+r105 --version
 ```
 
 ### CLI Flags
@@ -512,6 +515,16 @@ Sessions are stored as JSON files in `~/.config/r105/sessions/`. Each file conta
 | `json` | Raw conversation array, portable and machine-readable |
 | `html` | Styled HTML page with role-colored messages |
 
+### Export Dependencies
+
+`markdown`, `json`, and `html` exports work out of the box. The `pdf`, `docx`, and `pptx` formats require the optional export extra:
+
+```sh
+pip install "r105[export]"
+```
+
+If the extra is missing, `/export` shows a helpful install hint. See [docs/EXPORT.md](docs/EXPORT.md) for details.
+
 ---
 
 ## RAG — Retrieval-Augmented Generation
@@ -597,6 +610,10 @@ r105 stores configuration in `~/.config/r105/`:
 
 CLI arguments override config file values, which override built-in defaults. The config file only stores overrides — matching defaults are omitted to keep the file lean.
 
+### Config Validation
+
+The config file is validated on load: unknown keys and invalid values fall back to defaults, and a clear error is raised on save.
+
 ### Structured Logging
 
 Debug logs are written to `~/.local/state/r105/log.jsonl` in JSON Lines format. Set `R105_LOG_LEVEL=DEBUG` for verbose output.
@@ -633,7 +650,7 @@ The stack mounts `~/.config/r105` and `~/.config/llama-router` for persistent co
 ### pipx
 
 ```sh
-pipx upgrade r105          # update
+pipx upgrade r105          # update (extras are preserved)
 pipx uninstall r105        # remove
 ```
 
@@ -684,7 +701,7 @@ rm -rf ~/r105-workspace
 # Install dev dependencies
 pip install -e ".[dev]"
 
-# Run full test suite (165+ tests)
+# Run full test suite (176 tests)
 python -m pytest tests/ -v
 
 # With coverage
@@ -755,6 +772,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design, data flow, co
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, data flow, component tree, key patterns |
 | [CHANGELOG.md](CHANGELOG.md) | Version history and release notes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, testing, linting, PR and release process |
+| [docs/EXPORT.md](docs/EXPORT.md) | Optional export dependencies and formats |
 | [docs/TOOLS.md](docs/TOOLS.md) | Custom tool and plugin API with JSON Schema |
 | [docs/SKILLS.md](docs/SKILLS.md) | Skill authoring guide with parameterized examples |
 | [docs/homebrew.rb](docs/homebrew.rb) | Homebrew formula template |
