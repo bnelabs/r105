@@ -5,6 +5,26 @@ All notable changes to r105 are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Collapsible reasoning panel (roadmap): thinking blocks now render as an
+  interactive `💭 THINKING` panel that can be expanded/folded with a click or
+  `t`/`Enter`/`Space` — previously the panel was a static folded preview.
+  `thinking_default_expanded` still controls the initial state
+- Virtualized transcript (roadmap): the chat view materializes only the
+  messages visible in the viewport (plus an overscan window) as widgets, so
+  very long sessions stay fast and memory-bounded while the full transcript
+  is preserved and re-rendered on scroll; auto-follow pins to the newest
+  message until the user scrolls up
+- Config-driven family overrides (roadmap): new `model_families` config key
+  maps model-name fragments to families (or `null` to force opaque
+  passthrough), overriding the built-in catalog — e.g. a Gemma-4 fine-tune
+  with a custom name can be forced into channel-syntax handling, and a
+  misclassified model can be opted out. Applies to the TUI thinking capture
+  and the client-side native tool-call parsing, and is re-resolved on
+  `/model`
+
 ## [0.5.0] — 2026-08
 
 ### Added

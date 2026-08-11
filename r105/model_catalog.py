@@ -126,10 +126,34 @@ _MODEL_FAMILY_KEYS: dict[str, list[str]] = {
 _GEMMA4_CHANNEL_SYNTAX_FAMILIES = frozenset({"gemma-4"})
 
 
-def model_family(model_name: str) -> str | None:
-    """Return the model family (``gemma-4``, ``qwen``, ...) or None."""
+def model_family(
+    model_name: str,
+    *,
+    config_families: dict[str, str | None] | None = None,
+) -> str | None:
+    """Return the model family (``gemma-4``, ``qwen``, ...) or None.
+
+    Config overrides (``model_families`` in config.json) take precedence over
+    the built-in catalog: keys are model-name fragments (longest match wins)
+    and values are family names, or ``null`` to force the model to be treated
+    as opaque (no family at all). This is the config-driven hook for
+    capability gating — a Gemma-4 fine-tune with a custom name can be forced
+    into the ``gemma-4`` family, and a model the catalog would misclassify
+    can be excluded.
+    """
     normalized = normalize_model_name(model_name)
-    best: tuple[int, str] | None = None  # (fragment_length, family)
+    if config_families:
+        best: tuple[int, str | None] | None = None  # (fragment_length, family)
+        for fragment, family in config_families.items():
+            if fragment is None or not str(fragment).strip():
+                continue
+            frag = str(fragment).lower()
+            if frag in normalized and (best is None or len(frag) > best[0]):
+                best = (len(frag), family)
+        if best is not None:
+            # An explicit override wins — including None (force opaque).
+            return best[1]
+    best = None  # (fragment_length, family)
     for family, keys in _MODEL_FAMILY_KEYS.items():
         for key in keys:
             if key in normalized and (best is None or len(key) > best[0]):
@@ -137,15 +161,22 @@ def model_family(model_name: str) -> str | None:
     return best[1] if best else None
 
 
-def uses_gemma4_channel_syntax(model_name: str) -> bool:
+def uses_gemma4_channel_syntax(
+    model_name: str,
+    config_families: dict[str, str | None] | None = None,
+) -> bool:
     """True only for models known to emit Gemma-4 channel syntax.
 
     This is the single gate for all Gemma-4-specific handling (native
     ``<|tool_call|>`` parsing, ``<|channel|>thought`` capture, stray-token
     stripping). False for every other model — their output is never
-    regex-interpreted or rewritten.
+    regex-interpreted or rewritten. ``config_families`` (from the
+    ``model_families`` config key) can override the built-in family
+    classification per model-name fragment.
     """
-    return model_family(model_name) in _GEMMA4_CHANNEL_SYNTAX_FAMILIES
+    return (
+        model_family(model_name, config_families=config_families) in _GEMMA4_CHANNEL_SYNTAX_FAMILIES
+    )
 
 
 def _catalog_context(model_name: str) -> int | None:

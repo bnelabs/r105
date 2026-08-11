@@ -211,6 +211,24 @@ Override with `--backend router` or `--backend direct`.
 └─────────────────────────────────────────────┘
 ```
 
+### Thinking Panels & Virtualized Transcript
+
+- **Collapsible thinking panels** — reasoning models that emit Gemma-4-style
+  thinking blocks (`<|channel|>thought … <channel|>`) get an interactive
+  `💭 THINKING` panel per block, folded by default so answers stay readable.
+  Click the panel — or press `t` / `Enter` / `Space` while it is focused — to
+  expand the full reasoning and fold it again. `show_thinking` controls
+  whether panels render at all; `thinking_default_expanded` starts them
+  expanded (see [Configuration](#configuration)).
+- **Virtualized transcript** — the chat view keeps the full conversation as
+  lightweight records and only materializes the messages on screen (plus an
+  overscan window) as widgets. Very long sessions stay responsive and
+  memory-bounded, and the transcript is never truncated: scrolling back
+  re-renders history on demand.
+- **Auto-follow** — the view pins to the newest message while you're at the
+  bottom and stops following the moment you scroll up; returning to the
+  bottom re-pins it.
+
 ### Command Palette
 
 Press `/` to open the interactive command palette with:
@@ -308,6 +326,7 @@ Press `/` to open the interactive command palette with:
 | `Ctrl+R` | Any | Open history browser with fuzzy search |
 | `Ctrl+S` | History screen | Quick-save current session |
 | `Ctrl+Y` | Any | Copy last assistant response to clipboard |
+| `t` / `Enter` / `Space` | Thinking panel focused | Expand / fold the thinking panel |
 | `Ctrl+W` | Input | Delete word backward |
 | `Ctrl+U` | Input | Clear line |
 | `Ctrl+A` | Input | Jump to line start |
@@ -596,6 +615,12 @@ r105 stores configuration in `~/.config/r105/`:
   "sandbox_backend": "bwrap",
   "auto_compact": true,
   "theme": "r105",
+  "show_thinking": true,
+  "thinking_default_expanded": false,
+  "model_families": {
+    "my-gemma4-finetune": "gemma-4",
+    "gemma-4-12b": null
+  },
   "mcp_servers": [
     {
       "name": "github",
@@ -605,6 +630,24 @@ r105 stores configuration in `~/.config/r105/`:
   ]
 }
 ```
+
+### Model Families (`model_families`)
+
+r105 gates model-specific behavior (Gemma-4 channel-syntax handling: native
+`<|tool_call|>` parsing, `<|channel|>thought` capture, stray-token stripping)
+behind a built-in model-family catalog, so every other model's output is
+treated as opaque text. `model_families` lets you override that classification
+per model-name fragment — longest matching fragment wins:
+
+- `"<fragment>": "gemma-4"` — force a model (e.g. a Gemma-4 fine-tune with a
+  custom name) into the Gemma-4 family so channel-syntax handling applies.
+- `"<fragment>": null` — force a model out of every family (opaque
+  passthrough), e.g. to disable channel-syntax handling for a model the
+  catalog would otherwise classify as Gemma-4.
+
+Values are family names (currently `gemma-4`, `gemma`, `qwen`, `llama`,
+`mistral`, `deepseek`, `glm`, `gpt`, `claude`, `phi`) or `null`. Only the
+`gemma-4` family currently gates behavior; other families are labels.
 
 ### Config Merging
 
