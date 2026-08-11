@@ -93,3 +93,56 @@ class TestChatViewThinkingCapture:
         view = ChatView()
         assert view.show_thinking is True
         assert view.thinking_default_expanded is False
+
+
+class TestStartupFocus:
+    """ChatInput must hold focus on mount (Textual 8 RichLog-focus regression).
+
+    Without the explicit focus in ChatScreen.on_mount, ChatView (a RichLog)
+    steals startup focus and the TUI silently drops printable keyboard input
+    until the user clicks or tabs — only app-level bindings (Ctrl+Q) work.
+    """
+
+    @staticmethod
+    def _make_app():
+        from pathlib import Path
+
+        from r105.client import DirectClient
+        from r105.state import ChatState
+        from r105.tui.app import R105App
+
+        client = DirectClient(base_url="http://127.0.0.1:8090", timeout=5.0)
+        return R105App(client, ChatState(model="test-model"), Path("/tmp"))
+
+    def test_chat_input_has_focus_on_mount(self) -> None:
+        from r105.tui.widgets.input_area import ChatInput
+
+        async def scenario() -> None:
+            app = self._make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                assert isinstance(app.focused, ChatInput), (
+                    f"expected ChatInput to have startup focus, got {app.focused!r}"
+                )
+
+        asyncio.run(scenario())
+
+    def test_typing_lands_in_input(self) -> None:
+        from r105.tui.screens.chat import ChatScreen
+        from r105.tui.widgets.input_area import ChatInput
+
+        async def scenario() -> None:
+            app = self._make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                # Wait for the ChatScreen push (app on_mount) to complete
+                for _ in range(50):
+                    await pilot.pause()
+                    if isinstance(app.screen, ChatScreen):
+                        break
+                assert isinstance(app.screen, ChatScreen)
+                input_widget = app.screen.query_one("#chat-input", ChatInput)
+                await pilot.press("h", "e", "l", "l", "o")
+                await pilot.pause()
+                assert input_widget.text == "hello"
+
+        asyncio.run(scenario())
