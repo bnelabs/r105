@@ -9,3 +9,4 @@ workspace/*
 *.log
 .aider*
 .codewhale/
+build/
