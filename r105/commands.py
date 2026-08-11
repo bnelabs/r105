@@ -17,8 +17,9 @@ from typing import Any
 
 import httpx
 
-from r105.config import save_config
+from r105.config import ensure_config, save_config
 from r105.mcp_client import get_mcp_manager
+from r105.model_catalog import resolve_context_tokens
 from r105.plugins import get_registry
 from r105.sessions import (
     delete_session,
@@ -29,8 +30,10 @@ from r105.sessions import (
 )
 from r105.skills import list_skills, read_skill
 from r105.state import (
+    VALID_PERMISSION_POSTURES,
     VALID_PROFILES,
     VALID_QUALITIES,
+    VALID_REASONING_EFFORTS,
     ChatState,
     token_usage,
 )
@@ -56,6 +59,8 @@ SLASH_COMMANDS = [
     "/workspace",
     "/theme",
     "/autocompact",
+    "/reasoning",
+    "/permissions",
     "/preview",
     "/session",
     "/export",
@@ -84,6 +89,18 @@ def _parse_bool(value: str | None) -> bool | None:
     return None
 
 
+def _global_context_override() -> int | None:
+    """Return the global ``context_tokens`` override from config.json, if any."""
+    try:
+        value = ensure_config().get("context_tokens")
+        if value is None:
+            return None
+        ivalue = int(value)
+        return ivalue if ivalue > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _suggest_command(typed: str) -> str | None:
     """Return the closest matching command for *typed*, or None."""
     candidates = difflib.get_close_matches(typed, SLASH_COMMANDS, n=1, cutoff=0.6)
@@ -104,6 +121,9 @@ Chat
   /quality fast|balanced|best    set quality hint metadata
   /json [on|off]                 toggle JSON response mode
   /max <tokens>                  override max_tokens, or omit for auto
+  /autocompact [on|off]          toggle auto-compaction at 80% context
+  /reasoning auto|off|low|med..  set reasoning effort (model-provided)
+  /permissions <posture>         set permission posture (full-access|restricted|sandboxed|off)
 
 RAG
   /rag on|off                    toggle RAG metadata
@@ -184,7 +204,20 @@ async def _cmd_model(
     if args:
         state.model = args[0]
         save_config({"model": state.model})
-        return f"model={state.model} (saved persistently)"
+        # Re-resolve the context-window capacity for the new model
+        backend_ctx: int | None = None
+        if client is not None:
+            try:
+                backend_ctx = await client.async_probe_context(state.model, client=http_client)
+            except Exception:
+                backend_ctx = None
+        state.context_tokens = resolve_context_tokens(
+            state.model,
+            config_contexts=state.model_contexts,
+            global_override=_global_context_override(),
+            backend_context=backend_ctx,
+        )
+        return f"model={state.model} ctx={state.context_tokens} (saved persistently)"
     # /model — show current model or list available
     if client is not None:
         try:
@@ -420,6 +453,52 @@ async def _cmd_autocompact(
     return f"auto_compact={state.auto_compact} (saved persistently)"
 
 
+async def _cmd_reasoning(
+    args: list[str],
+    state: ChatState,
+    client: Any | None = None,
+    workspace_dir: Path | None = None,
+    http_client: httpx.AsyncClient | None = None,
+) -> str:
+    if not args:
+        return (
+            f"reasoning_effort={state.reasoning_effort} "
+            f"(valid: {', '.join(sorted(VALID_REASONING_EFFORTS))})"
+        )
+    effort = args[0].lower()
+    if effort not in VALID_REASONING_EFFORTS:
+        return (
+            f"unknown reasoning effort: {effort} "
+            f"(valid: {', '.join(sorted(VALID_REASONING_EFFORTS))})"
+        )
+    state.reasoning_effort = effort
+    save_config({"reasoning_effort": effort})
+    return f"reasoning_effort={effort} (saved persistently)"
+
+
+async def _cmd_permissions(
+    args: list[str],
+    state: ChatState,
+    client: Any | None = None,
+    workspace_dir: Path | None = None,
+    http_client: httpx.AsyncClient | None = None,
+) -> str:
+    if not args:
+        return (
+            f"permission_posture={state.permission_posture} "
+            f"(valid: {', '.join(sorted(VALID_PERMISSION_POSTURES))})"
+        )
+    posture = args[0].lower()
+    if posture not in VALID_PERMISSION_POSTURES:
+        return (
+            f"unknown permission posture: {posture} "
+            f"(valid: {', '.join(sorted(VALID_PERMISSION_POSTURES))})"
+        )
+    state.permission_posture = posture
+    save_config({"permission_posture": posture})
+    return f"permission_posture={posture} (saved persistently)"
+
+
 async def _cmd_preview(
     args: list[str],
     state: ChatState,
@@ -560,6 +639,8 @@ COMMAND_DISPATCH: dict[str, CommandHandler] = {
     "/workspace": _cmd_workspace,
     "/theme": _cmd_theme,
     "/autocompact": _cmd_autocompact,
+    "/reasoning": _cmd_reasoning,
+    "/permissions": _cmd_permissions,
     "/preview": _cmd_preview,
     "/session": _cmd_session,
     "/export": _cmd_export,

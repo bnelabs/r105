@@ -21,6 +21,8 @@ VALID_PROFILES = {
     "creative",
 }
 VALID_QUALITIES = {"fast", "balanced", "best"}
+VALID_REASONING_EFFORTS = {"auto", "off", "low", "medium", "high"}
+VALID_PERMISSION_POSTURES = {"full-access", "restricted", "sandboxed", "off"}
 
 
 @dataclass
@@ -33,9 +35,14 @@ class ChatState:
     auto_compact: bool = True
     theme: str = "r105"
     model: str = DEFAULT_MODEL
+    reasoning_effort: str = "auto"
+    show_thinking: bool = True
+    thinking_default_expanded: bool = False
+    permission_posture: str = "sandboxed"
     skills_dir: Path = field(default_factory=lambda: Path("skills"))
     active_skills: list[str] = field(default_factory=list)
     skill_params: dict[str, dict[str, str]] = field(default_factory=dict)
+    model_contexts: dict[str, int] = field(default_factory=dict)
     context_tokens: int = DEFAULT_CONTEXT_TOKENS
     history: list[dict[str, str]] = field(default_factory=list)
 

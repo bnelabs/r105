@@ -587,3 +587,64 @@ def get_backend(name: str) -> SandboxBackend | None:
     if name == "none":
         return NoopSandbox()
     return None
+
+
+# ---------------------------------------------------------------------------
+# Permission posture — user-selectable tool-execution policy
+# ---------------------------------------------------------------------------
+
+VALID_PERMISSION_POSTURES = {"full-access", "restricted", "sandboxed", "off"}
+
+# Posture -> effective sandbox backend selection
+_POSTURE_BACKENDS: dict[str, str] = {
+    "full-access": "none",
+    "restricted": "auto",
+    "sandboxed": "auto",
+    "off": "none",
+}
+
+# Tools blocked under the "restricted" posture (code execution + network)
+_RESTRICTED_BLOCKED_TOOLS = frozenset({"execute_python", "web_search", "web_fetch"})
+
+_posture: str = "sandboxed"
+
+
+def current_posture() -> str:
+    """Return the active permission posture."""
+    return _posture
+
+
+def set_posture(posture: str, *, backend: str = "auto") -> None:
+    """Apply a permission posture and configure the sandbox backend.
+
+    *posture* must be one of VALID_PERMISSION_POSTURES.
+    *backend* is the sandbox backend name to use for the sandboxed and
+    restricted postures (``auto`` selects the best available).
+    """
+    global _posture
+    if posture not in VALID_PERMISSION_POSTURES:
+        raise ValueError(
+            f"Invalid permission posture '{posture}'. "
+            f"Valid: {', '.join(sorted(VALID_PERMISSION_POSTURES))}"
+        )
+    _posture = posture
+    backend_name = _POSTURE_BACKENDS[posture]
+    if backend_name == "auto":
+        if backend and backend.lower() != "auto":
+            try:
+                set_sandbox(backend)
+                return
+            except SandboxUnavailableError:
+                pass
+        detect_backend()
+    else:
+        set_sandbox(backend_name)
+
+
+def posture_allows_tool(posture: str, tool_name: str) -> tuple[bool, str]:
+    """Return ``(allowed, reason)`` for a tool under the given posture."""
+    if posture == "off":
+        return False, "tool execution is disabled (permission_posture=off)"
+    if posture == "restricted" and tool_name in _RESTRICTED_BLOCKED_TOOLS:
+        return False, f"'{tool_name}' is blocked by permission_posture=restricted"
+    return True, ""

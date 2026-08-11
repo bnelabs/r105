@@ -32,7 +32,13 @@ from r105.constants import (
 )
 from r105.mcp_client import get_mcp_manager
 from r105.plugins import get_registry
-from r105.sandbox import SandboxProfile, get_sandbox, profile_for_tool
+from r105.sandbox import (
+    SandboxProfile,
+    current_posture,
+    get_sandbox,
+    posture_allows_tool,
+    profile_for_tool,
+)
 
 # Handler signature: (arguments: dict, workspace_dir: Path, **kwargs) -> str
 ToolHandler = Callable[..., str]
@@ -399,6 +405,16 @@ def execute_tool_call(
         json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
     )
     args_str = json.dumps(arguments, sort_keys=True)
+
+    # Enforce the active permission posture before any work happens
+    allowed, reason = posture_allows_tool(current_posture(), name)
+    if not allowed:
+        return {
+            "role": "tool",
+            "tool_call_id": call.get("id", ""),
+            "name": name,
+            "content": f"error: {reason}",
+        }
 
     # Validate arguments before dispatching
     error = _validate_tool_args(name, arguments)

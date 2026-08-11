@@ -37,6 +37,7 @@ from r105.constants import (
 )
 from r105.errors import RouterAPIError
 from r105.logging import error as log_error
+from r105.model_catalog import _extract_context_from_model_entry
 from r105.skills import skill_messages
 from r105.state import (
     DEFAULT_MODEL,
@@ -137,7 +138,19 @@ def _build_payload(message: str, state: ChatState, tools: list[dict[str, Any]] |
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
+    _inject_reasoning_effort(payload, state)
     return payload
+
+
+def _inject_reasoning_effort(payload: dict[str, Any], state: ChatState) -> None:
+    """Add the ``reasoning_effort`` field when an explicit level is set.
+
+    ``auto`` omits the field (the backend decides) and ``off`` omits it too
+    (backends that default to reasoning simply respond normally).
+    """
+    effort = getattr(state, "reasoning_effort", "auto")
+    if effort in {"low", "medium", "high"}:
+        payload["reasoning_effort"] = effort
 
 
 def _parse_response(raw: dict[str, Any], started: float) -> ChatResult:
@@ -196,6 +209,23 @@ class BaseClient(abc.ABC):
     @abc.abstractmethod
     def capabilities(self) -> BackendCapabilities:
         ...
+
+    # -- Model context probing ----------------------------------------------
+
+    def probe_context(self, model_name: str) -> int | None:
+        """Best-effort: resolve the model's context-window capacity.
+
+        Returns None when the backend exposes no context metadata; callers
+        fall back to the model catalog. Subclasses may override.
+        """
+        return None
+
+    async def async_probe_context(
+        self, model_name: str, client: httpx.AsyncClient | None = None
+    ) -> int | None:
+        """Async variant of :meth:`probe_context`."""
+        del client  # unused in the base implementation
+        return self.probe_context(model_name)
 
     # -- HTTP helpers -------------------------------------------------------
 
@@ -585,6 +615,7 @@ class DirectClient(BaseClient):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        _inject_reasoning_effort(payload, state)
 
         if on_chunk is not None:
             result = await self._stream_sse(payload, client, on_chunk)
@@ -649,6 +680,79 @@ class DirectClient(BaseClient):
         response = await self._async_request("GET", "/v1/models", client=client, timeout=10.0)
         response.raise_for_status()
         return response.json()
+
+    # -- Model context probing ----------------------------------------------
+
+    def probe_context(self, model_name: str) -> int | None:
+        """Probe the backend for the active model's context-window capacity.
+
+        Sources tried, in order:
+          1. llama.cpp ``/props`` -> ``default_generation_settings.n_ctx``
+          2. ``/v1/models`` entry metadata (``meta.n_ctx``, ``context_window``,
+             ``context_length``, ``max_model_len``)
+        Returns None if the backend exposes no context metadata.
+        """
+        # 1. llama.cpp-style /props probe
+        try:
+            response = self._sync_request("GET", "/props", timeout=3.0)
+            if response.status_code == 200:
+                data = response.json()
+                n_ctx = (data.get("default_generation_settings") or {}).get("n_ctx")
+                try:
+                    ivalue = int(n_ctx)
+                except (TypeError, ValueError):
+                    ivalue = 0
+                if ivalue > 0:
+                    return ivalue
+        except (httpx.HTTPError, ValueError, OSError):
+            pass
+
+        # 2. /v1/models metadata probe
+        try:
+            data = self.list_models()
+            for entry in data.get("data") or []:
+                entry_id = str(entry.get("id", ""))
+                if entry_id and (entry_id == model_name or entry_id in model_name):
+                    context = _extract_context_from_model_entry(entry)
+                    if context:
+                        return context
+        except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
+            pass
+
+        return None
+
+    async def async_probe_context(
+        self, model_name: str, client: httpx.AsyncClient | None = None
+    ) -> int | None:
+        """Async variant of :meth:`probe_context`."""
+        # 1. llama.cpp-style /props probe
+        try:
+            response = await self._async_request("GET", "/props", client=client, timeout=3.0)
+            if response.status_code == 200:
+                data = response.json()
+                n_ctx = (data.get("default_generation_settings") or {}).get("n_ctx")
+                try:
+                    ivalue = int(n_ctx)
+                except (TypeError, ValueError):
+                    ivalue = 0
+                if ivalue > 0:
+                    return ivalue
+        except (httpx.HTTPError, ValueError, OSError):
+            pass
+
+        # 2. /v1/models metadata probe
+        try:
+            data = await self.async_list_models(client)
+            for entry in data.get("data") or []:
+                entry_id = str(entry.get("id", ""))
+                if entry_id and (entry_id == model_name or entry_id in model_name):
+                    context = _extract_context_from_model_entry(entry)
+                    if context:
+                        return context
+        except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
+            pass
+
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -837,6 +941,7 @@ class RouterClient(DirectClient):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        _inject_reasoning_effort(payload, state)
 
         if on_chunk is not None:
             result = await self._stream_sse(payload, client, on_chunk)
