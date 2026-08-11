@@ -5,6 +5,27 @@ All notable changes to r105 are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-08
+
+### Added
+- Config validation with clear error messages; invalid values now raise on save
+- Export dependency guard: /export shows a friendly install hint when optional export deps are missing
+- Unit test for the export dependency guard
+- pip cache for setup-python in CI
+
+### Changed
+- Document export dependencies moved to optional extra `r105[export]`; core deps trimmed
+- Release workflow: binary builds consolidated into a matrix with pinned runners (linux, macos x64, macos arm64, windows)
+- CI actions bumped off Node 20 (checkout v5, setup-python v6, codecov v6)
+
+### Fixed
+- CI lint failures (ruff SIM102/RUF003/I001)
+- Release workflow: formula push no longer fails on detached HEAD ("fatal: You are not currently on a branch.")
+- update-formulas no longer runs when the PyPI publish failed
+
+### Removed
+- Stale `build/` output that was tracked in the repository
+
 ## [0.3.0] — 2026-06
 
 ### Added
