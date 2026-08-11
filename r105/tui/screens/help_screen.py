@@ -11,6 +11,11 @@ from textual.widgets import Button, Static
 class HelpScreen(ModalScreen[None]):
     """Modal screen displaying the slash-command reference."""
 
+    BINDINGS = [
+        ("escape", "dismiss", "Close"),
+        ("q", "dismiss", "Close"),
+    ]
+
     def __init__(self, menu_text: str) -> None:
         super().__init__()
         self.menu_text = menu_text
