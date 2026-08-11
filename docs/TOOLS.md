@@ -53,7 +53,7 @@ def web_search(arguments: dict[str, Any]) -> str:
             "https://html.duckduckgo.com/html/",
             params={"q": query},
             timeout=15.0,
-            headers={"User-Agent": "r105/0.2.0"},
+            headers={"User-Agent": "r105/0.4.0"},
             follow_redirects=True,
         )
         response.raise_for_status()

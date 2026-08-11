@@ -4,7 +4,7 @@
 
 ```sh
 # Clone and set up
-git clone https://github.com/bnelabs/r105.git.git
+git clone https://github.com/bnelabs/r105.git
 cd r105
 python3 -m venv .venv
 source .venv/bin/activate
@@ -122,7 +122,7 @@ Textual workers use `@work(exclusive=True)`. The `finally` block is the right pl
 # Update version in pyproject.toml
 # Move [Unreleased] entries to a new version section in CHANGELOG.md
 # Commit and tag
-git tag v0.3.0
+git tag v0.4.0
 git push --tags
 
 # Build and publish
