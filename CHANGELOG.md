@@ -32,11 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/model <name>` re-resolves the context capacity for the newly selected model
 - Default permission posture is `sandboxed` (preserves prior auto-detect
   behavior); `sandbox_backend` config still selects the backend
-- Gemma-4 native tool-call parsing and the repeated-tool-call loop guard
-  (previously uncommitted WIP) are now part of the release
+- Gemma-4 native tool-call parsing (`<|tool_call|>` blocks) and the
+  repeated-tool-call loop guard (previously uncommitted WIP) are now part of
+  the release, gated to Gemma-4-family models via the model catalog — for any
+  other model the content is treated as opaque text and never regex-interpreted
 
 ### Fixed
 - HelpScreen escape-dismiss regression (Textual 8 modal trap)
+- TUI crash on Ctrl+U / Ctrl+W / Ctrl+K edit keybindings (Textual 8 changed
+  `Document.replace` to `replace_range`; found and fixed during live
+  verification)
+- Chat input kept a stray newline after Enter, hiding typed text on an
+  invisible second line (found and fixed during live verification); Shift+Enter
+  now inserts a newline as documented
 
 ## [0.4.1] — 2026-08
 
