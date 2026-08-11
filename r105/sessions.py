@@ -168,11 +168,31 @@ def delete_session(name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _ensure_export_deps() -> None:
+    """Ensure optional export dependencies are available.
+
+    Raises RuntimeError with a helpful install hint if missing.
+    """
+    try:
+        import python_pptx  # noqa: F401
+        import docx  # noqa: F401
+        import fpdf2  # noqa: F401
+        from PIL import Image  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "Export dependencies are missing. Install with `pip install 'r105[export]'`."
+        ) from exc
+
+
 def export_conversation(state: ChatState, fmt: str = "markdown") -> str:
     """Render conversation history as a string in the requested format.
 
     Supported formats: markdown, json, html.
     """
+    # Guard for future binary export formats that require optional deps
+    if fmt.lower() in {"pdf", "docx", "pptx"}:
+        _ensure_export_deps()
+
     if fmt == "json":
         return json.dumps(state.history, indent=2, sort_keys=True, ensure_ascii=False)
 
