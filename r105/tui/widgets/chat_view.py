@@ -43,7 +43,13 @@ class ChatView(RichLog):
         self._stream_buffer = ""
         self._thinking_parts: list[str] = []
         self._pending_thinking = ""
+        self._received_content = False
         self._last_render = 0.0
+
+    @property
+    def received_content(self) -> bool:
+        """True if any displayable content has been streamed this session."""
+        return self._received_content
 
     # -- Thinking capture --------------------------------------------------
 
@@ -192,6 +198,7 @@ class ChatView(RichLog):
         if not getattr(self, "_streaming", False):
             self.start_streaming()
         self._stream_buffer += clean
+        self._received_content = True
 
         now = time.monotonic()
         if now - self._last_render >= self._DEBOUNCE_MS:
