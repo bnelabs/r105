@@ -164,4 +164,9 @@ class TestRouterClientInit:
 
     def test_custom_timeout(self) -> None:
         client = RouterClient(timeout=60.0)
-        assert client.timeout == 60.0
+        # Per-phase Timeout: the read phase keeps the generation budget,
+        # while connect/pool stay short so dead backends fail fast.
+        assert client.timeout.read == 60.0
+        assert client.timeout.connect == 2.0
+        assert client.timeout.write == 60.0
+        assert client.timeout.pool == 10.0
