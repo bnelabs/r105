@@ -16,8 +16,8 @@ jobs:
       name: pypi
       url: https://pypi.org/p/r105
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install build twine && python -m build && twine check dist/*
@@ -53,8 +53,8 @@ jobs:
             path: dist/r105
             suffix: r105-macos-arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install dependencies
@@ -83,7 +83,7 @@ jobs:
             --hidden-import=r105.themes ^
             --add-data "r105/themes;r105/themes" ^
             r105\__main__.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.path }}
@@ -91,14 +91,14 @@ jobs:
   update-formulas:
     name: Update Homebrew & Scoop formulas
     needs: [pypi]
-    if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
+          ref: main
           fetch-depth: 0
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install system dependencies
@@ -142,28 +142,29 @@ jobs:
           git config user.name "r105 release bot"
           git config user.email "bot@r105.dev"
           git add docs/homebrew.rb docs/scoop.json
-          git diff --staged --quiet || \
-            git commit -m "Update Homebrew/Scoop formulas for v${RELEASE_VERSION}" && \
-            git push
+          if ! git diff --staged --quiet; then
+            git commit -m "Update Homebrew/Scoop formulas for v${RELEASE_VERSION}"
+            git push origin HEAD:main
+          fi
 
   release:
     name: Create GitHub Release
     needs: [binary]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: r105-linux
           path: artifacts/linux
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: r105-macos
           path: artifacts/macos
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: r105-windows
           path: artifacts/windows
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: r105-macos-arm
           path: artifacts/macos-arm
@@ -173,7 +174,7 @@ jobs:
           mv artifacts/macos/r105 artifacts/macos/r105-macos-x64
           mv artifacts/windows/r105.exe artifacts/windows/r105-windows-x64.exe
           mv artifacts/macos-arm/r105 artifacts/macos-arm/r105-macos-arm64
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             artifacts/linux/r105-linux-x64
