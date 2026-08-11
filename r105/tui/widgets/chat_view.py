@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import re
 import time
 
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 from textual.widgets import RichLog
+
+# Strip Gemma 4 thinking blocks: <|channel|>thought ... <channel|>
+_THINKING_BLOCK = re.compile(r"<\|channel\|?>thought.*?<channel\|?>", re.DOTALL)
+# Strip stray Gemma 4 token artifacts
+_STRAY_TOKENS = re.compile(r"<\|?(?:channel|tool_call|tool_result)\|?>")
 
 
 class ChatView(RichLog):
@@ -25,7 +31,20 @@ class ChatView(RichLog):
         self._stream_buffer = ""
         self._last_render = 0.0
 
+    @staticmethod
+    def _sanitize(text: str) -> str:
+        """Strip Gemma 4 thinking blocks and stray special tokens from output.
+
+        Removes:
+          - <|channel|>thought...<channel|>  (thinking blocks)
+          - <|channel>, <channel|>, <|tool_call|>, <|tool_result|>  (stray tokens)
+        """
+        text = _THINKING_BLOCK.sub("", text)
+        text = _STRAY_TOKENS.sub("", text)
+        return text.strip()
+
     def add_user(self, text: str) -> None:
+        text = self._sanitize(text)
         panel = Panel(
             Text(text, style="bold"),
             title="YOU",
@@ -35,6 +54,7 @@ class ChatView(RichLog):
         self.write(panel)
 
     def add_assistant(self, text: str, wall_seconds: float | None = None) -> None:
+        text = self._sanitize(text)
         if not text:
             self.write(Panel("(empty response)", title="ASSISTANT", border_style="yellow"))
             return
@@ -102,6 +122,9 @@ class ChatView(RichLog):
         The Markdown widget is updated at most every 50ms, preventing
         UI thread saturation during fast SSE streams.
         """
+        text = self._sanitize(text)
+        if not text:
+            return
         if not getattr(self, "_streaming", False):
             self.start_streaming()
         self._stream_buffer += text
@@ -120,7 +143,8 @@ class ChatView(RichLog):
         if not getattr(self, "_streaming", False):
             return
         # Flush remaining line
-        if self._stream_buffer.strip():
-            self.write(self._stream_buffer.strip())
+        remaining = self._sanitize(self._stream_buffer)
+        if remaining:
+            self.write(remaining)
         self._streaming = False
         self._stream_buffer = ""

@@ -20,6 +20,7 @@ from __future__ import annotations
 import abc
 import json
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -41,6 +42,11 @@ from r105.state import (
     DEFAULT_MODEL,
     ChatResult,
     ChatState,
+)
+
+# Gemma 4 native tool-call format: <|tool_call|>{"name":"...","arguments":{...}}
+_GEMMA4_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call\|>\s*(\{.*?\})\s*(?:<\|tool_result\|>|$)", re.DOTALL
 )
 
 # ---------------------------------------------------------------------------
@@ -77,6 +83,33 @@ def _extract_tool_calls(raw: dict[str, Any]) -> list[dict[str, Any]]:
     message = choices[0].get("message") or {}
     calls = message.get("tool_calls") or []
     return [call for call in calls if isinstance(call, dict)]
+
+
+def _parse_gemma4_tool_calls(content: str) -> list[dict[str, Any]] | None:
+    """Parse Gemma 4 native tool-call format from content text.
+
+    Some backends (llama.cpp without --jinja) return tool calls embedded
+    in the content as <|tool_call|> JSON blocks rather than in the
+    OpenAI-compatible tool_calls field.  This fallback extracts them.
+    """
+    matches = _GEMMA4_TOOL_CALL_RE.findall(content)
+    if not matches:
+        return None
+    tool_calls: list[dict[str, Any]] = []
+    for i, json_str in enumerate(matches):
+        try:
+            call_data = json.loads(json_str.strip())
+            tool_calls.append({
+                "id": f"call_gemma4_{i}",
+                "type": "function",
+                "function": {
+                    "name": call_data.get("name", "unknown"),
+                    "arguments": json.dumps(call_data.get("arguments", {})),
+                },
+            })
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return tool_calls if tool_calls else None
 
 
 def _maybe_float(value: Any) -> float | None:
@@ -431,6 +464,15 @@ class BaseClient(abc.ABC):
 
         content = "".join(content_parts)
         tool_calls = [tool_call_deltas[i] for i in sorted(tool_call_deltas)]
+
+        # Fallback: parse Gemma 4 native tool-call format from content
+        # (used when the backend returns <|tool_call|> JSON in plain text instead
+        # of OpenAI-compatible delta.tool_calls — e.g. llama.cpp without --jinja)
+        if not tool_calls:
+            native_calls = _parse_gemma4_tool_calls(content)
+            if native_calls:
+                tool_calls = native_calls
+                content = _GEMMA4_TOOL_CALL_RE.sub("", content).strip()
 
         raw: dict[str, Any] = {
             "choices": [{
