@@ -266,7 +266,7 @@ class BaseClient(abc.ABC):
         path: str,
         *,
         json: dict[str, Any] | None = None,
-        timeout: float | None = None,
+        timeout: float | tuple[float, float] | None = None,
     ) -> httpx.Response:
         """Issue a synchronous HTTP request."""
         req = getattr(httpx, method.lower())
@@ -286,7 +286,7 @@ class BaseClient(abc.ABC):
         *,
         client: httpx.AsyncClient | None = None,
         json: dict[str, Any] | None = None,
-        timeout: float | None = None,
+        timeout: float | tuple[float, float] | None = None,
     ) -> httpx.Response:
         """Issue an asynchronous HTTP request."""
         t = timeout if timeout is not None else self.timeout
@@ -740,7 +740,7 @@ class DirectClient(BaseClient):
                 data = response.json()
                 n_ctx = (data.get("default_generation_settings") or {}).get("n_ctx")
                 try:
-                    ivalue = int(n_ctx)
+                    ivalue = int(n_ctx) if n_ctx is not None else 0
                 except (TypeError, ValueError):
                     ivalue = 0
                 if ivalue > 0:
@@ -777,7 +777,7 @@ class DirectClient(BaseClient):
                 data = response.json()
                 n_ctx = (data.get("default_generation_settings") or {}).get("n_ctx")
                 try:
-                    ivalue = int(n_ctx)
+                    ivalue = int(n_ctx) if n_ctx is not None else 0
                 except (TypeError, ValueError):
                     ivalue = 0
                 if ivalue > 0:
