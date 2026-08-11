@@ -170,3 +170,74 @@ class TestRouterClientInit:
         assert client.timeout.connect == 2.0
         assert client.timeout.write == 60.0
         assert client.timeout.pool == 10.0
+
+
+class TestGemma4ChannelSyntaxGate:
+    """Native <|tool_call|> parsing is strictly gated to Gemma-4-family models.
+
+    For every other model the streamed content is opaque text: tool calls are
+    NOT parsed from it and the content is NOT rewritten.
+    """
+
+    _TOOLCALL_CONTENT = (
+        'lookup <|tool_call|>{"name":"web_search","arguments":{"query":"python"}}'
+        "<|tool_result|> done"
+    )
+
+    @staticmethod
+    def _sse_body(delta_content: str) -> bytes:
+        import json as _json
+
+        chunk = _json.dumps({"choices": [{"delta": {"content": delta_content}}]})
+        return f"data: {chunk}\n\ndata: [DONE]\n\n".encode()
+
+    def _stream(self, model: str, content: str):
+        import asyncio
+
+        import httpx
+
+        from r105.client import DirectClient
+        from r105.state import ChatState
+
+        client = DirectClient(base_url="http://127.0.0.1:9", timeout=5.0)
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=self._sse_body(content),
+            )
+        )
+
+        async def run() -> None:
+            state = ChatState(model=model)
+            async with httpx.AsyncClient(transport=transport) as ac:
+                result = await client.async_send_streaming(
+                    "hi", state, client=ac
+                )
+            return result
+
+        return asyncio.run(run())
+
+    def test_non_gemma_model_content_is_opaque(self) -> None:
+        result = self._stream("qwen3-8b", self._TOOLCALL_CONTENT)
+        # No tool calls parsed, content untouched (markers preserved)
+        assert result.tool_calls == []
+        assert "<|tool_call|>" in result.content
+        assert "<|tool_result|>" in result.content
+
+    def test_other_unknown_model_content_is_opaque(self) -> None:
+        result = self._stream("totally-unknown-model", self._TOOLCALL_CONTENT)
+        assert result.tool_calls == []
+        assert "<|tool_call|>" in result.content
+
+    def test_gemma4_model_parses_native_tool_calls(self) -> None:
+        result = self._stream("gemma-4-12b-it", self._TOOLCALL_CONTENT)
+        assert len(result.tool_calls) == 1
+        call = result.tool_calls[0]["function"]
+        assert call["name"] == "web_search"
+        assert "<|tool_call|>" not in result.content
+
+    def test_glimmer_parses_native_tool_calls(self) -> None:
+        result = self._stream("muse-glimmer-30B", self._TOOLCALL_CONTENT)
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["function"]["name"] == "web_search"

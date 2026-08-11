@@ -34,11 +34,16 @@ class ChatView(RichLog):
         self,
         show_thinking: bool = True,
         thinking_default_expanded: bool = False,
+        gemma4_channel_syntax: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(highlight=True, markup=True, **kwargs)
         self.show_thinking = show_thinking
         self.thinking_default_expanded = thinking_default_expanded
+        # Gemma-4 channel syntax (<|tool_call|>, <|channel|>thought, ...) is a
+        # model-family capability. Default OFF: for any other model, content
+        # is opaque text and is never regex-interpreted or rewritten.
+        self.gemma4_channel_syntax = gemma4_channel_syntax
         self._streaming = False
         self._stream_buffer = ""
         self._thinking_parts: list[str] = []
@@ -108,7 +113,8 @@ class ChatView(RichLog):
     # -- Message rendering -------------------------------------------------
 
     def add_user(self, text: str) -> None:
-        text = _STRAY_TOKENS_RE.sub("", text).strip()
+        if self.gemma4_channel_syntax:
+            text = _STRAY_TOKENS_RE.sub("", text).strip()
         panel = Panel(
             Text(text, style="bold"),
             title="YOU",
@@ -118,8 +124,12 @@ class ChatView(RichLog):
         self.write(panel)
 
     def add_assistant(self, text: str, wall_seconds: float | None = None) -> None:
-        clean, thinking = self._extract_thinking(text)
-        clean = _STRAY_TOKENS_RE.sub("", clean).strip()
+        if self.gemma4_channel_syntax:
+            clean, thinking = self._extract_thinking(text)
+            clean = _STRAY_TOKENS_RE.sub("", clean).strip()
+        else:
+            # Model-agnostic path: content is opaque text, never rewritten.
+            clean, thinking = text, ""
         if thinking and self.show_thinking:
             self._render_thinking(thinking)
         if not clean:
@@ -188,11 +198,15 @@ class ChatView(RichLog):
 
         The Markdown widget is updated at most every 50ms, preventing
         UI thread saturation during fast SSE streams. Thinking blocks are
-        captured separately and rendered on flush.
+        captured separately and rendered on flush — only for models with
+        Gemma-4 channel syntax; all other content is opaque text.
         """
-        clean, thinking = self._extract_thinking(text)
-        if thinking:
-            self._thinking_parts.append(thinking)
+        if self.gemma4_channel_syntax:
+            clean, thinking = self._extract_thinking(text)
+            if thinking:
+                self._thinking_parts.append(thinking)
+        else:
+            clean, thinking = text, ""
         if not clean:
             return
         if not getattr(self, "_streaming", False):

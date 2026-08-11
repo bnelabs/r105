@@ -96,6 +96,58 @@ def normalize_model_name(name: str) -> str:
     return normalized
 
 
+# ---------------------------------------------------------------------------
+# Model families — capability gating, NOT output parsing.
+#
+# r105 is model-agnostic: no model-specific behavior may run against an
+# arbitrary model's output. Any model-specific handling (e.g. Gemma-4
+# channel syntax) is gated behind :func:`model_family` and only applies to
+# the families listed below. Everything else passes through untouched.
+# ---------------------------------------------------------------------------
+
+# Family -> name fragments (longest matching fragment wins).
+_MODEL_FAMILY_KEYS: dict[str, list[str]] = {
+    "gemma-4": ["gemma-4", "gemma4", "muse-glimmer"],  # Gemma-4-style chat templates
+    "gemma": ["gemma3", "gemma2", "gemma"],
+    "qwen": ["qwen"],
+    "llama": ["llama"],
+    "mistral": ["mistral", "mixtral"],
+    "deepseek": ["deepseek"],
+    "glm": ["glm"],
+    "gpt": ["gpt"],
+    "claude": ["claude"],
+    "phi": ["phi-4", "phi-3", "phi"],
+}
+
+# Model families whose chat templates emit Gemma-4 channel markers inline in
+# content: ``<|tool_call|>`` blocks and ``<|channel|>thought`` blocks.
+# For any other family, r105 treats content as opaque text — no regex
+# parsing, no token stripping.
+_GEMMA4_CHANNEL_SYNTAX_FAMILIES = frozenset({"gemma-4"})
+
+
+def model_family(model_name: str) -> str | None:
+    """Return the model family (``gemma-4``, ``qwen``, ...) or None."""
+    normalized = normalize_model_name(model_name)
+    best: tuple[int, str] | None = None  # (fragment_length, family)
+    for family, keys in _MODEL_FAMILY_KEYS.items():
+        for key in keys:
+            if key in normalized and (best is None or len(key) > best[0]):
+                best = (len(key), family)
+    return best[1] if best else None
+
+
+def uses_gemma4_channel_syntax(model_name: str) -> bool:
+    """True only for models known to emit Gemma-4 channel syntax.
+
+    This is the single gate for all Gemma-4-specific handling (native
+    ``<|tool_call|>`` parsing, ``<|channel|>thought`` capture, stray-token
+    stripping). False for every other model — their output is never
+    regex-interpreted or rewritten.
+    """
+    return model_family(model_name) in _GEMMA4_CHANNEL_SYNTAX_FAMILIES
+
+
 def _catalog_context(model_name: str) -> int | None:
     """Return the catalog context for *model_name*, or None.
 

@@ -16,6 +16,7 @@ from textual.widgets import Static
 
 from r105.client import BaseClient, RouterClient
 from r105.commands import copy_to_clipboard, handle_slash_command
+from r105.model_catalog import uses_gemma4_channel_syntax
 from r105.constants import (
     AUTO_COMPACT_THRESHOLD_PCT,
     MAX_REPEATED_TOOL_CALLS,
@@ -82,6 +83,7 @@ class ChatScreen(Screen[None]):
             yield ChatView(
                 show_thinking=self.state.show_thinking,
                 thinking_default_expanded=self.state.thinking_default_expanded,
+                gemma4_channel_syntax=uses_gemma4_channel_syntax(self.state.model),
                 id="chat-view",
             )
             with Vertical(id="right-pane"):
