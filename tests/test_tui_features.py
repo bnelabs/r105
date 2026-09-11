@@ -235,6 +235,34 @@ class TestCommandPaletteScrolling:
 
         asyncio.run(scenario())
 
+    def test_down_keeps_boundary_row_clear_of_bottom_border(self) -> None:
+        async def scenario() -> None:
+            from r105.tui.screens.chat import ChatScreen
+            from r105.tui.widgets.command_palette import CommandPalette
+
+            app = self._make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                for _ in range(50):
+                    await pilot.pause()
+                    if isinstance(app.screen, ChatScreen):
+                        break
+                await pilot.press("/")
+                await pilot.pause()
+                palette = app.screen.query_one("#command-palette", CommandPalette)
+
+                # The seventh command is the first one whose row reaches the
+                # bottom edge of this viewport before the one-row safety
+                # margin is applied.
+                for _ in range(7):
+                    await pilot.press("down")
+                await pilot.pause()
+
+                selected_line = palette._selected_line_index()
+                viewport_bottom = int(palette.scroll_y) + palette.content_region.height
+                assert selected_line + 1 < viewport_bottom
+
+        asyncio.run(scenario())
+
 
 class TestEditKeybindings:
     """Readline edit bindings (Ctrl+U/W/K) must not crash on Textual 8.
