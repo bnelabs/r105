@@ -1,8 +1,9 @@
 """Slash-command handling for interactive chat.
 
 Commands are dispatched via a dictionary mapping command name to handler
-function (``COMMAND_DISPATCH``).  Each handler receives the parsed args list
-plus the shared context objects and returns a result string.
+function (``COMMAND_DISPATCH``).  Each handler receives a single
+:class:`CommandContext` with the parsed args plus the shared context objects,
+and returns a result string.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import difflib
 import json
 import shlex
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +58,7 @@ from r105.state import (
     ChatState,
     token_usage,
 )
+from r105.tools import _cache_clear, approve_execute_python
 
 SLASH_COMMANDS = [
     "/",
@@ -79,6 +82,7 @@ SLASH_COMMANDS = [
     "/autocompact",
     "/reasoning",
     "/permissions",
+    "/approve",
     "/preview",
     "/session",
     "/export",
@@ -91,8 +95,19 @@ SLASH_COMMANDS = [
 VALID_THEMES = {"r105", "dracula", "solarized-dark", "high-contrast"}
 
 # Signature for command handler functions.
-# All handlers are async functions returning Awaitable[str].
-CommandHandler = Callable[..., Awaitable[str]]
+# All handlers are async functions taking a CommandContext, returning str.
+@dataclass
+class CommandContext:
+    """Everything a slash-command handler needs, in one object."""
+
+    args: list[str]
+    state: ChatState
+    client: Any | None = None
+    workspace_dir: Path | None = None
+    http_client: httpx.AsyncClient | None = None
+
+
+CommandHandler = Callable[[CommandContext], Awaitable[str]]
 
 
 def _parse_bool(value: str | None) -> bool | None:
@@ -176,6 +191,7 @@ Chat
   /autocompact [on|off]          toggle auto-compaction at 80% context
   /reasoning auto|off|low|med..  set reasoning effort (model-provided)
   /permissions <posture>         set permission posture (full-access|restricted|sandboxed|off)
+  /approve execute_python        one-time approval for code execution
 
 Skills
   /skills                        list local skills
@@ -210,403 +226,253 @@ System
 # ---------------------------------------------------------------------------
 
 
-async def _cmd_help(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
+async def _cmd_help(ctx: CommandContext) -> str:
     return command_menu()
 
 
-async def _cmd_state(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    return _format_state(state)
+async def _cmd_state(ctx: CommandContext) -> str:
+    return _format_state(ctx.state)
 
 
-async def _cmd_tokens(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    return _status_line(state)
+async def _cmd_tokens(ctx: CommandContext) -> str:
+    return _status_line(ctx.state)
 
 
-async def _cmd_model(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
+async def _cmd_model(ctx: CommandContext) -> str:
     # /model <name> — switch models
-    if args:
-        state.model = args[0]
-        save_config({"model": state.model})
+    if ctx.args:
+        ctx.state.model = ctx.args[0]
+        save_config({"model": ctx.state.model})
         # Re-resolve the context-window capacity for the new model
         backend_ctx: int | None = None
-        if client is not None:
+        if ctx.client is not None:
             try:
-                backend_ctx = await client.async_probe_context(state.model, client=http_client)
+                backend_ctx = await ctx.client.async_probe_context(ctx.state.model, client=ctx.http_client)
             except Exception:
                 backend_ctx = None
-        state.context_tokens = resolve_context_tokens(
-            state.model,
-            config_contexts=state.model_contexts,
+        ctx.state.context_tokens = resolve_context_tokens(
+            ctx.state.model,
+            config_contexts=ctx.state.model_contexts,
             global_override=_global_context_override(),
             backend_context=backend_ctx,
         )
-        return f"model={state.model} ctx={state.context_tokens} (saved persistently)"
+        return f"model={ctx.state.model} ctx={ctx.state.context_tokens} (saved persistently)"
     # /model — show current model or list available
-    if client is not None:
+    if ctx.client is not None:
         try:
-            payload = await client.async_list_models(client=http_client)
+            payload = await ctx.client.async_list_models(client=ctx.http_client)
             models_data = payload.get("data") or payload.get("models") or []
             model_ids = [m.get("id", "") for m in models_data if m.get("id")]
             if model_ids:
-                current = f"current: {state.model}\n"
+                current = f"current: {ctx.state.model}\n"
                 current += "available:\n  " + "\n  ".join(model_ids)
                 return current
         except httpx.HTTPError:
             pass
-    return f"model={state.model} ctx={state.context_tokens}"
+    return f"model={ctx.state.model} ctx={ctx.state.context_tokens}"
 
 
-async def _cmd_history(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    return _format_history(state)
+async def _cmd_history(ctx: CommandContext) -> str:
+    return _format_history(ctx.state)
 
 
-async def _cmd_clear(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    state.history.clear()
+async def _cmd_clear(ctx: CommandContext) -> str:
+    ctx.state.history.clear()
     return "history cleared"
 
 
-async def _cmd_compact(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if client is None:
+async def _cmd_compact(ctx: CommandContext) -> str:
+    if ctx.client is None:
         return "client unavailable"
-    before = token_usage(state).used_tokens
+    before = token_usage(ctx.state).used_tokens
     try:
-        result = await client.async_compact(state, client=http_client)
+        result = await ctx.client.async_compact(ctx.state, client=ctx.http_client)
     except httpx.HTTPError as exc:
         return f"compact failed: {exc}"
-    after = token_usage(state).used_tokens
+    after = token_usage(ctx.state).used_tokens
     return f"compacted {before}→{after} tokens\n{result.content}"
 
 
-async def _cmd_profile(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if not args:
-        state.profile = None
+async def _cmd_profile(ctx: CommandContext) -> str:
+    if not ctx.args:
+        ctx.state.profile = None
         return "profile=auto"
-    profile, error = _parse_choice(args, field="profile", valid=VALID_PROFILES)
+    profile, error = _parse_choice(ctx.args, field="profile", valid=VALID_PROFILES)
     if error is not None:
         return error
-    assert profile is not None
-    state.profile = profile
+    if profile is None:  # unreachable: _parse_choice only returns None with no args
+        return "internal error: profile choice parsing failed"
+    ctx.state.profile = profile
     return f"profile={profile}"
 
 
-async def _cmd_quality(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if not args:
-        state.quality = None
+async def _cmd_quality(ctx: CommandContext) -> str:
+    if not ctx.args:
+        ctx.state.quality = None
         return "quality=auto"
-    quality, error = _parse_choice(args, field="quality", valid=VALID_QUALITIES)
+    quality, error = _parse_choice(ctx.args, field="quality", valid=VALID_QUALITIES)
     if error is not None:
         return error
-    assert quality is not None
-    state.quality = quality
+    if quality is None:  # unreachable: _parse_choice only returns None with no args
+        return "internal error: quality choice parsing failed"
+    ctx.state.quality = quality
     return f"quality={quality}"
 
 
-async def _cmd_json(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    state.json_mode = _apply_bool_toggle(args, state.json_mode)
-    return f"json={state.json_mode}"
+async def _cmd_json(ctx: CommandContext) -> str:
+    ctx.state.json_mode = _apply_bool_toggle(ctx.args, ctx.state.json_mode)
+    return f"json={ctx.state.json_mode}"
 
 
-async def _cmd_max(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if not args:
-        state.max_tokens = None
+async def _cmd_max(ctx: CommandContext) -> str:
+    if not ctx.args:
+        ctx.state.max_tokens = None
         return "max_tokens=auto"
     try:
-        state.max_tokens = int(args[0])
+        ctx.state.max_tokens = int(ctx.args[0])
     except ValueError:
         return "usage: /max <tokens>"
-    return f"max_tokens={state.max_tokens}"
+    return f"max_tokens={ctx.state.max_tokens}"
 
 
-async def _cmd_health(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if client is None:
+async def _cmd_health(ctx: CommandContext) -> str:
+    if ctx.client is None:
         return "client unavailable"
     try:
-        health_data = await client.async_health(client=http_client)
+        health_data = await ctx.client.async_health(client=ctx.http_client)
         return json.dumps(health_data, indent=2, sort_keys=True)
     except httpx.HTTPError as exc:
         return f"health check failed: {exc}"
 
 
-async def _cmd_profiles(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if client is None:
+async def _cmd_profiles(ctx: CommandContext) -> str:
+    if ctx.client is None:
         return "client unavailable"
-    if not hasattr(client, "async_profiles"):
+    if not hasattr(ctx.client, "async_profiles"):
         return "profiles are only available with llama-router backend (--backend router)"
     try:
-        payload = await client.async_profiles(client=http_client)
+        payload = await ctx.client.async_profiles(client=ctx.http_client)
         return "\n".join(sorted((payload.get("profiles") or {}).keys()))
     except httpx.HTTPError as exc:
         return f"profiles fetch failed: {exc}"
 
 
-async def _cmd_skills(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    return _format_skills(list_skills(state.skills_dir))
+async def _cmd_skills(ctx: CommandContext) -> str:
+    return _format_skills(list_skills(ctx.state.skills_dir))
 
 
-async def _cmd_skill(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    return _handle_skill_command(args, state)
+async def _cmd_skill(ctx: CommandContext) -> str:
+    return _handle_skill_command(ctx.args, ctx.state)
 
 
-async def _cmd_workspace(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if workspace_dir is None:
+async def _cmd_workspace(ctx: CommandContext) -> str:
+    if ctx.workspace_dir is None:
         return "workspace not configured"
-    return _format_workspace(workspace_dir)
+    return _format_workspace(ctx.workspace_dir)
 
 
-async def _cmd_theme(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if not args:
-        return f"theme={state.theme} (valid: {', '.join(sorted(VALID_THEMES))})"
-    theme, error = _parse_choice(args, field="theme", valid=VALID_THEMES)
+async def _cmd_theme(ctx: CommandContext) -> str:
+    if not ctx.args:
+        return f"theme={ctx.state.theme} (valid: {', '.join(sorted(VALID_THEMES))})"
+    theme, error = _parse_choice(ctx.args, field="theme", valid=VALID_THEMES)
     if error is not None:
         return error
-    assert theme is not None
-    state.theme = theme
+    if theme is None:  # unreachable: _parse_choice only returns None with no args
+        return "internal error: theme choice parsing failed"
+    ctx.state.theme = theme
     save_config({"theme": theme})
     return f"theme={theme} (saved persistently)"
 
 
-async def _cmd_autocompact(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    state.auto_compact = _apply_bool_toggle(args, state.auto_compact)
-    save_config({"auto_compact": state.auto_compact})
-    return f"auto_compact={state.auto_compact} (saved persistently)"
+async def _cmd_autocompact(ctx: CommandContext) -> str:
+    ctx.state.auto_compact = _apply_bool_toggle(ctx.args, ctx.state.auto_compact)
+    save_config({"auto_compact": ctx.state.auto_compact})
+    return f"auto_compact={ctx.state.auto_compact} (saved persistently)"
 
 
-async def _cmd_reasoning(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if not args:
+async def _cmd_reasoning(ctx: CommandContext) -> str:
+    if not ctx.args:
         return (
-            f"reasoning_effort={state.reasoning_effort} "
+            f"reasoning_effort={ctx.state.reasoning_effort} "
             f"(valid: {', '.join(sorted(VALID_REASONING_EFFORTS))})"
         )
     effort, error = _parse_choice(
-        args, field="reasoning effort", valid=VALID_REASONING_EFFORTS, lower=True
+        ctx.args, field="reasoning effort", valid=VALID_REASONING_EFFORTS, lower=True
     )
     if error is not None:
         return error
-    assert effort is not None
-    state.reasoning_effort = effort
+    if effort is None:  # unreachable: _parse_choice only returns None with no args
+        return "internal error: reasoning effort choice parsing failed"
+    ctx.state.reasoning_effort = effort
     save_config({"reasoning_effort": effort})
     return f"reasoning_effort={effort} (saved persistently)"
 
 
-async def _cmd_permissions(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if not args:
+async def _cmd_permissions(ctx: CommandContext) -> str:
+    if not ctx.args:
         return (
-            f"permission_posture={state.permission_posture} "
+            f"permission_posture={ctx.state.permission_posture} "
             f"(valid: {', '.join(sorted(VALID_PERMISSION_POSTURES))})"
         )
     posture, error = _parse_choice(
-        args, field="permission posture", valid=VALID_PERMISSION_POSTURES, lower=True
+        ctx.args, field="permission posture", valid=VALID_PERMISSION_POSTURES, lower=True
     )
     if error is not None:
         return error
-    assert posture is not None
-    state.permission_posture = posture
+    if posture is None:  # unreachable: _parse_choice only returns None with no args
+        return "internal error: permission posture choice parsing failed"
+    ctx.state.permission_posture = posture
     save_config({"permission_posture": posture})
     return f"permission_posture={posture} (saved persistently)"
 
 
-async def _cmd_preview(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if workspace_dir is None:
+async def _cmd_approve(ctx: CommandContext) -> str:
+    if not ctx.args or ctx.args[0] not in ("execute_python", "python"):
+        return "usage: /approve execute_python — one-time approval for code execution"
+    approve_execute_python()
+    return "execute_python approved for this session"
+
+
+async def _cmd_preview(ctx: CommandContext) -> str:
+    if ctx.workspace_dir is None:
         return "workspace not configured"
-    if not args:
+    if not ctx.args:
         return "usage: /preview <filename>"
-    file_path = workspace_dir / args[0]
+    file_path = ctx.workspace_dir / ctx.args[0]
     if not file_path.exists():
-        return f"file not found: {args[0]}"
+        return f"file not found: {ctx.args[0]}"
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
-        return f"--- {args[0]} ---\n{content[:2000]}"
+        return f"--- {ctx.args[0]} ---\n{content[:2000]}"
     except Exception as exc:
-        return f"error reading {args[0]}: {exc}"
+        return f"error reading {ctx.args[0]}: {exc}"
 
 
-async def _cmd_session(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    return _handle_session_command(args, state)
+async def _cmd_session(ctx: CommandContext) -> str:
+    return _handle_session_command(ctx.args, ctx.state)
 
 
-async def _cmd_export(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    return _handle_export_command(args, state, workspace_dir)
+async def _cmd_export(ctx: CommandContext) -> str:
+    return _handle_export_command(ctx.args, ctx.state, ctx.workspace_dir)
 
 
-async def _cmd_plugin(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    return _handle_plugin_command(args)
+async def _cmd_plugin(ctx: CommandContext) -> str:
+    return _handle_plugin_command(ctx.args)
 
 
-async def _cmd_mcp(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    return _handle_mcp_command(args)
+async def _cmd_mcp(ctx: CommandContext) -> str:
+    return _handle_mcp_command(ctx.args)
 
 
-async def _cmd_exit(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
+async def _cmd_exit(ctx: CommandContext) -> str:
     return ""
 
 
-async def _cmd_copy(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
+async def _cmd_copy(ctx: CommandContext) -> str:
     """Copy the last assistant message to the system clipboard."""
     # Find the last assistant message in history
     last_content = ""
-    for msg in reversed(state.history):
+    for msg in reversed(ctx.state.history):
         if msg.get("role") == "assistant":
             last_content = msg.get("content", "")
             break
@@ -666,6 +532,7 @@ COMMAND_DISPATCH: dict[str, CommandHandler] = {
     "/autocompact": _cmd_autocompact,
     "/reasoning": _cmd_reasoning,
     "/permissions": _cmd_permissions,
+    "/approve": _cmd_approve,
     "/preview": _cmd_preview,
     "/session": _cmd_session,
     "/export": _cmd_export,
@@ -704,7 +571,7 @@ async def handle_slash_command(
             return f"unknown command: {command} — did you mean {suggestion}?"
         return f"unknown command: {command}"
 
-    return await handler(args, state, client, workspace_dir, http_client)
+    return await handler(CommandContext(args, state, client, workspace_dir, http_client))
 
 
 def _handle_skill_command(args: list[str], state: ChatState) -> str:
@@ -785,6 +652,7 @@ def _handle_session_command(args: list[str], state: ChatState) -> str:
             return f"session load failed: {exc}"
         try:
             count = load_session(state, name)
+            _cache_clear()  # stale tool results must not leak into the new context
             return f"session loaded: {name} ({count} messages restored)\n{summary}"
         except (json.JSONDecodeError, OSError) as exc:
             return f"session load failed: {exc}"

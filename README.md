@@ -131,8 +131,14 @@ r105 health
 # List available task profiles
 r105 profiles
 
+# Diagnose environment: config, sandbox, backend, workspace
+r105 doctor
+
 # Load a saved session on startup
 r105 --session my-session chat
+
+# Auto-approve code execution (skip the confirmation gate)
+r105 --yes chat
 
 # Version info
 r105 --version
@@ -153,6 +159,7 @@ r105 --version
 | `--json` | off | Request JSON-object responses |
 | `--backend` | auto | `router` (profiles) or `direct` (any OpenAI-compatible) |
 | `--session` | — | Load a saved session on startup |
+| `--yes` | off | Auto-approve `execute_python` (skip confirmation gate) |
 | `--version` | — | Print version and exit |
 
 ---
@@ -260,6 +267,7 @@ Press `/` to open the interactive command palette with:
 | `/autocompact [on\|off]` | Toggle auto-compaction at 80% context threshold |
 | `/reasoning auto\|off\|low\|medium\|high` | Set reasoning effort (sent to capable backends) |
 | `/permissions <posture>` | Set tool-execution posture (`full-access\|restricted\|sandboxed\|off`) |
+| `/approve execute_python` | One-time approval for code execution (this session) |
 | `/copy` | Copy last assistant message to system clipboard |
 
 #### Skills
@@ -334,7 +342,7 @@ Press `/` to open the interactive command palette with:
 
 ## Built-in Tools
 
-r105 provides 10 local tools the LLM can call. All tools are validated before execution with argument size caps, SSRF prevention, and path traversal hardening. `execute_python` runs in a sandboxed environment with no network or filesystem access.
+r105 provides 10 local tools the LLM can call. All tools are validated before execution with argument size caps, SSRF prevention, and path traversal hardening. `execute_python` runs in a sandboxed environment with no network or filesystem access — and needs a one-time approval per session (`/approve execute_python`, `--yes`, or the `auto_approve_execute_python` config key) before it runs at all. Web tools are rate-limited per session (30 searches / 60 fetches per minute).
 
 | Tool | Description | Sandbox Profile |
 |------|-------------|----------------|

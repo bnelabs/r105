@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,19 +17,19 @@ from r105.client import BaseClient, RouterClient
 from r105.commands import copy_to_clipboard, handle_slash_command
 from r105.constants import (
     AUTO_COMPACT_THRESHOLD_PCT,
-    MAX_REPEATED_TOOL_CALLS,
     MAX_TOOL_LOOP_ITERATIONS,
-    RECENT_CALL_TRACKING_SIZE,
-    TOOL_TIMEOUT_DEFAULT,
-    TOOL_TIMEOUT_EXECUTE_PYTHON,
-    TOOL_TIMEOUT_FILE_OPS,
-    TOOL_TIMEOUT_WEB_FETCH,
-    TOOL_TIMEOUT_WEB_SEARCH,
 )
 from r105.model_catalog import uses_gemma4_channel_syntax
 from r105.sandbox import weak_backend_warning
 from r105.sessions import auto_save
 from r105.state import ChatState, token_usage
+from r105.tool_loop import (
+    LoopDedupTracker,
+    exception_result,
+    parse_tool_signatures,
+    timeout_result,
+    tool_timeout,
+)
 from r105.tools import execute_tool_call, get_tool_definitions
 from r105.tui.widgets.chat_view import ChatView
 from r105.tui.widgets.command_palette import COMMAND_DEFS, CommandPalette
@@ -335,24 +334,12 @@ class ChatScreen(Screen[None]):
         max_iterations = MAX_TOOL_LOOP_ITERATIONS
         iteration = 0
         had_tools = bool(result.tool_calls)
-        recent_calls: list[tuple[str, str]] = []  # track (name, args) for cross-iteration dedup
-        repeat_counts: dict[tuple[str, str], int] = {}  # call_key → consecutive repeat count
+        tracker = LoopDedupTracker()  # (name, args) dedup across iterations
         while result.tool_calls and iteration < max_iterations:
             iteration += 1
             # Assistant message (with tool_calls) already recorded by async_send/async_continue.
             # Pre-parse tool call signatures once for dedup detection.
-            # Uses structured-output repair so malformed LLM JSON doesn't crash the loop.
-            signatures: list[tuple[dict[str, Any], str, str]] = []  # (tc, name, args_str)
-            for tc in result.tool_calls:
-                func = tc.get("function", {})
-                name = func.get("name", "unknown")
-                try:
-                    from r105.tools import repair_tool_arguments as _repair_args
-                    args = _repair_args(func.get("arguments", {}))
-                except Exception:
-                    args = {}
-                args_str = json.dumps(args, indent=2, sort_keys=True)
-                signatures.append((tc, name, args_str))
+            signatures = parse_tool_signatures(result.tool_calls)
 
             # Phase 1: UI updates and dedup checks (main thread)
             call_keys: list[tuple[str, str]] = []
@@ -360,67 +347,40 @@ class ChatScreen(Screen[None]):
             for _tc, name, args_str in signatures:
                 chat_view.add_tool_call(name, args_str)
 
-                call_key = (name, args_str)
-                call_keys.append(call_key)
-                count = repeat_counts.get(call_key, 0) + 1
-                repeat_counts[call_key] = count
-                if count > MAX_REPEATED_TOOL_CALLS:
-                    stuck = True
+                call_keys.append((name, args_str))
+                is_stuck, is_repeat = tracker.check(name, args_str)
+                if is_stuck:
+                    count = tracker.count_for(name, args_str)
                     chat_view.add_system(
                         f"[bold red]🛑 Repeated call to {name} ({count}x) — "
                         "forcing tool loop break[/bold red]"
                     )
                     self.state.history.append({
                         "role": "system",
-                        "content": (
-                            f"[STOP LOOP] You called {name} with the same arguments "
-                            f"{count} times in a row. Do NOT repeat it again. "
-                            "Answer directly or try a completely different approach."
-                        ),
+                        "content": LoopDedupTracker.stop_loop_message(name, count),
                     })
-                elif count > 1 and call_key in recent_calls:
+                elif is_repeat:
+                    count = tracker.count_for(name, args_str)
                     chat_view.add_system(
                         f"[dim]⚠️ Repeated call to {name} with same args ({count}x) — "
                         "try a different approach[/dim]"
                     )
-                recent_calls.append(call_key)
-                if len(recent_calls) > RECENT_CALL_TRACKING_SIZE:
-                    recent_calls.pop(0)
 
             if stuck:
                 break
 
-                status_bar.set_busy(f"Executing {name}...")
-                chat_view.add_tool_status(f"Running {name}...")
-
             # Phase 2: Execute all tools in parallel via thread pool with timeouts
-            def _tool_timeout(name: str) -> float:
-                if name == "execute_python":
-                    return TOOL_TIMEOUT_EXECUTE_PYTHON
-                if name in ("web_search",):
-                    return TOOL_TIMEOUT_WEB_SEARCH
-                if name in ("web_fetch",):
-                    return TOOL_TIMEOUT_WEB_FETCH
-                if name in ("write_file", "read_file", "list_files"):
-                    return TOOL_TIMEOUT_FILE_OPS
-                return TOOL_TIMEOUT_DEFAULT
-
             async def _exec_one(tc: dict[str, Any]) -> dict[str, Any]:
                 func = tc.get("function", {})
                 tool_name = func.get("name", "unknown")
-                timeout = _tool_timeout(tool_name)
+                timeout = tool_timeout(tool_name)
                 try:
                     return await asyncio.wait_for(
                         asyncio.to_thread(execute_tool_call, tc, self.workspace),
                         timeout=timeout,
                     )
                 except TimeoutError:
-                    return {
-                        "role": "tool",
-                        "tool_call_id": tc.get("id", ""),
-                        "name": tool_name,
-                        "content": f"error: {tool_name} timed out after {timeout}s",
-                    }
+                    return timeout_result(tc, tool_name, timeout)
 
             tool_results = await asyncio.gather(
                 *[_exec_one(tc) for tc, _name, _args_str in signatures],
@@ -431,20 +391,12 @@ class ChatScreen(Screen[None]):
             for (tc, name, args_str), tool_result_msg in zip(signatures, tool_results, strict=True):
                 if isinstance(tool_result_msg, BaseException):
                     chat_view.add_error(f"Tool {name} failed: {tool_result_msg}")
-                    tool_result_msg = {
-                        "role": "tool",
-                        "tool_call_id": tc.get("id", ""),
-                        "name": name,
-                        "content": f"error: {tool_result_msg}",
-                    }
-                call_key = (name, args_str)
+                    tool_result_msg = exception_result(tc, name, tool_result_msg)
                 # If this is a duplicate, append a warning to the tool result
-                if recent_calls.count(call_key) >= 2:
+                if tracker.is_duplicate_result(name, args_str):
                     original = tool_result_msg.get("content", "")
                     tool_result_msg["content"] = (
-                        f"{original}\n\n[SYSTEM NOTE: You just called {name} with "
-                        "the same arguments. This already failed or returned no useful "
-                        "result. Do NOT repeat this call. Try a different approach.]"
+                        f"{original}{LoopDedupTracker.duplicate_note(name)}"
                     )
                 result_content = tool_result_msg.get("content", "")
                 chat_view.add_tool_result(result_content)
