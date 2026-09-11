@@ -225,10 +225,28 @@ def _sandbox_preexec() -> None:
     import resource
 
     mem_bytes = SANDBOX_MEMORY_MB * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-    resource.setrlimit(resource.RLIMIT_CPU, (SANDBOX_CPU_SECONDS, SANDBOX_CPU_SECONDS))
-    resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (SANDBOX_FILESIZE_MB * 1024 * 1024, SANDBOX_FILESIZE_MB * 1024 * 1024))
+    try:
+        # macOS/Python 3.14 can reserve more virtual address space than this
+        # limit before exec, making RLIMIT_AS fail in preexec_fn. RSS is the
+        # closest supported fallback and still bounds resident memory.
+        resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+    except (OSError, ValueError):
+        if hasattr(resource, "RLIMIT_RSS"):
+            try:
+                resource.setrlimit(resource.RLIMIT_RSS, (mem_bytes, mem_bytes))
+            except (OSError, ValueError):
+                pass
+    for limit, value in (
+        (resource.RLIMIT_CPU, SANDBOX_CPU_SECONDS),
+        (resource.RLIMIT_NPROC, 0),
+        (resource.RLIMIT_FSIZE, SANDBOX_FILESIZE_MB * 1024 * 1024),
+    ):
+        try:
+            resource.setrlimit(limit, (value, value))
+        except (OSError, ValueError):
+            # Resource availability varies across Unix platforms. Keep the
+            # subprocess usable when an optional limit is unsupported.
+            pass
 
 
 # -- Bubblewrap backend ------------------------------------------------------

@@ -59,6 +59,7 @@ class ChatScreen(Screen[None]):
     BINDINGS = [
         Binding("ctrl+y", "copy_last_message", "Copy last response", id="copy_last_message"),
         Binding("ctrl+t", "show_tools", "Inspect tool calls", id="show_tools"),
+        Binding("ctrl+x", "cancel_tools", "Cancel local tools", id="cancel_tools"),
         Binding("escape", "cancel_request", "Cancel current request", id="cancel_request"),
     ]
 
@@ -74,6 +75,7 @@ class ChatScreen(Screen[None]):
         self.workspace = workspace_dir
         self._http = httpx.AsyncClient()
         self._active_worker: Any | None = None
+        self._tool_batch_task: asyncio.Task[Any] | None = None
         self._backend_health = "checking"
         self._sandbox_backend = current_backend_name() or "auto"
         self._workspace_status = "ok" if os.access(self.workspace, os.W_OK) else "unwritable"
@@ -90,6 +92,9 @@ class ChatScreen(Screen[None]):
                 worker.cancel()
             except Exception:
                 pass
+        tool_task, self._tool_batch_task = self._tool_batch_task, None
+        if tool_task is not None:
+            tool_task.cancel()
         saved = auto_save(self.state)
         if saved:
             self._notify(f"Session autosaved: {saved}", severity="information")
@@ -205,6 +210,15 @@ class ChatScreen(Screen[None]):
                 pass
             self._active_worker = None
             self._refresh_all()
+
+    def action_cancel_tools(self) -> None:
+        """Cancel the current local-tool batch without leaving the TUI."""
+        task = self._tool_batch_task
+        if task is None or task.done():
+            self._notify("No local tool execution is active", severity="information")
+            return
+        task.cancel()
+        self._notify("Canceling local tool execution…", severity="warning")
 
     # -- Input handling ---------------------------------------------------
 
@@ -408,12 +422,31 @@ class ChatScreen(Screen[None]):
                 break
 
             # Phase 2: Execute all tools in parallel via thread pool with timeouts
-            outcomes = await run_tools_parallel(
-                signatures,
-                lambda tc: execute_tool_call(
-                    tc, self.workspace, trace_id=self.state.trace_id
-                ),
+            tool_task = asyncio.create_task(
+                run_tools_parallel(
+                    signatures,
+                    lambda tc: execute_tool_call(
+                        tc, self.workspace, trace_id=self.state.trace_id
+                    ),
+                )
             )
+            self._tool_batch_task = tool_task
+            try:
+                outcomes = await tool_task
+            except asyncio.CancelledError:
+                # Ctrl+X cancels this task directly. Escape/unmount cancels the
+                # parent worker as well, so only add a marker when the worker
+                # is still active and the action has not already rendered one.
+                if self._active_worker is not None:
+                    chat_view.finish_streaming()
+                    chat_view.add_canceled("Tool execution canceled by user")
+                status_bar.clear_busy()
+                self._active_worker = None
+                self._refresh_all()
+                return
+            finally:
+                if self._tool_batch_task is tool_task:
+                    self._tool_batch_task = None
 
             # Phase 3: Process results and update history
             for (_tc, name, args_str), (tool_result_msg, tool_error) in zip(signatures, outcomes, strict=True):

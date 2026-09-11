@@ -41,8 +41,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `auto_approve_execute_python` config key (sandbox still applies)
 - Web tool rate limiting: 30 searches / 60 fetches per rolling minute
   (cache hits don't consume budget)
+- `Ctrl+X` / `cancel_tools` cancels a waiting local-tool batch
+- The status bar renders context usage as a visual progress bar
 
 ### Fixed
+- Web SSRF bypasses: redirects are checked before every hop, ambient proxies
+  are disabled for web tools, and the custom transport connects only to the
+  exact public IP returned by its validated DNS resolution
+- `execute_python` dispatch now honors explicitly enabled plugin overrides while
+  preserving the built-in sandbox profile path
+- `calculate` now bounds AST depth, node count, numeric intermediates, powers,
+  and factorial arguments to prevent resource-exhaustion expressions
+- Removed the stale module-level `TOOL_DEFINITIONS` snapshot; definitions are
+  read from the live registry on every request
+- Removed obsolete `#rag-sources` selectors from all bundled themes
 - Tool dispatch arity: `ToolRegistry.execute()` adapts to 0/1-arg handlers
   via `call_tool_handler()` (`r105/registry.py`), so `get_time`,
   `calculate`, `convert`, `web_search`, and `web_fetch` no longer raise

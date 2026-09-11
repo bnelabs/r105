@@ -334,6 +334,7 @@ Press `/` to open the interactive command palette with:
 | `Escape` | Slash mode | Dismiss command palette, clear input |
 | `Ctrl+R` | Any | Open history browser with fuzzy search |
 | `Ctrl+T` | Any | Open tool-call inspector (names, args, result previews) |
+| `Ctrl+X` | Any | Cancel the current local-tool batch |
 | `Ctrl+S` | History screen | Quick-save current session |
 | `Ctrl+Y` | Any | Copy last assistant response to clipboard |
 | `t` / `Enter` / `Space` | Thinking panel focused | Expand / fold the thinking panel |
@@ -348,7 +349,7 @@ Press `/` to open the interactive command palette with:
 
 Core actions can be remapped in `config.json` by binding ID. The supported
 IDs are `quit`, `show_help`, `show_history`, `copy_last_message`,
-`show_tools`, and `cancel_request`:
+`show_tools`, `cancel_tools`, and `cancel_request`:
 
 ```json
 {
@@ -363,7 +364,7 @@ IDs are `quit`, `show_help`, `show_history`, `copy_last_message`,
 
 ## Built-in Tools
 
-r105 provides 10 local tools the LLM can call. All tools are validated before execution with argument size caps, SSRF prevention, and path traversal hardening. `execute_python` runs in a sandboxed environment with no network or filesystem access — and needs a one-time approval per session (`/approve execute_python`, `--yes`, or the `auto_approve_execute_python` config key) before it runs at all. Web tools are rate-limited per session (30 searches / 60 fetches per minute).
+r105 provides 10 local tools the LLM can call. All tools are validated before execution with argument size caps, SSRF prevention, and path traversal hardening. Web fetches validate every redirect and revalidate DNS answers at the TCP connection boundary. `execute_python` runs in a sandboxed environment with no network or filesystem access — and needs a one-time approval per session (`/approve execute_python`, `--yes`, or the `auto_approve_execute_python` config key) before it runs at all. Web tools are rate-limited per session (30 searches / 60 fetches per minute).
 
 | Tool | Description | Sandbox Profile |
 |------|-------------|----------------|

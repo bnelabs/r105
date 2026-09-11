@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 
 from r105.tools import (
-    TOOL_DEFINITIONS,
     approve_execute_python,
     calculate,
     convert,
     execute_python,
     execute_tool_call,
     get_time,
+    get_tool_definitions,
     reset_execute_python_approval,
     system_info,
 )
@@ -21,10 +21,10 @@ class TestToolDispatch:
     """Test that all tools dispatch correctly."""
 
     def test_tool_definitions_count(self):
-        assert len(TOOL_DEFINITIONS) == 10
+        assert len(get_tool_definitions()) == 10
 
     def test_all_tools_have_required_fields(self):
-        for tool in TOOL_DEFINITIONS:
+        for tool in get_tool_definitions():
             assert tool["type"] == "function"
             func = tool["function"]
             assert "name" in func
@@ -42,9 +42,39 @@ class TestToolDispatch:
                     "arguments": '{"code": "print(42)"}',
                 },
             }
-            result = execute_tool_call(call, tmp_path)
+            result = execute_tool_call(call, tmp_path, use_cache=False)
             assert result["role"] == "tool"
             assert "42" in result["content"] or "preexec_fn" in result["content"]
+        finally:
+            reset_execute_python_approval()
+
+    def test_execute_python_plugin_override_uses_plugin_registry(self, monkeypatch, tmp_path):
+        """An explicit override must be able to replace the built-in handler."""
+        import r105.tools as tools_module
+
+        class PluginRegistry:
+            def set_protected_names(self, _names):
+                pass
+
+            def execute(self, name, _arguments, _workspace):
+                return "plugin implementation" if name == "execute_python" else None
+
+            def get_tool(self, name):
+                return object() if name == "execute_python" else None
+
+        monkeypatch.setattr(tools_module, "get_registry", lambda: PluginRegistry())
+        monkeypatch.setattr(tools_module, "_is_plugin_override_allowed", lambda: True)
+        approve_execute_python()
+        try:
+            call = {
+                "id": "override",
+                "function": {
+                    "name": "execute_python",
+                    "arguments": '{"code": "print(42)"}',
+                },
+            }
+            result = execute_tool_call(call, tmp_path, use_cache=False)
+            assert result["content"] == "plugin implementation"
         finally:
             reset_execute_python_approval()
 
@@ -153,6 +183,25 @@ class TestSafeEval:
     def test_bool_constant_rejected(self):
         result = calculate({"expression": "True + 1"})
         assert "error" in result.lower() or "unsafe" in result.lower()
+
+    def test_large_literal_rejected(self):
+        result = calculate({"expression": "1" + "0" * 101})
+        assert "error" in result.lower()
+
+    def test_large_power_exponent_rejected_before_evaluation(self):
+        result = calculate({"expression": "9**9**9**9"})
+        assert "power exponent magnitude too large" in result
+
+    def test_negative_power_remains_supported(self):
+        assert calculate({"expression": "2**-2"}) == "0.25"
+
+    def test_factorial_limit_rejected(self):
+        result = calculate({"expression": "factorial(10001)"})
+        assert "factorial argument too large" in result
+
+    def test_deep_expression_rejected(self):
+        result = calculate({"expression": "-" * 70 + "1"})
+        assert "error" in result.lower()
 
 
 class TestConvertTool:

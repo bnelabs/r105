@@ -34,15 +34,6 @@ Screen {
     border-left: solid #313244;
 }
 
-#rag-sources {
-    height: auto;
-    max-height: 30%;
-    padding: 1;
-    background: #181825;
-    border-bottom: solid #313244;
-    color: #cdd6f4;
-}
-
 #file-explorer {
     height: 1fr;
     padding: 0 1;

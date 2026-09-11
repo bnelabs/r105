@@ -54,6 +54,7 @@ class TestModelFamiliesValidation:
 
     def test_keybindings_validate_known_ids(self) -> None:
         _validate_config({"keybindings": {"show_tools": "ctrl+o"}})
+        _validate_config({"keybindings": {"cancel_tools": "ctrl+x"}})
         with pytest.raises(ValueError, match="Unknown keybinding ID"):
             _validate_config({"keybindings": {"show_toolz": "ctrl+o"}})
         with pytest.raises(ValueError, match="non-empty key string"):

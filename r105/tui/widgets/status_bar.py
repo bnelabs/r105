@@ -14,6 +14,7 @@ class StatusBarWidget(Static):
 
     _STREAMING_FRAMES = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"]
     _STREAMING_INTERVAL = 0.15  # seconds per frame
+    _CONTEXT_BAR_WIDTH = 10
 
     def __init__(self, **kwargs) -> None:
         super().__init__("", **kwargs)
@@ -132,8 +133,11 @@ class StatusBarWidget(Static):
     ) -> str:
         profile = state.profile or "auto"
         skills = f"+{len(state.active_skills)} skill" if state.active_skills else "plain"
+        filled = round((usage.percent / 100.0) * StatusBarWidget._CONTEXT_BAR_WIDTH)
+        filled = max(0, min(StatusBarWidget._CONTEXT_BAR_WIDTH, filled))
+        context_bar = "█" * filled + "░" * (StatusBarWidget._CONTEXT_BAR_WIDTH - filled)
         ctx_line = (
-            f"ctx={usage.used_tokens}/{usage.context_tokens} "
+            f"ctx=[{context_bar}] {usage.used_tokens}/{usage.context_tokens} "
             f"({usage.percent:.1f}%, {usage.estimate_label})"
         )
         line = (

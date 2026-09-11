@@ -50,6 +50,7 @@ VALID_KEYBINDING_IDS = {
     "show_history",
     "copy_last_message",
     "show_tools",
+    "cancel_tools",
     "cancel_request",
 }
 
