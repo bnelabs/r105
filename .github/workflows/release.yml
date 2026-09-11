@@ -369,34 +369,34 @@ jobs:
       - name: Get sdist SHA256 from PyPI
         run: |
           set -euo pipefail
-          url="https://files.pythonhosted.org/packages/source/r/r105/r105-${RELEASE_VERSION}.tar.gz"
+          metadata=$(curl --fail --silent --show-error --location "https://pypi.org/pypi/r105/${RELEASE_VERSION}/json")
+          url=$(jq -er '.urls[] | select(.packagetype == "sdist") | .url' <<< "$metadata")
           sha=$(curl --fail --silent --show-error --location "$url" | sha256sum | cut -d' ' -f1)
+          echo "SDIST_URL=$url" >> "$GITHUB_ENV"
           echo "SDIST_SHA256=$sha" >> "$GITHUB_ENV"
       - name: Update Homebrew formula
         run: |
-          cat > docs/homebrew.rb.in <<'EOF'
-          class R105 < Formula
-            include Language::Python::Virtualenv
-            desc "r105 — Beyond the prompt. Rich terminal AI assistant for any OpenAI-compatible backend."
-            homepage "https://github.com/bnelabs/r105"
-            url "https://files.pythonhosted.org/packages/source/r/r105/r105-${RELEASE_VERSION}.tar.gz"
-            sha256 "${SDIST_SHA256}"
-            license "MIT"
-            depends_on "python@3.12"
-            def install
-              virtualenv_install_with_resources
-            end
-            test do
-              assert_match "r105 #{version}", shell_output("#{bin}/r105 --version")
-            end
-          end
-          EOF
           envsubst < docs/homebrew.rb.in > docs/homebrew.rb
-          rm docs/homebrew.rb.in
+      - name: Update the Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          tap_dir="$RUNNER_TEMP/homebrew-tap"
+          gh repo clone bnelabs/homebrew-tap "$tap_dir"
+          cp docs/homebrew.rb "$tap_dir/Formula/r105.rb"
+          git -C "$tap_dir" config user.name "r105 release bot"
+          git -C "$tap_dir" config user.email "bot@r105.dev"
+          git -C "$tap_dir" add Formula/r105.rb
+          if ! git -C "$tap_dir" diff --cached --quiet; then
+            git -C "$tap_dir" commit -m "Update r105 formula to v${RELEASE_VERSION}"
+            git -C "$tap_dir" push origin HEAD:main
+          fi
       - name: Update Scoop formula
         run: |
           set -euo pipefail
-          pypi_url="https://files.pythonhosted.org/packages/source/r/r105/r105-${RELEASE_VERSION}.tar.gz"
+          pypi_url="${SDIST_URL}"
           win_url="https://github.com/bnelabs/r105/releases/download/v${RELEASE_VERSION}/r105-windows-x64.zip"
           win_archive="$RUNNER_TEMP/r105-windows-x64.zip"
           curl --fail --silent --show-error --location "$win_url" -o "$win_archive"
