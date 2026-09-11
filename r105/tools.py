@@ -14,7 +14,7 @@ import re
 import socket
 import subprocess
 
-# -- Tool registry (decorator-based) ---------------------------------------
+# -- Tool registry (decorator-based, unified via ComponentRegistry) ----------
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +32,7 @@ from r105.constants import (
 )
 from r105.mcp_client import get_mcp_manager
 from r105.plugins import get_registry
+from r105.registry import ComponentRegistry
 from r105.sandbox import (
     SandboxProfile,
     current_posture,
@@ -73,8 +74,11 @@ class RegisteredTool:
         }
 
 
-class ToolRegistry:
-    """Decorator-based registry for built-in tools.
+class ToolRegistry(ComponentRegistry["RegisteredTool"]):
+    """Decorator-based registry for built-in tools (unified abstraction).
+
+    Subclasses :class:`r105.registry.ComponentRegistry` so tools and plugins
+    share shadowing protection, protected-name handling, and warning semantics.
 
     Usage::
 
@@ -92,8 +96,17 @@ class ToolRegistry:
             return f"result: {arguments['input']}"
     """
 
-    def __init__(self) -> None:
-        self._tools: dict[str, RegisteredTool] = {}
+    def __init__(self, *, allow_overwrite: bool = False) -> None:
+        super().__init__(allow_overwrite=allow_overwrite)
+
+    @property
+    def _tools(self) -> dict[str, RegisteredTool]:
+        # Backwards-compat: existing code touches ``registry._tools`` directly.
+        return self._items
+
+    @_tools.setter
+    def _tools(self, value: dict[str, RegisteredTool]) -> None:
+        self._items = value
 
     def register(
         self,
@@ -106,10 +119,11 @@ class ToolRegistry:
         needs_filesystem: bool = False,
         needs_output_truncation: bool = True,
         needs_external_wrapping: bool = False,
+        allow_overwrite: bool | None = None,
     ) -> Callable[[ToolHandler], ToolHandler]:
         """Decorator that registers a function as a tool handler."""
         def decorator(handler: ToolHandler) -> ToolHandler:
-            self._tools[name] = RegisteredTool(
+            tool = RegisteredTool(
                 name=name,
                 description=description,
                 parameters=parameters or {},
@@ -120,6 +134,8 @@ class ToolRegistry:
                 needs_external_wrapping=needs_external_wrapping,
                 handler=handler,
             )
+            # Route through the unified registry so shadowing is checked.
+            self.register_item(name, tool, allow_overwrite=allow_overwrite)
             return handler
         return decorator
 
@@ -384,7 +400,86 @@ def _cache_clear() -> None:
     _tool_cache.clear()
 
 
+# -- Structured output repair (malformed LLM tool arguments) ----------------
+
+
+def repair_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
+    """Parse tool arguments with graceful repair for malformed LLM output.
+
+    LLMs frequently emit slightly invalid JSON (trailing commas, single
+    quotes, unquoted keys, markdown fences, truncated payloads). This helper
+    tries ``json.loads`` first, then applies a series of low-risk repairs.
+    Returns an empty dict only when nothing salvageable remains.
+    """
+    if isinstance(raw_arguments, dict):
+        return raw_arguments
+    if not isinstance(raw_arguments, str):
+        return {}
+    text = raw_arguments.strip()
+    if not text:
+        return {}
+    # Strip markdown fences: ```json ... ```
+    if text.startswith("```"):
+        # Remove first fence line and trailing fence.
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        pass
+    # Repair 1: trailing commas before } or ].
+    repaired = re.sub(r",\s*([}\]])", r"\1", text)
+    try:
+        parsed = json.loads(repaired)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    # Repair 2: single quotes -> double quotes (naive but effective for flat args).
+    # Only attempt when the payload looks like a Python dict repr.
+    if "'" in repaired and '"' not in repaired:
+        try:
+            parsed = ast.literal_eval(repaired)
+            if isinstance(parsed, dict):
+                return {str(k): v for k, v in parsed.items()}
+        except (SyntaxError, ValueError):
+            pass
+    # Repair 3: extract the largest {...} substring (handles preamble chatter).
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = re.sub(r",\s*([}\]])", r"\1", text[start:end + 1])
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
 # -- Tool dispatch -----------------------------------------------------------
+
+
+def _is_plugin_override_allowed() -> bool:
+    """True when the operator explicitly allows plugins to shadow built-ins."""
+    import os as _os
+    if _os.environ.get("R105_ALLOW_PLUGIN_OVERRIDE", "").lower() in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        from r105.config import ensure_config as _ensure_config
+        return bool(_ensure_config().get("allow_plugin_overrides", False))
+    except Exception:
+        return False
+
+
+def _builtin_tool_names() -> set[str]:
+    return set(get_tool_registry().names())
 
 
 def execute_tool_call(
@@ -401,9 +496,17 @@ def execute_tool_call(
     function = call.get("function") or {}
     name = str(function.get("name", ""))
     raw_arguments = function.get("arguments") or "{}"
-    arguments = (
-        json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
-    )
+    # Structured-output repair: tolerate malformed JSON from the LLM.
+    try:
+        arguments = (
+            json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+        )
+        if not isinstance(arguments, dict):
+            arguments = repair_tool_arguments(raw_arguments)
+    except json.JSONDecodeError:
+        arguments = repair_tool_arguments(raw_arguments)
+    if not isinstance(arguments, dict):
+        arguments = {}
     args_str = json.dumps(arguments, sort_keys=True)
 
     # Enforce the active permission posture before any work happens
@@ -437,22 +540,50 @@ def execute_tool_call(
                 "content": f"{cached}\n\n[SYSTEM NOTE: This result was cached from a previous identical call.]",
             }
 
-    # Dispatch: try built-in registry → plugins → MCP
+    # Dispatch: try built-in registry → plugins → MCP.
+    # SECURITY: built-ins always win over plugins/MCP when names collide,
+    # unless the operator explicitly allows overrides. This prevents a
+    # malicious plugin/MCP server from hijacking e.g. ``execute_python``.
     result: str | None = None
+    builtin_names = _builtin_tool_names()
     if name == "execute_python":
         result = execute_python(arguments, workspace_dir, profile=profile_for_tool(name))
     else:
         result = get_tool_registry().execute(name, arguments, workspace_dir)
     if result is None:
-        plugin_result = get_registry().execute(name, arguments, workspace_dir)
-        if plugin_result is not None:
-            result = plugin_result
-        else:
-            mcp_result = get_mcp_manager().execute_tool(name, arguments)
-            if mcp_result is not None:
-                result = mcp_result
+        # Sync the protected-name set so PluginRegistry can reject shadowing
+        # at registration time as well (defense in depth).
+        try:
+            get_registry().set_protected_names(builtin_names)
+        except Exception:
+            pass
+        if name in builtin_names and not _is_plugin_override_allowed():
+            # A plugin/MCP tool shadows a built-in: ignore the shadow and
+            # report it instead of executing untrusted code.
+            plugin_shadow = get_registry().get_tool(name)
+            if plugin_shadow is not None:
+                result = (
+                    f"error: plugin tool '{name}' shadows a built-in tool and was blocked. "
+                    "Rename the plugin tool or set allow_plugin_overrides=true / "
+                    "R105_ALLOW_PLUGIN_OVERRIDE=1 to allow shadowing explicitly."
+                )
             else:
-                result = f"unknown tool: {name}"
+                plugin_result = get_registry().execute(name, arguments, workspace_dir)
+                if plugin_result is not None:
+                    result = plugin_result
+                else:
+                    mcp_result = get_mcp_manager().execute_tool(name, arguments)
+                    result = mcp_result if mcp_result is not None else f"unknown tool: {name}"
+        else:
+            plugin_result = get_registry().execute(name, arguments, workspace_dir)
+            if plugin_result is not None:
+                result = plugin_result
+            else:
+                mcp_result = get_mcp_manager().execute_tool(name, arguments)
+                if mcp_result is not None:
+                    result = mcp_result
+                else:
+                    result = f"unknown tool: {name}"
 
     # Apply truncation to large outputs (execute_python, read_file, web_search, web_fetch)
     content = result if isinstance(result, str) else json.dumps(result, sort_keys=True)
@@ -471,11 +602,30 @@ def execute_tool_call(
 
 
 def get_tool_definitions() -> list[dict[str, Any]]:
-    """Return merged tool definitions: built-in registry + plugins + MCP."""
+    """Return merged tool definitions: built-in registry + plugins + MCP.
+
+    When a plugin/MCP tool shadows a built-in name it is excluded unless
+    overrides are explicitly allowed — the LLM then only sees the trusted
+    built-in definition.
+    """
+    builtin_defs = get_tool_registry().get_definitions()
+    builtin_names = {d.get("function", {}).get("name") for d in builtin_defs}
+    allow_override = _is_plugin_override_allowed()
+    # Keep the plugin registry's protected set in sync for early rejection.
+    try:
+        get_registry().set_protected_names({n for n in builtin_names if isinstance(n, str)})
+    except Exception:
+        pass
+    plugin_defs = get_registry().get_definitions()
+    if not allow_override:
+        plugin_defs = [d for d in plugin_defs if d.get("function", {}).get("name") not in builtin_names]
+    mcp_defs = get_mcp_manager().get_all_definitions()
+    if not allow_override:
+        mcp_defs = [d for d in mcp_defs if d.get("function", {}).get("name") not in builtin_names]
     return [
-        *get_tool_registry().get_definitions(),
-        *get_registry().get_definitions(),
-        *get_mcp_manager().get_all_definitions(),
+        *builtin_defs,
+        *plugin_defs,
+        *mcp_defs,
     ]
 
 

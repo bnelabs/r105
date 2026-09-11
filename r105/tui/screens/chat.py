@@ -57,6 +57,7 @@ class ChatScreen(Screen[None]):
 
     BINDINGS = [
         ("ctrl+y", "copy_last_message", "Copy last response"),
+        ("escape", "cancel_request", "Cancel current request"),
     ]
 
     def __init__(
@@ -70,6 +71,7 @@ class ChatScreen(Screen[None]):
         self.state = state
         self.workspace = workspace_dir
         self._http = httpx.AsyncClient()
+        self._active_worker: Any | None = None
 
     async def on_unmount(self) -> None:
         saved = auto_save(self.state)
@@ -138,6 +140,28 @@ class ChatScreen(Screen[None]):
             chat_view = self.query_one("#chat-view", ChatView)
             chat_view.add_system("[dim]Clipboard unavailable (install xclip or wl-copy)[/dim]")
 
+    def action_cancel_request(self) -> None:
+        """Cancel the in-flight LLM request (Esc). Shows a [CANCELED] marker."""
+        worker = self._active_worker
+        if worker is not None:
+            try:
+                worker.cancel()
+            except Exception:
+                pass
+            try:
+                chat_view = self.query_one("#chat-view", ChatView)
+                chat_view.finish_streaming()
+                chat_view.add_canceled("Request canceled by user")
+            except Exception:
+                pass
+            try:
+                status_bar = self.query_one("#status-bar", StatusBarWidget)
+                status_bar.clear_busy()
+            except Exception:
+                pass
+            self._active_worker = None
+            self._refresh_all()
+
     # -- Input handling ---------------------------------------------------
 
     async def _execute_slash_command(self, text: str, chat_view: ChatView) -> None:
@@ -175,7 +199,10 @@ class ChatScreen(Screen[None]):
             await self._execute_slash_command(text, chat_view)
         else:
             chat_view.add_user(text)
-            self._send_message(text)
+            try:
+                self._active_worker = self._send_message(text)
+            except Exception:
+                self._active_worker = None
 
         self._refresh_all()
 
@@ -262,13 +289,29 @@ class ChatScreen(Screen[None]):
                 message, self.state, tools, self._http,
                 on_chunk=lambda token: chat_view.stream_chunk(token),
             )
+        except asyncio.CancelledError:
+            # User pressed Esc: leave a distinct marker so the transcript
+            # explains why output stopped mid-stream.
+            try:
+                chat_view.finish_streaming()
+            except Exception:
+                pass
+            chat_view.add_canceled("Request canceled")
+            self._refresh_all()
+            return
         except Exception as exc:
             chat_view.add_error(f"Send failed: {exc}")
             self._refresh_all()
             return
         finally:
-            chat_view.finish_streaming()
-            status_bar.clear_busy()
+            try:
+                chat_view.finish_streaming()
+            except Exception:
+                pass
+            try:
+                status_bar.clear_busy()
+            except Exception:
+                pass
 
         max_iterations = MAX_TOOL_LOOP_ITERATIONS
         iteration = 0
@@ -279,15 +322,15 @@ class ChatScreen(Screen[None]):
             iteration += 1
             # Assistant message (with tool_calls) already recorded by async_send/async_continue.
             # Pre-parse tool call signatures once for dedup detection.
+            # Uses structured-output repair so malformed LLM JSON doesn't crash the loop.
             signatures: list[tuple[dict[str, Any], str, str]] = []  # (tc, name, args_str)
             for tc in result.tool_calls:
                 func = tc.get("function", {})
                 name = func.get("name", "unknown")
                 try:
-                    args = func.get("arguments", {})
-                    if isinstance(args, str):
-                        args = json.loads(args)
-                except (json.JSONDecodeError, TypeError):
+                    from r105.tools import repair_tool_arguments as _repair_args
+                    args = _repair_args(func.get("arguments", {}))
+                except Exception:
                     args = {}
                 args_str = json.dumps(args, indent=2, sort_keys=True)
                 signatures.append((tc, name, args_str))
@@ -398,13 +441,27 @@ class ChatScreen(Screen[None]):
                     self._http,
                     on_chunk=lambda token: chat_view.stream_chunk(token),
                 )
+            except asyncio.CancelledError:
+                try:
+                    chat_view.finish_streaming()
+                except Exception:
+                    pass
+                chat_view.add_canceled("Request canceled during tool loop")
+                self._refresh_all()
+                return
             except Exception as exc:
                 chat_view.add_error(f"Tool loop error: {exc}")
                 self._refresh_all()
                 return
             finally:
-                chat_view.finish_streaming()
-                status_bar.clear_busy()
+                try:
+                    chat_view.finish_streaming()
+                except Exception:
+                    pass
+                try:
+                    status_bar.clear_busy()
+                except Exception:
+                    pass
 
         status_bar.clear_busy()
         # Show final response as markdown panel only when tools were involved
@@ -434,6 +491,7 @@ class ChatScreen(Screen[None]):
 
         self._refresh_all()
         self._refresh_file_explorer()
+        self._active_worker = None
 
     # -- Refresh helpers --------------------------------------------------
 

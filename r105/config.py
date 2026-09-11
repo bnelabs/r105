@@ -32,16 +32,122 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "model_families": {},
     "mcp_servers": [],
     "url": None,
+    "allow_plugin_overrides": False,
+    "docker_image": None,
 }
 
 VALID_THEMES = {"r105", "dracula", "solarized-dark", "high-contrast"}
-VALID_SANDBOX_BACKENDS = {"auto", "nsjail", "bwrap", "rlimit", "none"}
+VALID_SANDBOX_BACKENDS = {"auto", "nsjail", "bwrap", "docker", "rlimit", "none"}
 VALID_PERMISSION_POSTURES = {"full-access", "restricted", "sandboxed", "off"}
 VALID_REASONING_EFFORTS = {"auto", "off", "low", "medium", "high"}
 
 
+# -- Declarative schema via pydantic (preferred) with manual fallback --------
+# ``pydantic`` provides declarative validation; when it is not installed we
+# fall back to the manual ``_validate_config`` checks below so ``r105`` runs
+# with only stdlib + httpx/textual/rich.
+_PYDANTIC_AVAILABLE = False
+_PydanticBaseModel: Any = object
+_PydanticValidationError: Any = Exception
+_field_validator: Any = None
+try:  # pragma: no cover - import-time feature detection
+    from pydantic import BaseModel as _BaseModel
+    from pydantic import ValidationError as _ValidationError
+    from pydantic import field_validator as _field_validator_fn
+    _PydanticBaseModel = _BaseModel
+    _PydanticValidationError = _ValidationError
+    _field_validator = _field_validator_fn
+    _PYDANTIC_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    pass
+
+
+if _PYDANTIC_AVAILABLE:
+    class R105Config(_PydanticBaseModel):
+        """Declarative config schema (pydantic v2)."""
+        theme: str | None = "r105"
+        workspace: str | None = None
+        skills_dir: str | None = None
+        plugins_dir: str | None = None
+        quality: str | None = None
+        profile: str | None = None
+        model: str | None = None
+        auto_compact: bool = True
+        sandbox_backend: str | None = "auto"
+        permission_posture: str | None = "sandboxed"
+        reasoning_effort: str | None = "auto"
+        show_thinking: bool = True
+        thinking_default_expanded: bool = False
+        model_contexts: dict[str, int] = {}
+        context_tokens: int | None = None
+        model_families: dict[str, str | None] = {}
+        mcp_servers: list[dict[str, Any]] = []
+        url: str | None = None
+        allow_plugin_overrides: bool = False
+        docker_image: str | None = None
+
+        model_config = {"extra": "forbid"}
+
+        @_field_validator("theme")
+        @classmethod
+        def _check_theme(cls, v: str | None) -> str | None:
+            if v is not None and v not in VALID_THEMES:
+                raise ValueError(f"Invalid theme '{v}'. Valid: {sorted(VALID_THEMES)}")
+            return v
+
+        @_field_validator("sandbox_backend")
+        @classmethod
+        def _check_sandbox(cls, v: str | None) -> str | None:
+            if v is not None and v not in VALID_SANDBOX_BACKENDS:
+                raise ValueError(f"Invalid sandbox_backend '{v}'. Valid: {sorted(VALID_SANDBOX_BACKENDS)}")
+            return v
+
+        @_field_validator("permission_posture")
+        @classmethod
+        def _check_posture(cls, v: str | None) -> str | None:
+            if v is not None and v not in VALID_PERMISSION_POSTURES:
+                raise ValueError(f"Invalid permission_posture '{v}'. Valid: {sorted(VALID_PERMISSION_POSTURES)}")
+            return v
+
+        @_field_validator("reasoning_effort")
+        @classmethod
+        def _check_effort(cls, v: str | None) -> str | None:
+            if v is not None and v not in VALID_REASONING_EFFORTS:
+                raise ValueError(f"Invalid reasoning_effort '{v}'. Valid: {sorted(VALID_REASONING_EFFORTS)}")
+            return v
+
+        @_field_validator("context_tokens")
+        @classmethod
+        def _check_ctx(cls, v: int | None) -> int | None:
+            if v is not None and (not isinstance(v, int) or v <= 0):
+                raise ValueError(f"context_tokens must be a positive integer, got {v!r}")
+            return v
+else:
+    R105Config = None  # type: ignore[assignment,misc]
+
+
 def _validate_config(raw: dict[str, Any]) -> None:
-    """Validate config keys and values. Raises ValueError with helpful message on failure."""
+    """Validate config keys and values. Raises ValueError with helpful message on failure.
+
+    Manual checks run first to preserve stable error messages (tests depend
+    on them); when pydantic is installed the declarative ``R105Config``
+    schema is also enforced as the single source of truth for new keys.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("config.json must be a JSON object")
+
+    # Manual validation first (stable messages, no optional deps required).
+    _validate_config_manual(raw)
+
+    if _PYDANTIC_AVAILABLE and R105Config is not None:
+        try:
+            R105Config(**raw)
+        except _PydanticValidationError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+def _validate_config_manual(raw: dict[str, Any]) -> None:
+    """Manual validation fallback (also runs when pydantic is present)."""
     if not isinstance(raw, dict):
         raise ValueError("config.json must be a JSON object")
 
@@ -136,6 +242,12 @@ def _validate_config(raw: dict[str, Any]) -> None:
                 raise ValueError(f"mcp_servers[{i}] must be an object")
             if "name" not in srv:
                 raise ValueError(f"mcp_servers[{i}] missing required field 'name'")
+
+    if "allow_plugin_overrides" in raw and not isinstance(raw["allow_plugin_overrides"], bool):
+        raise ValueError("allow_plugin_overrides must be true or false")
+
+    if "docker_image" in raw and raw["docker_image"] is not None and not isinstance(raw["docker_image"], str):
+        raise ValueError("docker_image must be a string or null")
 
 
 def ensure_config() -> dict[str, Any]:

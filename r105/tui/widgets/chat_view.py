@@ -81,7 +81,7 @@ def _renderable_height(renderable: Any, width: int) -> int:
 class _Message:
     """One transcript entry — pure data until materialized as a widget."""
 
-    kind: str  # user | assistant | thinking | system | error | tool_call | tool_result | tool_status | source
+    kind: str  # user | assistant | thinking | system | error | tool_call | tool_result | tool_status | canceled | source
     text: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
     height: int | None = None  # cached measured height (at self.width)
@@ -294,6 +294,15 @@ class ChatView(VerticalScroll):
         """Show an inline tool progress message (e.g. 'Executing Python...')."""
         self._append("tool_status", text)
 
+    def add_canceled(self, reason: str = "Request canceled") -> None:
+        """Insert a distinct visual marker when a stream is canceled.
+
+        Called when the user aborts a generation (Esc/Ctrl-C) or the tool
+        loop is interrupted, so the transcript explains why output stopped
+        instead of ending mid-sentence with no context.
+        """
+        self._append("canceled", reason)
+
     def add_source_attribution(self, source_tag: str, snippet: str = "") -> None:
         """Render a RAG source citation with optional snippet preview."""
         self._append("source", source_tag, {"snippet": snippet})
@@ -454,6 +463,12 @@ class ChatView(VerticalScroll):
             content = Text()
             content.append(f"🔧 {msg.text}", style=_DIM_WARM)
             return content
+        if kind == "canceled":
+            content = Text()
+            content.append("■ ", style="bold red")
+            content.append(msg.text or "Request canceled", style="bold red")
+            content.append(" — output stopped by user", style="dim")
+            return Panel(content, title="CANCELED", border_style="red", padding=(0, 1))
         if kind == "source":
             snippet = msg.meta.get("snippet", "")
             if snippet:

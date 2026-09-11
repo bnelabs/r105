@@ -1,12 +1,19 @@
 """Sandbox backends for executing untrusted Python code.
 
-Provides a pluggable sandbox abstraction with three backends:
+Provides a pluggable sandbox abstraction with backends:
 
-- RLimitSandbox: resource limits via setrlimit (Unix-only, no isolation)
-- BwrapSandbox: namespace isolation via bubblewrap (stronger, Linux, requires bwrap)
 - NsjailSandbox: advanced isolation via nsjail with seccomp-bpf (strongest, Linux)
+- BwrapSandbox: namespace isolation via bubblewrap (stronger, Linux, requires bwrap)
+- DockerSandbox: container isolation via Docker (strong, cross-platform, requires docker)
+- RLimitSandbox: resource limits via setrlimit ONLY (Unix-only, NO isolation).
+  LAST-RESORT FALLBACK — does NOT isolate filesystem or network. Never use for
+  untrusted code unless nsjail/bwrap/docker are unavailable, and even then
+  only for fully trusted local code.
+- NoopSandbox: no isolation at all (explicit opt-in only).
 
-Backend selection is automatic: nsjail > bwrap > rlimit > none (Windows).
+Backend selection is automatic: nsjail > bwrap > docker > rlimit > none.
+RLimit is deliberately demoted to a strict last resort: it only restricts
+CPU/RAM via setrlimit and provides zero filesystem/network isolation.
 
 Per-tool sandbox profiles allow tools to specify their isolation requirements
 (e.g., execute_python needs no network, while web_search needs it).
@@ -113,12 +120,51 @@ def profile_for_tool(name: str) -> SandboxProfile:
 
 # -- Environment sanitisation -------------------------------------------
 
-# Env vars that are safe to pass through to the sandbox.
+# Explicit allowlist of safe environment variables forwarded to the sandbox.
+# Deliberately exhaustive: anything not listed here is dropped. Previous
+# prefix-based matching (e.g. "PATH" matching "PATH_EVIL") risked leaking
+# secrets when a prefix collided with a longer variable name.
+_SAFE_ENV_VARS = frozenset({
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_COLLATE",
+    "LANGUAGE",
+    "USER",
+    "LOGNAME",
+    "TERM",
+    "TERMINFO",
+    "SHELL",
+    "COLORTERM",
+    "NO_COLOR",
+    "CLICOLOR",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "PYTHONUNBUFFERED",
+    "PYTHONIOENCODING",
+    "PYTHONHASHSEED",
+    "TZ",
+    "EDITOR",
+})
+
+# Only true namespace prefixes (trailing underscore) are allowed via prefix
+# matching. "LC_" and "XDG_" are namespaced by convention; everything else
+# must match exactly in _SAFE_ENV_VARS above.
 _SAFE_ENV_PREFIXES = (
-    "PATH", "HOME", "TMPDIR", "TMP", "LANG", "LC_", "USER", "LOGNAME",
-    "TERM", "SHELL", "COLORTERM", "DISPLAY", "WAYLAND_DISPLAY",
-    "XDG_", "DBUS_", "PYTHONUNBUFFERED",
+    "LC_",
+    "XDG_",
 )
+
+# Backwards-compat alias (deprecated: use _SAFE_ENV_VARS).
+_SAFE_ENV_PREFIXES_LEGACY = _SAFE_ENV_PREFIXES
 
 # Patterns that indicate a secret/credential-bearing variable.
 _SECRET_PATTERNS = re.compile(
@@ -129,22 +175,26 @@ _SECRET_PATTERNS = re.compile(
 def _sanitize_env(tmpdir: str) -> dict[str, str]:
     """Return a minimal environment dict with secrets stripped.
 
-    Only safe variables are forwarded. Everything else is dropped.
+    Only variables in the explicit ``_SAFE_ENV_VARS`` allowlist (plus the
+    namespaced ``LC_*``/``XDG_*`` prefixes) are forwarded. Everything else
+    is dropped. Secret-bearing and cloud-credential variables are always
+    dropped even if they would otherwise match the allowlist.
     """
     clean: dict[str, str] = {}
     for key, value in os.environ.items():
-        # Drop known secret-bearing vars
+        # Drop known secret-bearing vars (always, even if allowlisted)
         if _SECRET_PATTERNS.search(key):
             continue
-        # Drop cloud-provider credential vars
-        if any(key.startswith(p) for p in (
+        # Drop cloud-provider / AI-provider credential vars
+        if any(key == p or key.startswith(p) for p in (
             "AWS_", "GCP_", "AZURE_", "GOOGLE_",
             "OPENAI_", "ANTHROPIC_", "COHERE_",
-            "GITHUB_TOKEN", "DOCKER_", "KUBECONFIG", "SSH_",
+            "GITHUB_", "DOCKER_", "KUBECONFIG", "SSH_", "KUBE_",
+            "R105_", "LLAMA_",
         )):
             continue
-        # Keep only explicitly safe prefixes
-        if any(key == prefix or key.startswith(prefix) for prefix in _SAFE_ENV_PREFIXES):
+        # Keep only explicitly allowlisted vars or namespaced prefixes
+        if key in _SAFE_ENV_VARS or key.startswith(_SAFE_ENV_PREFIXES):
             clean[key] = value
 
     # Override with sandbox-specific paths
@@ -183,17 +233,27 @@ class SandboxBackend(abc.ABC):
         return True
 
 
-# -- RLimit backend ---------------------------------------------------------
+# -- RLimit backend (DEMOTED: last-resort fallback, NOT isolation) ------------
 
 
 class RLimitSandbox(SandboxBackend):
-    """Sandbox using resource.setrlimit() for basic resource limits.
+    """STRICT LAST-RESORT FALLBACK — NOT true isolation.
+
+    Uses ``resource.setrlimit()`` for basic CPU/RAM/filesize limits ONLY.
+    It does NOT isolate the filesystem, network, PIDs, or UIDs: code runs
+    as the host user with full host FS/network access (minus env secrets).
+
+    SECURITY WARNING: do NOT use for untrusted code. Prefer nsjail > bwrap >
+    docker. This backend exists only so ``execute_python`` still functions on
+    minimal Unix hosts (e.g. macOS without Docker) for trusted local code.
+    A ``RuntimeWarning`` is emitted on every execution to make the posture
+    explicit in logs.
 
     Limits: 256 MB memory, 25s CPU, no child processes, 50 MB files.
-    Runs under the host UID — NOT suitable for multi-tenant production use.
     """
 
     name = "rlimit"
+    _warned: bool = False
 
     @staticmethod
     def is_available() -> bool:
@@ -206,6 +266,16 @@ class RLimitSandbox(SandboxBackend):
         profile: SandboxProfile | None = None,
         timeout: float = SANDBOX_TIMEOUT,
     ) -> subprocess.CompletedProcess[str]:
+        import warnings
+
+        if not RLimitSandbox._warned:
+            warnings.warn(
+                "RLimitSandbox provides NO filesystem/network isolation "
+                "(rlimit only). Use nsjail/bwrap/docker for untrusted code.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            RLimitSandbox._warned = True
         p = profile or PROFILE_EXECUTE_PYTHON
         tmpdir = tempfile.mkdtemp(prefix="r105_sandbox_")
         try:
@@ -511,6 +581,89 @@ def _find_lib_dirs() -> list[str]:
     return dirs
 
 
+# -- Docker backend (strong cross-platform isolation) ------------------------
+
+
+class DockerSandbox(SandboxBackend):
+    """Sandbox using Docker containers for cross-platform isolation.
+
+    Provides strong isolation on any platform with Docker:
+    - Fresh ``python:3.12-slim`` container per execution (``--rm``)
+    - No network by default (``--network none`` unless profile needs it)
+    - Memory/CPU limits (``--memory``, ``--cpus``)
+    - Read-only root FS with a single writable ``/tmp`` workdir bind
+    - Non-root user, no privilege escalation (``--user nobody``, ``--pids-limit``)
+    - Sanitized environment (secrets stripped via ``_sanitize_env``)
+
+    Requires Docker daemon: https://docs.docker.com/get-docker/
+    Configure image via ``R105_DOCKER_IMAGE`` env var (default: python:3.12-slim).
+    """
+
+    name = "docker"
+    DEFAULT_IMAGE = "python:3.12-slim"
+
+    @staticmethod
+    def _image() -> str:
+        return os.environ.get("R105_DOCKER_IMAGE", DockerSandbox.DEFAULT_IMAGE)
+
+    @staticmethod
+    def is_available() -> bool:
+        if shutil.which("docker") is None:
+            return False
+        try:
+            result = subprocess.run(
+                ["docker", "info", "--format", "{{json .}}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def execute(
+        self,
+        code: str,
+        *,
+        profile: SandboxProfile | None = None,
+        timeout: float = SANDBOX_TIMEOUT,
+    ) -> subprocess.CompletedProcess[str]:
+        p = profile or PROFILE_EXECUTE_PYTHON
+        actual_timeout = p.timeout if timeout == SANDBOX_TIMEOUT else timeout
+        tmpdir = tempfile.mkdtemp(prefix="r105_docker_")
+        try:
+            # Write code to a file to avoid shell-quoting issues with -c.
+            code_path = os.path.join(tmpdir, "snippet.py")
+            with open(code_path, "w", encoding="utf-8") as fh:
+                fh.write(code)
+            env = _sanitize_env(tmpdir)
+            cmd: list[str] = [
+                "docker", "run", "--rm", "-i",
+                "--user", "nobody",
+                "--read-only",
+                "--pids-limit", "64",
+                "--memory", f"{p.memory_mb}m",
+                "--cpus", "1.0",
+                "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges",
+                "-v", f"{tmpdir}:/work:ro",
+                "-w", "/tmp",
+            ]
+            if not p.needs_network:
+                cmd.extend(["--network", "none"])
+            # Forward only sanitized env vars explicitly.
+            for key in ("PYTHONHASHSEED", "PYTHONIOENCODING", "PYTHONUNBUFFERED", "TZ", "LANG"):
+                if key in env:
+                    cmd.extend(["-e", f"{key}={env[key]}"])
+            cmd.extend([self._image(), "python", "/work/snippet.py"])
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=actual_timeout + 10.0,  # container startup overhead
+            )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 # -- Noop backend ----------------------------------------------------------
 
 
@@ -537,14 +690,16 @@ class NoopSandbox(SandboxBackend):
 
 # -- Backend registry -------------------------------------------------------
 
-_BACKENDS: list[type[SandboxBackend]] = [NsjailSandbox, BwrapSandbox, RLimitSandbox]
+_BACKENDS: list[type[SandboxBackend]] = [NsjailSandbox, BwrapSandbox, DockerSandbox, RLimitSandbox]
 _sandbox: SandboxBackend | None = None
 
 
 def detect_backend() -> SandboxBackend:
     """Return the best available sandbox backend.
 
-    Preference order: nsjail > bwrap > rlimit > none.
+    Preference order: nsjail > bwrap > docker > rlimit > none.
+    RLimit is a strict last resort (no isolation) and is only selected when
+    no true isolation backend is available.
     """
     for cls in _BACKENDS:
         if cls.is_available():
