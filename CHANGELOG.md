@@ -48,7 +48,8 @@ _No unreleased changes._
 - `Ctrl+X` / `cancel_tools` cancels a waiting local-tool batch
 - The status bar renders context usage as a visual progress bar
 - Release artifacts now include `.deb`, `.pkg.tar.zst`, `.rpm`, FreeBSD
-  `.pkg`, Alpine `.apk`, Unix `.tar.gz`, and Windows `.zip` packages
+  `.pkg`, Alpine `.apk`, Unix `.tar.gz`, and Windows x86_64/ARM64 `.zip`
+  packages
 - Release metadata validation checks the tag, project version, runtime version,
   and changelog section before publishing
 - SSE streaming robustness: `event:` tracking with `event: error` surfacing

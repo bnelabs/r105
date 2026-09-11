@@ -63,6 +63,10 @@ jobs:
             name: Windows x86_64
             artifact: r105-windows
             path: dist/r105.exe
+          - os: windows-11-vs2026-arm
+            name: Windows ARM64
+            artifact: r105-windows-arm
+            path: dist/r105.exe
           - os: macos-26
             name: macOS ARM64
             artifact: r105-macos-arm
@@ -77,7 +81,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pyinstaller .
       - name: Build standalone binary (Unix)
-        if: matrix.os != 'windows-latest'
+        if: ${{ !startsWith(matrix.os, 'windows') }}
         run: |
           python -m PyInstaller --clean --onefile --name r105 \
             --hidden-import=r105.cli \
@@ -89,7 +93,7 @@ jobs:
             --add-data "r105/skills:r105/skills" \
             r105/__main__.py
       - name: Build standalone binary (Windows)
-        if: matrix.os == 'windows-latest'
+        if: ${{ startsWith(matrix.os, 'windows') }}
         shell: cmd
         run: |
           python -m PyInstaller --clean --onefile --name r105 ^
@@ -102,10 +106,10 @@ jobs:
             --add-data "r105/skills;r105/skills" ^
             r105\__main__.py
       - name: Smoke test Unix binary
-        if: matrix.os != 'windows-latest'
+        if: ${{ !startsWith(matrix.os, 'windows') }}
         run: ./dist/r105 --version
       - name: Smoke test Windows binary
-        if: matrix.os == 'windows-latest'
+        if: ${{ startsWith(matrix.os, 'windows') }}
         shell: cmd
         run: dist\r105.exe --version
       - uses: actions/upload-artifact@v7
@@ -238,8 +242,8 @@ jobs:
               --hidden-import=r105.tui.screens \
               --hidden-import=r105.tui.widgets \
               --hidden-import=r105.themes \
-              --add-data "r105/themes:r105/themes" \
-              --add-data "r105/skills:r105/skills" \
+              --add-data "$(pwd)/r105/themes:r105/themes" \
+              --add-data "$(pwd)/r105/skills:r105/skills" \
               r105/__main__.py
             mkdir -p freebsd-stage/usr/local/bin \
               freebsd-stage/usr/local/share/licenses/r105 \
@@ -285,6 +289,7 @@ jobs:
           output_root="$RUNNER_TEMP/r105-alpine"
           mkdir -p "$output_root"
           docker run --rm -e VERSION="$VERSION" \
+            -w /workspace \
             -v "$GITHUB_WORKSPACE:/workspace" -v "$output_root:/out" \
             alpine:3.22 sh -euxc '
               apk add --no-cache alpine-sdk python3 py3-pip py3-virtualenv \
@@ -300,8 +305,8 @@ jobs:
                 --hidden-import=r105.tui.screens \
                 --hidden-import=r105.tui.widgets \
                 --hidden-import=r105.themes \
-                --add-data "r105/themes:r105/themes" \
-                --add-data "r105/skills:r105/skills" \
+                --add-data "$(pwd)/r105/themes:r105/themes" \
+                --add-data "$(pwd)/r105/skills:r105/skills" \
                 r105/__main__.py
               adduser -D builder
               addgroup builder abuild
@@ -383,9 +388,20 @@ jobs:
           win_archive="$RUNNER_TEMP/r105-windows-x64.zip"
           curl --fail --silent --show-error --location "$win_url" -o "$win_archive"
           win_sha=$(sha256sum "$win_archive" | cut -d' ' -f1)
+          win_arm_url="https://github.com/bnelabs/r105/releases/download/v${RELEASE_VERSION}/r105-windows-arm64.zip"
+          win_arm_archive="$RUNNER_TEMP/r105-windows-arm64.zip"
+          curl --fail --silent --show-error --location "$win_arm_url" -o "$win_arm_archive"
+          win_arm_sha=$(sha256sum "$win_arm_archive" | cut -d' ' -f1)
           jq --arg url "$pypi_url" --arg sha "${SDIST_SHA256}" \
             --arg ver "${RELEASE_VERSION}" --arg win_url "$win_url" --arg win_sha "$win_sha" \
-            '.url = $url | .hash = $sha | .version = $ver | .architecture["64bit"].url = $win_url | .architecture["64bit"].hash = $win_sha | .autoupdate.architecture["64bit"].url = $win_url' \
+            --arg win_arm_url "$win_arm_url" --arg win_arm_sha "$win_arm_sha" \
+            '.url = $url | .hash = $sha | .version = $ver |
+             .architecture["64bit"].url = $win_url |
+             .architecture["64bit"].hash = $win_sha |
+             .architecture["arm64"].url = $win_arm_url |
+             .architecture["arm64"].hash = $win_arm_sha |
+             .autoupdate.architecture["64bit"].url = $win_url |
+             .autoupdate.architecture["arm64"].url = $win_arm_url' \
             docs/scoop.json > docs/scoop.json.tmp
           mv docs/scoop.json.tmp docs/scoop.json
       - name: Commit and push formula updates
@@ -422,6 +438,10 @@ jobs:
           path: artifacts/windows
       - uses: actions/download-artifact@v7
         with:
+          name: r105-windows-arm
+          path: artifacts/windows-arm
+      - uses: actions/download-artifact@v7
+        with:
           name: r105-macos-arm
           path: artifacts/macos-arm
       - uses: actions/download-artifact@v7
@@ -449,7 +469,7 @@ jobs:
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p release-assets release-files/linux release-files/macos \
-            release-files/macos-arm release-files/windows
+            release-files/macos-arm release-files/windows release-files/windows-arm
           install -m 0755 artifacts/linux/r105 release-files/linux/r105
           install -m 0755 artifacts/macos/r105 release-files/macos/r105
           install -m 0755 artifacts/macos-arm/r105 release-files/macos-arm/r105
@@ -458,6 +478,8 @@ jobs:
           install -m 0644 LICENSE README.md release-files/macos-arm/
           install -m 0644 artifacts/windows/r105.exe release-files/windows/r105.exe
           install -m 0644 LICENSE README.md release-files/windows/
+          install -m 0755 artifacts/windows-arm/r105.exe release-files/windows-arm/r105.exe
+          install -m 0644 LICENSE README.md release-files/windows-arm/
           tar -C release-files/linux -czf "release-assets/r105-linux-x64.tar.gz" \
             r105 LICENSE README.md
           tar -C release-files/macos -czf "release-assets/r105-macos-x64.tar.gz" \
@@ -465,6 +487,8 @@ jobs:
           tar -C release-files/macos-arm -czf "release-assets/r105-macos-arm64.tar.gz" \
             r105 LICENSE README.md
           (cd release-files/windows && zip -q "$GITHUB_WORKSPACE/release-assets/r105-windows-x64.zip" \
+            r105.exe LICENSE README.md)
+          (cd release-files/windows-arm && zip -q "$GITHUB_WORKSPACE/release-assets/r105-windows-arm64.zip" \
             r105.exe LICENSE README.md)
           cp artifacts/linux-packages/*.deb artifacts/linux-packages/*.rpm release-assets/
           cp artifacts/arch/*.pkg.tar.zst release-assets/
@@ -478,7 +502,9 @@ jobs:
           test -f "release-assets/r105-${VERSION}-1.x86_64.rpm"
           test -f "release-assets/r105-${VERSION}-1-x86_64.pkg.tar.zst"
           test -f "release-assets/r105-${VERSION}-freebsd-amd64.pkg"
+          test -f "release-assets/r105-windows-arm64.zip"
       - uses: softprops/action-gh-release@v3
         with:
           files: release-assets/*
-          generate_release_notes: true
+          body_path: docs/release-notes/v0.7.0.md
+          generate_release_notes: false

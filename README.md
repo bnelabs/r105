@@ -97,7 +97,7 @@ assets are still published.
 
 ### Standalone binary
 
-Pre-built single-file executables are attached to [GitHub Releases](https://github.com/bnelabs/r105/releases) as archives for Linux, macOS (x64 and ARM64), and Windows. Verify `SHA256SUMS`, extract the archive, make the Unix executable runnable, and place it on your `PATH` — no Python install needed. The archives are named `r105-linux-x64.tar.gz`, `r105-macos-x64.tar.gz`, `r105-macos-arm64.tar.gz`, and `r105-windows-x64.zip`.
+Pre-built single-file executables are attached to [GitHub Releases](https://github.com/bnelabs/r105/releases) as archives for Linux x86_64, macOS x86_64 and ARM64, and Windows x86_64 and ARM64. Verify `SHA256SUMS`, extract the archive, make the Unix executable runnable, and place it on your `PATH` — no Python install needed. The archives are named `r105-linux-x64.tar.gz`, `r105-macos-x64.tar.gz`, `r105-macos-arm64.tar.gz`, `r105-windows-x64.zip`, and `r105-windows-arm64.zip`.
 
 ### From source
 
