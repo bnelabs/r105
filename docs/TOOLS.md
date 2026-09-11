@@ -1,6 +1,6 @@
 # Custom Tools in r105
 
-r105 ships with 9 built-in tools (`execute_python`, `write_file`, `read_file`, `list_files`, `web_search`, `web_fetch`, `get_time`, `calculate`, `system_info`). This guide explains how tools work and how to add your own.
+r105 ships with 10 built-in tools (`execute_python`, `write_file`, `read_file`, `list_files`, `web_search`, `web_fetch`, `get_time`, `calculate`, `convert`, `system_info`). This guide explains how tools work and how to add your own.
 
 ## How Tools Work
 

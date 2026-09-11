@@ -112,6 +112,82 @@ class TestMalformedSSE:
         import asyncio
         asyncio.run(_run())
 
+    def test_error_event_raises_router_api_error(self, httpx_mock) -> None:
+        """An ``event: error`` SSE frame surfaces as RouterAPIError."""
+        from r105.errors import RouterAPIError
+        client = RouterClient(base_url="http://testserver:8010")
+
+        async def _run() -> None:
+            state = ChatState()
+            httpx_mock.add_response(
+                url="http://testserver:8010/v1/chat/completions",
+                text='event: error\ndata: {"message": "backend overloaded"}\n\n',
+                headers={"Content-Type": "text/event-stream"},
+            )
+            with pytest.raises(RouterAPIError, match="overloaded"):
+                await client.async_send_streaming("hi", state, on_chunk=lambda _: None)
+
+        import asyncio
+        asyncio.run(_run())
+
+    def test_transient_503_retries_then_succeeds(self, httpx_mock) -> None:
+        """A pre-stream 503 is retried with backoff; success on retry wins."""
+        client = RouterClient(base_url="http://testserver:8010")
+
+        async def _run() -> None:
+            state = ChatState()
+            httpx_mock.add_response(
+                url="http://testserver:8010/v1/chat/completions",
+                status_code=503,
+                text="Service Unavailable",
+            )
+            httpx_mock.add_response(
+                url="http://testserver:8010/v1/chat/completions",
+                text='data: {"choices": [{"delta": {"content": "Hi"}}]}\n\ndata: [DONE]\n\n',
+                headers={"Content-Type": "text/event-stream"},
+            )
+            result = await client.async_send_streaming("hi", state, on_chunk=lambda _: None)
+            assert "Hi" in result.content
+
+        import asyncio
+        asyncio.run(_run())
+
+    def test_persistent_503_raises_after_retries(self, httpx_mock) -> None:
+        """Exhausted retries surface the last RouterAPIError (3 attempts)."""
+        from r105.errors import RouterAPIError
+        client = RouterClient(base_url="http://testserver:8010")
+
+        async def _run() -> None:
+            state = ChatState()
+            for _ in range(3):
+                httpx_mock.add_response(
+                    url="http://testserver:8010/v1/chat/completions",
+                    status_code=503,
+                    text="Service Unavailable",
+                )
+            with pytest.raises(RouterAPIError):
+                await client.async_send_streaming("hi", state, on_chunk=lambda _: None)
+
+        import asyncio
+        asyncio.run(_run())
+
+    def test_non_dict_chunk_skipped(self, httpx_mock) -> None:
+        """Valid JSON that is not an object (e.g. a list) is skipped safely."""
+        client = RouterClient(base_url="http://testserver:8010")
+
+        async def _run() -> None:
+            state = ChatState()
+            httpx_mock.add_response(
+                url="http://testserver:8010/v1/chat/completions",
+                text='data: [1, 2, 3]\ndata: {"choices": [{"delta": {"content": "Ok"}}]}\n\ndata: [DONE]\n\n',
+                headers={"Content-Type": "text/event-stream"},
+            )
+            result = await client.async_send_streaming("hi", state, on_chunk=lambda _: None)
+            assert "Ok" in result.content
+
+        import asyncio
+        asyncio.run(_run())
+
 
 class TestDirectClient:
     """Verify DirectClient works for its stated purpose."""
@@ -121,12 +197,10 @@ class TestDirectClient:
         caps = dc.capabilities
         assert isinstance(caps, BackendCapabilities)
         assert not caps.profiles
-        assert not caps.rag
         assert not caps.metadata
 
     def test_router_capabilities(self) -> None:
         rc = RouterClient(base_url="http://testserver:8010")
         caps = rc.capabilities
         assert caps.profiles
-        assert caps.rag
         assert caps.metadata

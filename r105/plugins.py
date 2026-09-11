@@ -24,6 +24,8 @@ Example plugin::
 from __future__ import annotations
 
 import importlib.util
+import inspect
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -38,6 +40,58 @@ DEFAULT_PLUGINS_DIR = CONFIG_DIR / "plugins"
 
 # Handler signature: (arguments: dict, workspace_dir: Path) -> str
 ToolHandler = Callable[[dict[str, Any], Path], str]
+
+# Plugin tool names: non-empty, no whitespace (LLM tool-call compatible).
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def validate_tool_definition(
+    name: str,
+    description: str,
+    parameters: dict[str, Any],
+    required: list[str] | None,
+    handler: ToolHandler | None,
+) -> None:
+    """Validate a plugin tool definition against the expected schema.
+
+    Raises :class:`PluginError` with a specific message on the first
+    violation so ``/plugin reload`` can show exactly what is wrong instead
+    of silently skipping the plugin.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise PluginError(f"tool name must be a non-empty string, got {name!r}")
+    if not _TOOL_NAME_RE.match(name):
+        raise PluginError(
+            f"tool name {name!r} is invalid — use letters, digits, '_', '-', '.' only"
+        )
+    if not isinstance(description, str) or not description.strip():
+        raise PluginError(f"tool '{name}' needs a non-empty description string")
+    if not isinstance(parameters, dict):
+        raise PluginError(
+            f"tool '{name}' parameters must be an object mapping names to schemas, "
+            f"got {type(parameters).__name__}"
+        )
+    for param_name, schema in parameters.items():
+        if not isinstance(param_name, str) or not param_name.strip():
+            raise PluginError(f"tool '{name}' has an invalid parameter name: {param_name!r}")
+        if not isinstance(schema, dict):
+            raise PluginError(
+                f"tool '{name}' parameter {param_name!r} schema must be an object, "
+                f"got {type(schema).__name__}"
+            )
+    required_list = required or []
+    if not isinstance(required_list, list) or any(
+        not isinstance(item, str) for item in required_list
+    ):
+        raise PluginError(f"tool '{name}' required must be a list of strings")
+    unknown = [item for item in required_list if item not in parameters]
+    if unknown:
+        raise PluginError(
+            f"tool '{name}' marks undeclared parameters as required: {unknown} "
+            f"(declared: {sorted(parameters)})"
+        )
+    if handler is not None and not callable(handler):
+        raise PluginError(f"tool '{name}' handler is not callable")
 
 
 @dataclass
@@ -118,6 +172,7 @@ class PluginRegistry(ComponentRegistry["ToolPlugin"]):
         ``allow_plugin_overrides``) to opt in explicitly.
         """
         effective_allow = self._allow_overwrite if allow_overwrite is None else allow_overwrite
+        validate_tool_definition(name, description, parameters, required, handler)
         if name in self._protected_names and not effective_allow:
             raise PluginError(
                 f"Plugin tool '{name}' shadows a built-in tool. "
@@ -188,7 +243,13 @@ class PluginRegistry(ComponentRegistry["ToolPlugin"]):
         return count, list(self._warnings)
 
     def _load_file(self, path: Path) -> None:
-        """Import a single plugin file and call its register() function."""
+        """Import a single plugin file and call its register() function.
+
+        The module must expose ``register(registry)`` taking exactly one
+        required argument; every tool it adds is schema-validated. Problems
+        raise :class:`PluginError` with a specific message so ``discover()``
+        can report *why* the plugin was rejected.
+        """
         module_name = f"r105_plugin_{path.stem}"
         # Use a unique module name to avoid collisions on reload
         spec = importlib.util.spec_from_file_location(module_name, path)
@@ -199,8 +260,42 @@ class PluginRegistry(ComponentRegistry["ToolPlugin"]):
         sys.modules[module_name] = module
         try:
             spec.loader.exec_module(module)
-            if hasattr(module, "register") and callable(module.register):
-                module.register(self)
+            register = getattr(module, "register", None)
+            if register is None:
+                raise PluginError(
+                    f"{path.name} has no register(registry) function — skipped"
+                )
+            if not callable(register):
+                raise PluginError(
+                    f"{path.name} 'register' is not callable — skipped"
+                )
+            try:
+                signature = inspect.signature(register)
+            except (TypeError, ValueError) as exc:
+                raise PluginError(
+                    f"{path.name} register() signature is not introspectable: {exc}"
+                ) from exc
+            required_params = [
+                param
+                for param in signature.parameters.values()
+                if param.default is inspect.Parameter.empty
+                and param.kind
+                in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+            ]
+            if len(required_params) != 1:
+                raise PluginError(
+                    f"{path.name} register() must take exactly one required "
+                    f"argument (the registry), got {len(required_params)}"
+                )
+            before = set(self._tools)
+            register(self)
+            if set(self._tools) == before:
+                self._warnings.append(
+                    f"{path.name} register() added no tools — check add_tool() calls"
+                )
         finally:
             # Keep module alive but remove from sys.modules to allow reload
             pass

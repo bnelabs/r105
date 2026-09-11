@@ -8,7 +8,6 @@ re-exports these for backwards compatibility.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from r105.state import ChatState, token_usage
 
@@ -17,7 +16,6 @@ def format_state(state: ChatState) -> str:
     usage = token_usage(state)
     return (
         f"profile={state.profile or 'auto'} "
-        f"rag={state.rag if state.rag is not None else 'auto'} "
         f"quality={state.quality or 'auto'} "
         f"max_tokens={state.max_tokens or 'auto'} "
         f"json={state.json_mode} "
@@ -68,45 +66,3 @@ def human_size(size: int) -> str:
             return f"{size}{unit}"
         size //= 1024
     return f"{size}TB"
-
-
-def format_ingest(payload: dict[str, Any]) -> str:
-    return f"indexed files={payload.get('files_indexed', 0)} chunks={payload.get('chunks_indexed', 0)}"
-
-
-def format_search(payload: dict[str, Any]) -> str:
-    results = payload.get("results") or []
-    if not results:
-        return "no results"
-    lines: list[str] = []
-    for result in results:
-        tag = result.get("source_tag", "")
-        score = result.get("score", 0)
-        text = " ".join(str(result.get("text", "")).split())
-        lines.append(f"{tag} score={score:.3f}\n{text[:700]}")
-    return "\n\n".join(lines)
-
-
-def format_rag_list(payload: dict[str, Any]) -> str:
-    documents = payload.get("documents") or []
-    if not documents:
-        return "no indexed documents"
-    lines = [f"{len(documents)} document(s):"]
-    for doc in documents:
-        lines.append(f"  [{doc.get('id', '?')}] {doc.get('source', '?')} ({doc.get('chunks', '?')} chunks)")
-    return "\n".join(lines)
-
-
-def format_rag_delete(payload: dict[str, Any]) -> str:
-    return f"deleted {payload.get('deleted', 0)} document(s)"
-
-
-def split_paths_and_urls(items: list[str]) -> tuple[list[str], list[str]]:
-    paths: list[str] = []
-    urls: list[str] = []
-    for item in items:
-        if item.startswith("http://") or item.startswith("https://"):
-            urls.append(item)
-        else:
-            paths.append(item)
-    return paths, urls

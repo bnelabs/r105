@@ -107,20 +107,15 @@ class TestMetadataFromState:
         chat_state.profile = "coding"
         assert _metadata_from_state(chat_state) == {"profile": "coding"}
 
-    def test_rag_only(self, chat_state: ChatState) -> None:
-        chat_state.rag = True
-        assert _metadata_from_state(chat_state) == {"rag": True}
-
     def test_quality_only(self, chat_state: ChatState) -> None:
         chat_state.quality = "fast"
         assert _metadata_from_state(chat_state) == {"quality": "fast"}
 
     def test_all_set(self, chat_state: ChatState) -> None:
         chat_state.profile = "coding"
-        chat_state.rag = False
         chat_state.quality = "balanced"
         result = _metadata_from_state(chat_state)
-        assert result == {"profile": "coding", "rag": False, "quality": "balanced"}
+        assert result == {"profile": "coding", "quality": "balanced"}
 
 
 class TestParseResponse:

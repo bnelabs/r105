@@ -15,7 +15,14 @@ import asyncio
 
 from textual.app import App
 
-from r105.tui.widgets.chat_view import ChatView, ThinkingPanel
+from r105.tui.widgets.chat_view import (
+    ChatView,
+    ExpandableResult,
+    ThinkingPanel,
+    _highlight_result,
+    _looks_like_diff,
+    _result_renderable,
+)
 
 # Overscan (24 rows) on both sides of a 24-row viewport; each message panel is
 # a few rows tall, so a sane bound is comfortably below the full 400 records.
@@ -201,3 +208,77 @@ class TestThinkingPanelCollapsible:
                 assert tmsg.expanded is True
 
         asyncio.run(scenario())
+
+
+class TestExpandableToolResults:
+    """Long tool outputs fold to a preview; diffs/code get highlighting."""
+
+    def test_short_result_not_collapsible(self) -> None:
+        async def scenario() -> None:
+            view = ChatView()
+            app = _ChatShell(view)
+            async with app.run_test(size=(80, 24)) as pilot:
+                view.add_tool_result("ok")
+                await pilot.pause(0.1)
+                msg = next(m for m in view._messages if m.kind == "tool_result")
+                assert msg.expanded is None
+                assert not isinstance(msg.widget, ExpandableResult)
+
+        asyncio.run(scenario())
+
+    def test_long_result_starts_folded(self) -> None:
+        async def scenario() -> None:
+            view = ChatView()
+            app = _ChatShell(view)
+            async with app.run_test(size=(80, 24)) as pilot:
+                view.add_tool_result("line\n" * 1000)
+                await pilot.pause(0.1)
+                msg = next(m for m in view._messages if m.kind == "tool_result")
+                assert msg.expanded is False
+                assert isinstance(msg.widget, ExpandableResult)
+
+        asyncio.run(scenario())
+
+    def test_toggle_expands_and_folds(self) -> None:
+        async def scenario() -> None:
+            view = ChatView()
+            app = _ChatShell(view)
+            async with app.run_test(size=(80, 24)) as pilot:
+                view.add_tool_result("line\n" * 1000)
+                await pilot.pause(0.1)
+                msg = next(m for m in view._messages if m.kind == "tool_result")
+                panel = msg.widget
+                assert isinstance(panel, ExpandableResult)
+                panel.toggle()
+                await pilot.pause(0.1)
+                assert msg.expanded is True
+                panel.toggle()
+                await pilot.pause(0.1)
+                assert msg.expanded is False
+
+        asyncio.run(scenario())
+
+    def test_diff_detection(self) -> None:
+        diff = (
+            "--- a/file.py\n+++ b/file.py\n@@ -1,2 +1,2 @@\n"
+            "-old\n+new\n context\n"
+        )
+        assert _looks_like_diff(diff) is True
+        assert _looks_like_diff("just some plain output\nno markers") is False
+
+    def test_folded_renderable_shows_hint(self) -> None:
+        from rich.panel import Panel
+
+        renderable = _result_renderable("x" * 3000, expanded=False)
+        assert isinstance(renderable, Panel)
+        assert renderable.title == "TOOL RESULT"
+
+    def test_highlight_prefers_diff_then_markdown(self) -> None:
+        from rich.markdown import Markdown
+        from rich.text import Text
+
+        diff = "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\nmore\n"
+        assert not isinstance(_highlight_result(diff), Markdown)
+        fenced = "result:\n```python\nprint('hi')\n```\n"
+        assert isinstance(_highlight_result(fenced), Markdown)
+        assert isinstance(_highlight_result("plain output"), Text)

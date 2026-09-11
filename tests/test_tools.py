@@ -7,6 +7,7 @@ import json
 from r105.tools import (
     TOOL_DEFINITIONS,
     calculate,
+    convert,
     execute_python,
     execute_tool_call,
     get_time,
@@ -18,7 +19,7 @@ class TestToolDispatch:
     """Test that all tools dispatch correctly."""
 
     def test_tool_definitions_count(self):
-        assert len(TOOL_DEFINITIONS) == 9
+        assert len(TOOL_DEFINITIONS) == 10
 
     def test_all_tools_have_required_fields(self):
         for tool in TOOL_DEFINITIONS:
@@ -131,6 +132,60 @@ class TestSafeEval:
     def test_empty_expression(self):
         result = calculate({"expression": ""})
         assert "error" in result.lower()
+
+    def test_math_functions(self):
+        assert calculate({"expression": "sqrt(16)"}) == "4.0"
+        assert calculate({"expression": "2 * pi"}) == str(2 * 3.141592653589793)
+        assert calculate({"expression": "abs(-7)"}) == "7"
+        assert calculate({"expression": "round(2.5)"}) == "2"
+
+    def test_unknown_name_rejected(self):
+        result = calculate({"expression": "os.getcwd()"})
+        assert "error" in result.lower() or "unsafe" in result.lower()
+
+    def test_bool_constant_rejected(self):
+        result = calculate({"expression": "True + 1"})
+        assert "error" in result.lower() or "unsafe" in result.lower()
+
+
+class TestConvertTool:
+    """Tests for the convert unit-conversion tool."""
+
+    def test_length(self):
+        result = convert({"value": 1, "from_unit": "km", "to_unit": "m"})
+        assert result == "1.0 km = 1000.0 m"
+
+    def test_mass(self):
+        result = convert({"value": 2.2, "from_unit": "lb", "to_unit": "kg"})
+        assert "kg" in result
+        assert "error" not in result.lower()
+
+    def test_temperature(self):
+        assert convert({"value": 0, "from_unit": "C", "to_unit": "F"}) == "0.0 C = 32.0 F"
+        assert convert({"value": 32, "from_unit": "F", "to_unit": "C"}) == "32.0 F = 0.0 C"
+
+    def test_time(self):
+        assert convert({"value": 2, "from_unit": "h", "to_unit": "min"}) == "2.0 h = 120.0 min"
+
+    def test_data(self):
+        assert convert({"value": 1, "from_unit": "MiB", "to_unit": "KB"}) == (
+            "1.0 MiB = 1048.576 KB"
+        )
+
+    def test_incompatible_units(self):
+        result = convert({"value": 1, "from_unit": "km", "to_unit": "kg"})
+        assert "error" in result.lower()
+
+    def test_unknown_unit(self):
+        result = convert({"value": 1, "from_unit": "furlong", "to_unit": "m"})
+        assert "error" in result.lower()
+
+    def test_non_numeric_value(self):
+        result = convert({"value": "lots", "from_unit": "m", "to_unit": "km"})
+        assert "error" in result.lower()
+
+    def test_missing_units(self):
+        assert "error" in convert({"value": 1, "from_unit": "", "to_unit": "m"}).lower()
 
 
 class TestUtilityTools:
