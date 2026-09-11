@@ -69,8 +69,8 @@ User types message
          │
          ▼
 ┌─────────────────┐
-│ ChatView         │  RichLog: add_user(), stream_chunk(), add_assistant()
-│ (RichLog)       │  Panels for tool calls, results, errors
+│ ChatView         │  VirtualScroll: add_user(), stream_chunk(), add_assistant()
+│ (VirtualScroll)  │  Panels for tool calls, results, errors
 └─────────────────┘
 ```
 
@@ -85,8 +85,11 @@ llama-router → StreamingResponse(text/event-stream)
        ▼
 RouterClient._stream_sse()
   ┌─ httpx.AsyncClient.stream("POST", ...)
+  ├─ non-2xx before streaming → RouterAPIError (transient 5xx retried
+  │   with exponential backoff until the first byte arrives)
   ├─ async for line in aiter_lines():
-  │   ├─ "data: {...}" → parse JSON
+  │   ├─ "event: ..." → tracked; "event: error" raises RouterAPIError
+  │   ├─ "data: {...}" → parse JSON (malformed frames skipped + counted)
   │   ├─ delta.content → on_chunk(token)
   │   └─ delta.tool_calls → accumulate by index
   └─ Return ChatResult(accumulated content, tool_calls)
@@ -99,23 +102,23 @@ R105App (App)
 └── ChatScreen (Screen)
     ├── Static (#r105-header)          — model, profile, context usage
     ├── Horizontal (#main-content)
-    │   ├── ChatView (#chat-view)      — RichLog: chat messages, streaming
+    │   ├── ChatView (#chat-view)      — virtualized chat messages, streaming
     │   └── Vertical (#right-pane)
     │       └── FileExplorer           — workspace directory tree
     ├── CommandPalette                 — fuzzy-slash-command picker (hidden by default)
     ├── ChatInput (#chat-input)        — TextArea with slash-mode, history nav
-    └── StatusBarWidget (#status-bar)  — busy indicator, token usage
+    └── StatusBarWidget (#status-bar)  — busy indicator, token usage, sandbox warnings
 ```
 
 ### Key TUI Widgets
 
 | Widget | Type | Purpose |
 |--------|------|---------|
-| `ChatView` | `RichLog` subclass | Append-only chat log. Line-buffered streaming via `stream_chunk()`. |
+| `ChatView` | `VerticalScroll` subclass | Virtualized transcript: full history as records, viewport window materialized as widgets. Debounced streaming via `stream_chunk()`; collapsible thinking panels and long tool results. |
 | `ChatInput` | `TextArea` subclass | Multi-line input. Slash mode (`/`) triggers fuzzy palette. History nav with ↑/↓. |
 | `CommandPalette` | `Static` subclass | Filtered list of slash commands with fuzzy matching. |
 | `FileExplorer` | `DirectoryTree` subclass | Async-lazy-loaded directory tree of the workspace. |
-| `StatusBarWidget` | `Static` subclass | Shows model, profile, token usage, and busy state. |
+| `StatusBarWidget` | `Static` subclass | Shows profile, token usage, busy/streaming state, and sandbox-downgrade warnings. |
 
 ## Key Patterns
 
@@ -194,7 +197,8 @@ result = await self.client.async_send("Tool results received. Continue.", ...)
          ▼                                    ▼
   ChatState ──────────────────────────────────┘
          │
-         ├── profile, quality, max_tokens → request payload metadata
+          ├── profile, quality → router request payload metadata
+          ├── model, max_tokens → top-level request fields
          ├── theme → TUI theme (applied instantly via app.apply_theme)
          ├── auto_compact → triggers compaction at >80% context
          ├── active_skills → loaded as system messages
@@ -237,32 +241,50 @@ You are a python code reviewer.
 Apply strict standards.
 ```
 
-Skills are read by `r105/skills.py::read_skill()` and converted to system messages by `r105/client.py::_skill_messages()`.
+Skills are read by `r105/skills.py::read_skill()` and converted to system messages by `r105/skills.py::skill_messages()`.
 
 ## Tools
 
-Tools are defined in `r105/tools.py` as a `TOOL_DEFINITIONS` list (JSON Schema for the LLM) paired with handler functions dispatched by `execute_tool_call()`. Tool execution runs in a thread pool via `asyncio.to_thread()`. The Python sandbox uses `resource.setrlimit()` for basic resource limits (256MB memory, 25s CPU) with a stripped environment.
+Tools are registered on a decorator-based `ToolRegistry` (unified with plugins via `ComponentRegistry`) in `r105/tools.py`, with helpers split into `r105/tools_fs.py`, `r105/tools_web.py`, and `r105/tools_math.py`. `TOOL_DEFINITIONS` exposes the JSON Schema list for the LLM; `execute_tool_call()` validates arguments, enforces the permission posture, and dispatches built-ins → plugins → MCP. Tool execution runs in a thread pool via `asyncio.to_thread()`. Python code runs in the auto-detected sandbox backend (`nsjail` > `bwrap` > `docker` > `rlimit` > `none`); `detect_backend_with_reason()` / `get_fallback_reason()` report downgrades to weaker backends.
 
 ## Directory Layout
 
 ```
 r105/
 ├── cli.py              # CLI entry point (argparse)
-├── client.py           # RouterClient — sync + async HTTP
-├── commands.py         # Slash command handlers
-├── config.py           # Config file read/write (~/.config/r105/config.json)
-├── skills.py           # Skill file loading
+├── client.py           # DirectClient + RouterClient — sync + async HTTP/SSE
+├── commands.py         # Slash command handlers (COMMAND_DISPATCH)
+├── commands_format.py  # Presentation helpers for slash commands
+├── config.py           # Config file read/write + validation (~/.config/r105/config.json)
+├── constants.py        # Shared constants + ToolProfile per-tool budgets
+├── errors.py           # Typed exception hierarchy (R105Error, ...)
+├── logging.py          # Structured JSON-lines logging
+├── mcp_client.py       # MCP stdio/SSE clients + manager
+├── model_catalog.py    # Model family/context resolution + overrides
+├── plugins.py          # Plugin loading, validation, registry
+├── providers.py        # Native Anthropic/Gemini adapters
+├── registry.py         # Shared ComponentRegistry abstraction
+├── sandbox.py          # Sandbox backends (nsjail/bwrap/docker/rlimit/none)
+├── sessions.py         # Session save/load/diff + conversation export
+├── skills.py           # Skill file loading + system-message injection
 ├── state.py            # ChatState, ChatResult, TokenUsage
-├── tools.py            # Tool definitions + execution
+├── tools.py            # Tool registry + execution/dispatch
+├── tools_fs.py         # File/workspace tool helpers
+├── tools_math.py       # Safe math evaluator + unit conversion
+├── tools_web.py        # Web search/fetch helpers
 ├── themes/             # TCSS theme files (r105, dracula, solarized-dark, high-contrast)
 └── tui/
     ├── app.py          # r105App (Textual App)
     ├── screens/
-    │   └── chat.py     # ChatScreen — main interactive screen
+    │   ├── chat.py           # ChatScreen — main interactive screen
+    │   ├── help_screen.py    # HelpScreen — command reference modal
+    │   ├── history_screen.py # HistoryScreen — searchable transcript modal
+    │   └── tools_screen.py   # ToolsScreen — tool-call inspector modal (Ctrl+T)
     └── widgets/
-        ├── chat_view.py        # RichLog chat display + streaming
+        ├── chat_view.py        # Virtualized chat display + streaming + collapsibles
         ├── input_area.py       # ChatInput — multi-line with slash mode
         ├── command_palette.py  # Fuzzy slash-command picker
+        ├── diff_view.py        # File-diff approve/reject widget
         ├── file_explorer.py    # Workspace directory tree
-        └── status_bar.py       # Context usage + busy indicator
+        └── status_bar.py       # Context usage + busy indicator + sandbox warnings
 ```

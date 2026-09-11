@@ -35,12 +35,24 @@ python -m pytest tests/ --cov=r105 --cov-report=term-missing
 | File | What it tests |
 |------|---------------|
 | `tests/test_client.py` | RouterClient helpers: `_build_payload`, `_parse_response`, `_extract_tool_calls` |
+| `tests/test_client_chaos.py` | Error handling, malformed SSE, streaming retries |
 | `tests/test_integration.py` | Full async flows with mocked HTTP responses (`pytest-httpx`) |
 | `tests/test_commands.py` | Slash command handlers and state mutations |
-| `tests/test_tools.py` | Tool execution, sandbox, safe math evaluator |
+| `tests/test_tools.py` | Tool execution, sandbox, safe math evaluator, unit conversion |
 | `tests/test_state.py` | ChatState, TokenUsage, token estimation |
 | `tests/test_skills.py` | Skill file listing, reading, parameter substitution |
+| `tests/test_config.py` | Config validation (manual + pydantic schema) |
+| `tests/test_model_catalog.py` | Model family/context resolution and overrides |
+| `tests/test_reasoning_permissions.py` | Reasoning effort and permission posture handling |
+| `tests/test_sessions_export_guard.py` | Optional export-dependency guard |
+| `tests/test_sandbox_fallback.py` | Sandbox fallback reasons and weak-backend warnings |
+| `tests/test_plugin_validation.py` | Plugin signature and tool-schema validation |
+| `tests/test_session_diff.py` | Session diff summaries |
+| `tests/test_tools_screen.py` | Tool-inspector collection and rendering |
+| `tests/test_tui.py` | Command detection, palette data integrity, widget structure |
 | `tests/test_command_palette.py` | Fuzzy matching and palette filtering |
+| `tests/test_tui_features.py` | TUI feature coverage (streaming, panels, markers) |
+| `tests/test_tui_virtualization.py` | Virtualized transcript, collapsible panels and results |
 
 ## Linting & Type Checking
 
@@ -96,16 +108,15 @@ Textual workers use `@work(exclusive=True)`. The `finally` block is the right pl
 ### Adding a New Slash Command
 
 1. Add the command name to `SLASH_COMMANDS` in `r105/commands.py`
-2. Add a new `if command == "/yourcmd":` branch in `handle_slash_command()`
+2. Write an `async def _cmd_yourcmd(args, state, client, workspace_dir, http_client)` handler and register it in `COMMAND_DISPATCH`
 3. Add the command to `command_menu()` output
 4. Register it in `COMMAND_DEFS` in `r105/tui/widgets/command_palette.py` (category, command, usage, description)
 
 ### Adding a New Tool
 
-1. Write the handler function in `r105/tools.py`
-2. Add the JSON Schema definition to `TOOL_DEFINITIONS`
-3. Add a dispatch branch in `execute_tool_call()`
-4. Add tests in `tests/test_tools.py`
+1. Write the handler function in `r105/tools.py` and decorate it with `@get_tool_registry().register(...)` (name, description, parameters, required, network/filesystem flags) — this defines the LLM schema and wires up dispatch
+2. Add argument checks to `_validate_tool_args()` if the tool needs them
+3. Add tests in `tests/test_tools.py`
 
 ## PR Process
 
@@ -122,7 +133,7 @@ Textual workers use `@work(exclusive=True)`. The `finally` block is the right pl
 # Update version in pyproject.toml
 # Move [Unreleased] entries to a new version section in CHANGELOG.md
 # Commit and tag
-git tag v0.4.0
+git tag vX.Y.Z
 git push --tags
 
 # Build and publish
