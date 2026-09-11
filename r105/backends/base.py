@@ -22,6 +22,7 @@ from r105.constants import (
 )
 from r105.errors import RouterAPIError
 from r105.logging import error as log_error
+from r105.logging import info as log_info
 from r105.sse import stream_sse
 from r105.state import (
     ChatResult,
@@ -91,10 +92,12 @@ class BaseClient(abc.ABC):
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, trace_id: str | None = None) -> dict[str, str]:
         h = {"Content-Type": "application/json"}
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
+        if trace_id:
+            h["X-R105-Trace-ID"] = trace_id
         return h
 
     def _sync_request(
@@ -104,15 +107,17 @@ class BaseClient(abc.ABC):
         *,
         json: dict[str, Any] | None = None,
         timeout: float | tuple[float, float] | None = None,
+        trace_id: str | None = None,
     ) -> httpx.Response:
         """Issue a synchronous HTTP request."""
         req = getattr(httpx, method.lower())
         kwargs: dict[str, Any] = {
             "timeout": timeout if timeout is not None else self.timeout,
-            "headers": self._headers(),
+            "headers": self._headers(trace_id),
         }
         if json is not None:
             kwargs["json"] = json
+        log_info("http_request", method=method.upper(), path=path, trace_id=trace_id)
         response = req(self._url(path), **kwargs)
         return self._check_response(response)
 
@@ -124,13 +129,14 @@ class BaseClient(abc.ABC):
         client: httpx.AsyncClient | None = None,
         json: dict[str, Any] | None = None,
         timeout: float | tuple[float, float] | None = None,
+        trace_id: str | None = None,
     ) -> httpx.Response:
         """Issue an asynchronous HTTP request."""
         t = timeout if timeout is not None else self.timeout
         url = self._url(path)
         kwargs: dict[str, Any] = {
             "timeout": t,
-            "headers": self._headers(),
+            "headers": self._headers(trace_id),
         }
         if json is not None:
             kwargs["json"] = json
@@ -144,6 +150,7 @@ class BaseClient(abc.ABC):
                 req = getattr(ac, method.lower())
                 raw_response = await req(url, **kwargs)
                 response = cast(httpx.Response, raw_response)
+        log_info("http_request", method=method.upper(), path=path, trace_id=trace_id)
         return response
 
     @staticmethod
@@ -243,13 +250,33 @@ class BaseClient(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def async_health(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
+    async def async_health(
+        self,
+        client: httpx.AsyncClient | None = None,
+        *,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
         """Check backend health."""
         ...
 
     @abc.abstractmethod
-    async def async_list_models(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
+    def health(self, *, trace_id: str | None = None) -> dict[str, Any]:
+        """Check backend health synchronously."""
+        ...
+
+    @abc.abstractmethod
+    async def async_list_models(
+        self,
+        client: httpx.AsyncClient | None = None,
+        *,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
         """List available models."""
+        ...
+
+    @abc.abstractmethod
+    def list_models(self, *, trace_id: str | None = None) -> dict[str, Any]:
+        """List available models synchronously."""
         ...
 
     # -- Non-abstract chat methods ------------------------------------------
@@ -296,12 +323,13 @@ class BaseClient(abc.ABC):
         on_chunk: Callable[[str], None],
         on_status: Callable[[str], None] | None = None,
         config_families: dict[str, str | None] | None = None,
+        trace_id: str | None = None,
     ) -> ChatResult:
         """Shared SSE streaming core used by DirectClient and RouterClient."""
         return await stream_sse(
             payload,
             url=self._url("/v1/chat/completions"),
-            headers=self._headers(),
+            headers=self._headers(trace_id),
             timeout=self.timeout,
             client=client,
             on_chunk=on_chunk,

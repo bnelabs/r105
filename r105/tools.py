@@ -7,12 +7,14 @@ __all__ = [
     "RegisteredTool",
     "ToolHandler",
     "ToolRegistry",
+    "aexecute_tool_call",
     "execute_tool_call",
     "get_tool_definitions",
     "get_tool_registry",
 ]
 
 import ast
+import asyncio
 import datetime
 import json
 import os
@@ -26,10 +28,9 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from r105.constants import (
-    TOOL_MAX_OUTPUT_CHARS,
-)
-from r105.mcp_client import get_mcp_manager
+from r105 import tools_security as _security
+from r105.constants import TOOL_MAX_OUTPUT_CHARS
+from r105.logging import info as log_info
 from r105.plugins import get_registry
 from r105.registry import (
     RegisteredTool,
@@ -45,121 +46,23 @@ from r105.sandbox import (
     profile_for_tool,
 )
 from r105.tools_math import calculate_expression, convert_units
-from r105.tools_web import check_ssrf
 
-# -- Limits for tool arguments ------------------------------------------
+_MAX_FILE_READ = _security.MAX_FILE_READ
+_is_plugin_override_allowed = _security.plugin_override_allowed
+_resolve_path = _security.resolve_path
+_validate_path = _security.validate_path
+_validate_tool_args = _security.validate_tool_args
+resolve_workspace = _security.resolve_workspace
 
-_MAX_CODE_SIZE = 100 * 1024          # 100 KB Python code
-_MAX_FILE_CONTENT = 10 * 1024 * 1024 # 10 MB file write
-_MAX_FILE_READ = 50 * 1024 * 1024    # 50 MB file read
-_MAX_SEARCH_QUERY = 500              # chars
+
+def _mcp_manager() -> Any:
+    """Load MCP support only when a tool call actually needs it."""
+    from r105.mcp_client import get_mcp_manager
+
+    return get_mcp_manager()
 
 # -- Shared web helpers (SSRF checks, HTML stripping, DDG parsing) live in
 # r105/tools_web.py so the logic exists in exactly one place. ----------------
-
-
-def _validate_tool_args(name: str, arguments: dict[str, Any]) -> str | None:
-    """Validate tool arguments before execution.
-
-    Returns an error string on failure, or None on success.
-    """
-    if name == "execute_python":
-        code = arguments.get("code", "")
-        if len(code) > _MAX_CODE_SIZE:
-            return f"code too large ({len(code)} bytes, max {_MAX_CODE_SIZE})"
-
-    elif name == "write_file":
-        path = arguments.get("path", "")
-        if not path:
-            return "path is required"
-        content = arguments.get("content", "")
-        if len(content) > _MAX_FILE_CONTENT:
-            return f"content too large ({len(content)} bytes, max {_MAX_FILE_CONTENT})"
-
-    elif name == "read_file":
-        path = arguments.get("path", "")
-        if not path:
-            return "path is required"
-
-    elif name == "web_search":
-        query = arguments.get("query", "")
-        if not query:
-            return "query is required"
-        if len(query) > _MAX_SEARCH_QUERY:
-            return f"query too long ({len(query)} chars, max {_MAX_SEARCH_QUERY})"
-
-    elif name == "web_fetch":
-        url = arguments.get("url", "")
-        if not url:
-            return "url is required"
-        err = check_ssrf(url)
-        if err:
-            return f"web_fetch rejected: {err}"
-
-    elif name == "calculate":
-        expression = arguments.get("expression", "")
-        if not expression:
-            return "expression is required"
-
-    elif name == "convert":
-        if arguments.get("value") is None or "value" not in arguments:
-            return "value is required"
-        if not arguments.get("from_unit"):
-            return "from_unit is required"
-        if not arguments.get("to_unit"):
-            return "to_unit is required"
-
-    return None
-
-
-# -- Workspace resolution with session isolation --------------------------
-
-
-def resolve_workspace(workspace_dir: Path, session_tag: str | None = None) -> Path:
-    """Resolve workspace directory, optionally creating a session-specific subdirectory.
-
-    When *session_tag* is provided (e.g., an ISO date or session name), tools
-    operate within ``workspace_dir / session_tag /`` to prevent file collisions
-    across sessions.
-    """
-    if session_tag:
-        tagged = workspace_dir / session_tag
-        tagged.mkdir(parents=True, exist_ok=True)
-        return tagged
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    return workspace_dir
-
-
-# -- Path validation (symlink-aware) ------------------------------------
-
-
-def _validate_path(path: str, workspace_dir: Path) -> Path:
-    """Resolve *path* and verify it stays within the workspace.
-
-    Differs from ``_resolve_path`` by also checking every path component
-    for symlinks, preventing symlink-based escapes.
-    """
-    resolved = _resolve_path(path, workspace_dir)
-
-    # Walk parent components and check for symlinks
-    workspace_resolved = workspace_dir.resolve()
-    for parent in [resolved, *resolved.parents]:
-        try:
-            parent.relative_to(workspace_resolved)
-        except ValueError:
-            break  # reached workspace boundary
-
-        if parent.is_symlink():
-            real = parent.resolve()
-            try:
-                real.relative_to(workspace_resolved)
-            except ValueError as err:
-                raise PermissionError(
-                    f"Access denied: '{path}' contains a symlink pointing "
-                    f"outside the workspace ({real})"
-                ) from err
-
-    return resolved
 
 
 # -- Output truncation -------------------------------------------------------
@@ -302,18 +205,6 @@ def repair_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
 # -- Tool dispatch -----------------------------------------------------------
 
 
-def _is_plugin_override_allowed() -> bool:
-    """True when the operator explicitly allows plugins to shadow built-ins."""
-    import os as _os
-    if _os.environ.get("R105_ALLOW_PLUGIN_OVERRIDE", "").lower() in {"1", "true", "yes", "on"}:
-        return True
-    try:
-        from r105.config import ensure_config as _ensure_config
-        return bool(_ensure_config().get("allow_plugin_overrides", False))
-    except Exception:
-        return False
-
-
 def _builtin_tool_names() -> set[str]:
     return set(get_tool_registry().names())
 
@@ -400,6 +291,7 @@ def execute_tool_call(
     workspace_dir: Path,
     *,
     use_cache: bool = True,
+    trace_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a single tool call locally and return a tool result message.
 
@@ -408,6 +300,7 @@ def execute_tool_call(
     """
     function = call.get("function") or {}
     name = str(function.get("name", ""))
+    log_info("tool_started", tool=name, trace_id=trace_id)
     raw_arguments = function.get("arguments") or "{}"
     # Structured-output repair: tolerate malformed JSON from the LLM.
     try:
@@ -505,14 +398,14 @@ def execute_tool_call(
                 if plugin_result is not None:
                     result = plugin_result
                 else:
-                    mcp_result = get_mcp_manager().execute_tool(name, arguments)
+                    mcp_result = _mcp_manager().execute_tool(name, arguments)
                     result = mcp_result if mcp_result is not None else f"unknown tool: {name}"
         else:
             plugin_result = get_registry().execute(name, arguments, workspace_dir)
             if plugin_result is not None:
                 result = plugin_result
             else:
-                mcp_result = get_mcp_manager().execute_tool(name, arguments)
+                mcp_result = _mcp_manager().execute_tool(name, arguments)
                 if mcp_result is not None:
                     result = mcp_result
                 else:
@@ -526,12 +419,31 @@ def execute_tool_call(
     # Wrap outputs from external sources in untrusted XML tags (prompt injection protection)
     if name in ("web_fetch", "read_file"):
         content = _wrap_tool_output(content, name)
-    return {
+    response = {
         "role": "tool",
         "tool_call_id": call.get("id", ""),
         "name": name,
         "content": content,
     }
+    log_info("tool_completed", tool=name, trace_id=trace_id)
+    return response
+
+
+async def aexecute_tool_call(
+    call: dict[str, Any],
+    workspace_dir: Path,
+    *,
+    use_cache: bool = True,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    """Execute a synchronous local tool without blocking the event loop."""
+    return await asyncio.to_thread(
+        execute_tool_call,
+        call,
+        workspace_dir,
+        use_cache=use_cache,
+        trace_id=trace_id,
+    )
 
 
 def get_tool_definitions() -> list[dict[str, Any]]:
@@ -552,7 +464,7 @@ def get_tool_definitions() -> list[dict[str, Any]]:
     plugin_defs = get_registry().get_definitions()
     if not allow_override:
         plugin_defs = [d for d in plugin_defs if d.get("function", {}).get("name") not in builtin_names]
-    mcp_defs = get_mcp_manager().get_all_definitions()
+    mcp_defs = _mcp_manager().get_all_definitions()
     if not allow_override:
         mcp_defs = [d for d in mcp_defs if d.get("function", {}).get("name") not in builtin_names]
     return [
@@ -735,37 +647,6 @@ def list_files(arguments: dict[str, Any], workspace_dir: Path) -> str:
         return str(e)
 
 
-def _resolve_path(path: str, workspace_dir: Path) -> Path:
-    """Resolve a path safely within the workspace directory.
-
-    Absolute paths are treated as relative to the workspace root to prevent
-    path traversal attacks. Relative paths stay within the workspace.
-
-    Raises PermissionError if the resolved path escapes the workspace.
-    """
-    p = Path(path)
-    workspace_resolved = workspace_dir.resolve()
-
-    if p.is_absolute():
-        # Strip the root anchor and force it relative to the workspace
-        try:
-            resolved = (workspace_resolved / p.relative_to(p.anchor)).resolve()
-        except ValueError:
-            resolved = (workspace_resolved / p.name).resolve()
-    else:
-        resolved = (workspace_resolved / p).resolve()
-
-    # Strict containment check — no path may escape the workspace
-    try:
-        resolved.relative_to(workspace_resolved)
-    except ValueError as err:
-        raise PermissionError(
-            f"Access denied: '{path}' resolves outside the workspace ({workspace_resolved})"
-        ) from err
-
-    return resolved
-
-
 # -- Utility tools ------------------------------------------------------
 
 
@@ -863,4 +744,3 @@ def _populate_tool_definitions() -> None:
 
 # Populate TOOL_DEFINITIONS at module load time
 _populate_tool_definitions()
-

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,8 @@ class ChatState:
     keybindings: dict[str, str] = field(default_factory=dict)
     theme: str = "r105"
     model: str = DEFAULT_MODEL
+    # Correlates backend requests and local tool executions for one chat.
+    trace_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     reasoning_effort: str = "auto"
     show_thinking: bool = True
     thinking_default_expanded: bool = False

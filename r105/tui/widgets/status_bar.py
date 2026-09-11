@@ -23,10 +23,28 @@ class StatusBarWidget(Static):
         self._stream_frame: int = 0
         self._last_stream_update: float = 0.0
         self._sandbox_warning: str = ""
+        self._health_status: str = "checking"
+        self._sandbox_backend: str = "unknown"
+        self._workspace_status: str = "unknown"
 
     def set_sandbox_warning(self, warning: str) -> None:
         """Pin a sandbox-downgrade warning (e.g. weak isolation backend)."""
         self._sandbox_warning = warning
+
+    def set_environment_status(
+        self,
+        *,
+        health: str | None = None,
+        sandbox_backend: str | None = None,
+        workspace: str | None = None,
+    ) -> None:
+        """Update live backend, sandbox, and workspace indicators."""
+        if health is not None:
+            self._health_status = health
+        if sandbox_backend is not None:
+            self._sandbox_backend = sandbox_backend
+        if workspace is not None:
+            self._workspace_status = workspace
 
     def update_status(
         self,
@@ -38,11 +56,25 @@ class StatusBarWidget(Static):
             self._sandbox_warning = sandbox_warning
         if self._busy or self._streaming:
             self._saved_status = self._render_status_line(
-                state, usage, self._sandbox_warning
+                state,
+                usage,
+                self._sandbox_warning,
+                self._health_status,
+                self._sandbox_backend,
+                self._workspace_status,
             )
             return
         self._saved_status = ""
-        self.update(self._render_status_line(state, usage, self._sandbox_warning))
+        self.update(
+            self._render_status_line(
+                state,
+                usage,
+                self._sandbox_warning,
+                self._health_status,
+                self._sandbox_backend,
+                self._workspace_status,
+            )
+        )
 
     def set_busy(self, text: str) -> None:
         """Show a busy/loading indicator (e.g. tool execution, API call)."""
@@ -91,7 +123,12 @@ class StatusBarWidget(Static):
 
     @staticmethod
     def _render_status_line(
-        state: ChatState, usage: TokenUsage, sandbox_warning: str = ""
+        state: ChatState,
+        usage: TokenUsage,
+        sandbox_warning: str = "",
+        health_status: str = "checking",
+        sandbox_backend: str = "unknown",
+        workspace_status: str = "unknown",
     ) -> str:
         profile = state.profile or "auto"
         skills = f"+{len(state.active_skills)} skill" if state.active_skills else "plain"
@@ -100,7 +137,9 @@ class StatusBarWidget(Static):
             f"({usage.percent:.1f}%, {usage.estimate_label})"
         )
         line = (
-            f"r105 {profile}/{skills}  │  {ctx_line}  │  Type / for commands, /exit to quit"
+            f"r105 {profile}/{skills}  │  {ctx_line}  │  "
+            f"backend={health_status} sandbox={sandbox_backend} workspace={workspace_status}  │  "
+            "Type / for commands, /exit to quit"
         )
         if sandbox_warning:
             line += f"  │  ⚠ {sandbox_warning}"

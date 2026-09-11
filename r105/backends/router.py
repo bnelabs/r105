@@ -83,12 +83,19 @@ class RouterClient(DirectClient):
 
     # -- Health uses router's /health endpoint -------------------------------
 
-    async def async_health(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
-        response = await self._async_request("GET", "/health", client=client, timeout=10.0)
+    async def async_health(
+        self,
+        client: httpx.AsyncClient | None = None,
+        *,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        response = await self._async_request(
+            "GET", "/health", client=client, timeout=10.0, trace_id=trace_id
+        )
         response.raise_for_status()
         return cast(dict[str, Any], response.json())
 
-    def health(self) -> dict[str, Any]:
-        response = self._sync_request("GET", "/health", timeout=10.0)
+    def health(self, *, trace_id: str | None = None) -> dict[str, Any]:
+        response = self._sync_request("GET", "/health", timeout=10.0, trace_id=trace_id)
         response.raise_for_status()
         return cast(dict[str, Any], response.json())
