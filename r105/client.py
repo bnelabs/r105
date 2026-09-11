@@ -24,7 +24,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -87,7 +87,7 @@ def _extract_assistant_content(raw: dict[str, Any]) -> str:
         reasoning = message.get("reasoning_content")
         if isinstance(reasoning, str):
             content = reasoning.strip()
-    return content
+    return str(content) if not isinstance(content, str) else content
 
 
 def _extract_tool_calls(raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -300,11 +300,13 @@ class BaseClient(abc.ABC):
 
         if client is not None:
             req = getattr(client, method.lower())
-            response = await req(url, **kwargs)
+            raw_response = await req(url, **kwargs)
+            response = cast(httpx.Response, raw_response)
         else:
             async with httpx.AsyncClient() as ac:
                 req = getattr(ac, method.lower())
-                response = await req(url, **kwargs)
+                raw_response = await req(url, **kwargs)
+                response = cast(httpx.Response, raw_response)
         return response
 
     @staticmethod
@@ -594,6 +596,68 @@ class DirectClient(BaseClient):
     def capabilities(self) -> BackendCapabilities:
         return BackendCapabilities()
 
+    # -- Payload hooks (Template Method) ------------------------------------
+
+    def _prepare_payload(
+        self,
+        message: str,
+        state: ChatState,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Build the chat-completion payload for a one-shot send.
+
+        Subclasses override this hook instead of copy-pasting ``send()`` /
+        ``async_send()`` / ``async_send_streaming()``. The base implementation
+        returns the backend-agnostic OpenAI-compatible payload.
+        """
+        return _build_payload(message, state, tools)
+
+    def _prepare_continue_payload(
+        self,
+        state: ChatState,
+        tools: list[dict[str, Any]] | None = None,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        """Build the payload for a tool-loop continuation.
+
+        Subclasses override this hook to inject backend-specific metadata
+        without duplicating the ``async_continue()`` control flow.
+        """
+        messages = [*skill_messages(state), *state.history]
+        payload: dict[str, Any] = {
+            "model": state.model if state.model else DEFAULT_MODEL,
+            "messages": messages,
+            "stream": stream,
+        }
+        if state.max_tokens is not None:
+            payload["max_tokens"] = state.max_tokens
+        if state.json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        _inject_reasoning_effort(payload, state)
+        return payload
+
+    @staticmethod
+    def _record_send(message: str, state: ChatState, result: ChatResult) -> None:
+        """Append user + assistant messages after a one-shot send."""
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
+        if result.tool_calls:
+            assistant_msg["tool_calls"] = result.tool_calls
+        state.history.extend([
+            {"role": "user", "content": message},
+            assistant_msg,
+        ])
+
+    @staticmethod
+    def _record_continue(state: ChatState, result: ChatResult) -> None:
+        """Append the assistant message after a continuation."""
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
+        if result.tool_calls:
+            assistant_msg["tool_calls"] = result.tool_calls
+        state.history.append(assistant_msg)
+
     # -- Sync API -----------------------------------------------------------
 
     def send(
@@ -602,17 +666,11 @@ class DirectClient(BaseClient):
         state: ChatState,
         tools: list[dict[str, Any]] | None = None,
     ) -> ChatResult:
-        payload = _build_payload(message, state, tools)
+        payload = self._prepare_payload(message, state, tools)
         started = time.perf_counter()
         raw = self._sync_request("POST", "/v1/chat/completions", json=payload).json()
         result = _parse_response(raw, started)
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
-        if result.tool_calls:
-            assistant_msg["tool_calls"] = result.tool_calls
-        state.history.extend([
-            {"role": "user", "content": message},
-            assistant_msg,
-        ])
+        self._record_send(message, state, result)
         return result
 
     # -- Async API ----------------------------------------------------------
@@ -624,7 +682,7 @@ class DirectClient(BaseClient):
         tools: list[dict[str, Any]] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> ChatResult:
-        payload = _build_payload(message, state, tools)
+        payload = self._prepare_payload(message, state, tools)
         started = time.perf_counter()
         response = await self._async_request(
             "POST", "/v1/chat/completions", client=client, json=payload
@@ -632,13 +690,7 @@ class DirectClient(BaseClient):
         response.raise_for_status()
         raw = response.json()
         result = _parse_response(raw, started)
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
-        if result.tool_calls:
-            assistant_msg["tool_calls"] = result.tool_calls
-        state.history.extend([
-            {"role": "user", "content": message},
-            assistant_msg,
-        ])
+        self._record_send(message, state, result)
         return result
 
     async def async_continue(
@@ -648,20 +700,7 @@ class DirectClient(BaseClient):
         client: httpx.AsyncClient | None = None,
         on_chunk: Callable[[str], None] | None = None,
     ) -> ChatResult:
-        messages = [*skill_messages(state), *state.history]
-        payload: dict[str, Any] = {
-            "model": state.model if state.model else DEFAULT_MODEL,
-            "messages": messages,
-            "stream": on_chunk is not None,
-        }
-        if state.max_tokens is not None:
-            payload["max_tokens"] = state.max_tokens
-        if state.json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        _inject_reasoning_effort(payload, state)
+        payload = self._prepare_continue_payload(state, tools, stream=on_chunk is not None)
 
         if on_chunk is not None:
             result = await self._stream_sse(payload, client, on_chunk, config_families=state.model_families)
@@ -674,10 +713,7 @@ class DirectClient(BaseClient):
             raw = response.json()
             result = _parse_response(raw, started)
 
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
-        if result.tool_calls:
-            assistant_msg["tool_calls"] = result.tool_calls
-        state.history.append(assistant_msg)
+        self._record_continue(state, result)
         return result
 
     async def async_send_streaming(
@@ -688,16 +724,10 @@ class DirectClient(BaseClient):
         client: httpx.AsyncClient | None = None,
         on_chunk: Callable[[str], None] | None = None,
     ) -> ChatResult:
-        payload = _build_payload(message, state, tools)
+        payload = self._prepare_payload(message, state, tools)
         payload["stream"] = True
         result = await self._stream_sse(payload, client, on_chunk or (lambda _: None), config_families=state.model_families)
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
-        if result.tool_calls:
-            assistant_msg["tool_calls"] = result.tool_calls
-        state.history.extend([
-            {"role": "user", "content": message},
-            assistant_msg,
-        ])
+        self._record_send(message, state, result)
         return result
 
     # -- Health / models ----------------------------------------------------
@@ -720,12 +750,12 @@ class DirectClient(BaseClient):
     def list_models(self) -> dict[str, Any]:
         response = self._sync_request("GET", "/v1/models", timeout=10.0)
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     async def async_list_models(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
         response = await self._async_request("GET", "/v1/models", client=client, timeout=10.0)
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     # -- Model context probing ----------------------------------------------
 
@@ -842,7 +872,7 @@ class RouterClient(DirectClient):
     def capabilities(self) -> BackendCapabilities:
         return BackendCapabilities(profiles=True, rag=True, metadata=True)
 
-    # -- Metadata injection (overrides _build_payload style) -----------------
+    # -- Payload hooks (Template Method: only override payload building) ----
 
     @staticmethod
     def _inject_metadata(payload: dict[str, Any], state: ChatState) -> None:
@@ -850,12 +880,32 @@ class RouterClient(DirectClient):
         if metadata:
             payload["metadata"] = metadata
 
+    def _prepare_payload(
+        self,
+        message: str,
+        state: ChatState,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = super()._prepare_payload(message, state, tools)
+        self._inject_metadata(payload, state)
+        return payload
+
+    def _prepare_continue_payload(
+        self,
+        state: ChatState,
+        tools: list[dict[str, Any]] | None = None,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        payload = super()._prepare_continue_payload(state, tools, stream=stream)
+        self._inject_metadata(payload, state)
+        return payload
+
     # -- Router-specific sync endpoints -------------------------------------
 
     def profiles(self) -> dict[str, Any]:
         response = self._sync_request("GET", "/profiles", timeout=10.0)
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     def ingest(self, paths: list[str] | None = None, urls: list[str] | None = None) -> dict[str, Any]:
         response = self._sync_request(
@@ -863,7 +913,7 @@ class RouterClient(DirectClient):
             json={"paths": paths or [], "urls": urls or []},
         )
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     def search(self, query: str, top_k: int = 5) -> dict[str, Any]:
         response = self._sync_request(
@@ -871,24 +921,24 @@ class RouterClient(DirectClient):
             json={"query": query, "top_k": top_k},
         )
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     def list_rag_documents(self) -> dict[str, Any]:
         response = self._sync_request("GET", "/rag/documents", timeout=10.0)
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     def delete_rag_document(self, doc_id: str) -> dict[str, Any]:
         response = self._sync_request("DELETE", f"/rag/documents/{doc_id}", timeout=10.0)
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     # -- Router-specific async endpoints ------------------------------------
 
     async def async_profiles(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
         response = await self._async_request("GET", "/profiles", client=client, timeout=10.0)
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     async def async_ingest(
         self,
@@ -901,7 +951,7 @@ class RouterClient(DirectClient):
             json={"paths": paths or [], "urls": urls or []},
         )
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     async def async_search(
         self, query: str, top_k: int = 5, client: httpx.AsyncClient | None = None
@@ -911,14 +961,14 @@ class RouterClient(DirectClient):
             json={"query": query, "top_k": top_k},
         )
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     async def async_list_rag_documents(
         self, client: httpx.AsyncClient | None = None
     ) -> dict[str, Any]:
         response = await self._async_request("GET", "/rag/documents", client=client, timeout=10.0)
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     async def async_delete_rag_document(
         self, doc_id: str, client: httpx.AsyncClient | None = None
@@ -927,127 +977,19 @@ class RouterClient(DirectClient):
             "DELETE", f"/rag/documents/{doc_id}", client=client, timeout=10.0
         )
         response.raise_for_status()
-        return response.json()
-
-    # -- Override chat methods with metadata injection -----------------------
-
-    def send(
-        self,
-        message: str,
-        state: ChatState,
-        tools: list[dict[str, Any]] | None = None,
-    ) -> ChatResult:
-        payload = _build_payload(message, state, tools)
-        self._inject_metadata(payload, state)
-        started = time.perf_counter()
-        raw = self._sync_request("POST", "/v1/chat/completions", json=payload).json()
-        result = _parse_response(raw, started)
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
-        if result.tool_calls:
-            assistant_msg["tool_calls"] = result.tool_calls
-        state.history.extend([
-            {"role": "user", "content": message},
-            assistant_msg,
-        ])
-        return result
-
-    async def async_send(
-        self,
-        message: str,
-        state: ChatState,
-        tools: list[dict[str, Any]] | None = None,
-        client: httpx.AsyncClient | None = None,
-    ) -> ChatResult:
-        payload = _build_payload(message, state, tools)
-        self._inject_metadata(payload, state)
-        started = time.perf_counter()
-        response = await self._async_request(
-            "POST", "/v1/chat/completions", client=client, json=payload
-        )
-        response.raise_for_status()
-        raw = response.json()
-        result = _parse_response(raw, started)
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
-        if result.tool_calls:
-            assistant_msg["tool_calls"] = result.tool_calls
-        state.history.extend([
-            {"role": "user", "content": message},
-            assistant_msg,
-        ])
-        return result
-
-    async def async_continue(
-        self,
-        state: ChatState,
-        tools: list[dict[str, Any]] | None = None,
-        client: httpx.AsyncClient | None = None,
-        on_chunk: Callable[[str], None] | None = None,
-    ) -> ChatResult:
-        messages = [*skill_messages(state), *state.history]
-        payload: dict[str, Any] = {
-            "model": state.model if state.model else DEFAULT_MODEL,
-            "messages": messages,
-            "stream": on_chunk is not None,
-        }
-        self._inject_metadata(payload, state)
-        if state.max_tokens is not None:
-            payload["max_tokens"] = state.max_tokens
-        if state.json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        _inject_reasoning_effort(payload, state)
-
-        if on_chunk is not None:
-            result = await self._stream_sse(payload, client, on_chunk, config_families=state.model_families)
-        else:
-            started = time.perf_counter()
-            response = await self._async_request(
-                "POST", "/v1/chat/completions", client=client, json=payload
-            )
-            response.raise_for_status()
-            raw = response.json()
-            result = _parse_response(raw, started)
-
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
-        if result.tool_calls:
-            assistant_msg["tool_calls"] = result.tool_calls
-        state.history.append(assistant_msg)
-        return result
-
-    async def async_send_streaming(
-        self,
-        message: str,
-        state: ChatState,
-        tools: list[dict[str, Any]] | None = None,
-        client: httpx.AsyncClient | None = None,
-        on_chunk: Callable[[str], None] | None = None,
-    ) -> ChatResult:
-        payload = _build_payload(message, state, tools)
-        self._inject_metadata(payload, state)
-        payload["stream"] = True
-        result = await self._stream_sse(payload, client, on_chunk or (lambda _: None), config_families=state.model_families)
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
-        if result.tool_calls:
-            assistant_msg["tool_calls"] = result.tool_calls
-        state.history.extend([
-            {"role": "user", "content": message},
-            assistant_msg,
-        ])
-        return result
+        return cast(dict[str, Any], response.json())
 
     # -- Health uses router's /health endpoint -------------------------------
 
     async def async_health(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
         response = await self._async_request("GET", "/health", client=client, timeout=10.0)
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     def health(self) -> dict[str, Any]:
         response = self._sync_request("GET", "/health", timeout=10.0)
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,8 @@ constants so defaults can be changed in one place.
 
 from __future__ import annotations
 
+from dataclasses import dataclass as _dataclass
+
 # -- Sandbox defaults ---------------------------------------------------
 
 SANDBOX_MEMORY_MB: int = 256
@@ -14,12 +16,34 @@ SANDBOX_FILESIZE_MB: int = 50
 SANDBOX_TIMEOUT: float = 30.0
 
 # -- Per-tool timeouts (in seconds) --------------------------------------
-
+# NOTE: prefer ``ToolProfile.for_tool(name).timeout`` over these raw constants
+# so timeouts stay configurable in one place (consolidated ToolProfile system).
 TOOL_TIMEOUT_EXECUTE_PYTHON: float = 35.0   # sandbox + overhead
 TOOL_TIMEOUT_WEB_SEARCH: float = 12.0
 TOOL_TIMEOUT_WEB_FETCH: float = 15.0
 TOOL_TIMEOUT_FILE_OPS: float = 10.0
 TOOL_TIMEOUT_DEFAULT: float = 30.0
+
+
+# -- Consolidated per-tool profiles --------------------------------------
+
+
+@_dataclass(frozen=True)
+class ToolProfile:
+    """Configurable timeout + output budget for one tool family."""
+
+    name: str
+    timeout: float = TOOL_TIMEOUT_DEFAULT
+    max_output_chars: int = 8000
+    needs_network: bool = False
+    needs_filesystem: bool = False
+
+    @classmethod
+    def for_tool(cls, name: str) -> ToolProfile:
+        return _TOOL_PROFILES.get(name, _TOOL_PROFILES["default"])
+
+
+_TOOL_PROFILES: dict[str, ToolProfile] = {}
 
 # -- Max output (in chars) before truncation ------------------------------
 
@@ -58,3 +82,15 @@ COMPACT_PROMPT_TEMPLATE: str = (
 # -- Session workspace --------------------------------------------------
 
 SESSION_DATE_FORMAT: str = "%Y-%m-%d"
+
+
+# Populate the consolidated profiles (after all timeout constants exist).
+_TOOL_PROFILES.update({
+    "execute_python": ToolProfile(name="execute_python", timeout=TOOL_TIMEOUT_EXECUTE_PYTHON),
+    "web_search": ToolProfile(name="web_search", timeout=TOOL_TIMEOUT_WEB_SEARCH, needs_network=True),
+    "web_fetch": ToolProfile(name="web_fetch", timeout=TOOL_TIMEOUT_WEB_FETCH, needs_network=True),
+    "write_file": ToolProfile(name="write_file", timeout=TOOL_TIMEOUT_FILE_OPS, needs_filesystem=True),
+    "read_file": ToolProfile(name="read_file", timeout=TOOL_TIMEOUT_FILE_OPS, needs_filesystem=True),
+    "list_files": ToolProfile(name="list_files", timeout=TOOL_TIMEOUT_FILE_OPS, needs_filesystem=True),
+    "default": ToolProfile(name="default", timeout=TOOL_TIMEOUT_DEFAULT),
+})
