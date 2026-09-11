@@ -201,10 +201,10 @@ jobs:
               useradd --create-home builder
               chown -R builder:builder /build
               runuser -u builder -- bash -euc "cd /build && makepkg --noconfirm --nodeps --clean"
-            '
+          '
           mkdir -p dist
-          package=$(find "$arch_root" -maxdepth 1 -type f -name 'r105-*.pkg.tar.zst' -print -quit)
-          test -n "$package"
+          package="$arch_root/r105-${VERSION}-1-x86_64.pkg.tar.zst"
+          test -f "$package"
           cp "$package" dist/
       - uses: actions/upload-artifact@v7
         with:
