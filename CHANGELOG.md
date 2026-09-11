@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.8.0] — 2026-09-11
+
 ### Added
 - `/connect` and `/provider` commands for switching between llama.cpp,
   llama-router, Ollama, LM Studio, vLLM, and supported cloud or custom
@@ -279,7 +283,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File explorer sidebar
 - Token usage estimation and auto-compaction at 80% context
 
-[Unreleased]: https://github.com/bnelabs/r105/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/bnelabs/r105/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/bnelabs/r105/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/bnelabs/r105/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/bnelabs/r105/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/bnelabs/r105/compare/v0.4.1...v0.5.0

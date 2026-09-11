@@ -516,8 +516,22 @@ jobs:
           test -f "release-assets/r105-${VERSION}-1-x86_64.pkg.tar.zst"
           test -f "release-assets/r105-${VERSION}-freebsd-amd64.pkg"
           test -f "release-assets/r105-windows-arm64.zip"
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          {
+            printf '## r105 %s\n\n' "$VERSION"
+            awk -v version="$VERSION" '
+              $0 ~ "^## \\[" version "\\]" { in_release = 1; next }
+              in_release && /^## \[/ { exit }
+              in_release { print }
+            ' CHANGELOG.md
+          } > release-notes.md
+          test -s release-notes.md
       - uses: softprops/action-gh-release@v3
         with:
           files: release-assets/*
-          body_path: docs/release-notes/v0.7.0.md
+          body_path: release-notes.md
           generate_release_notes: false
