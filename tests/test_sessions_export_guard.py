@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from r105.sessions import _ensure_export_deps
+from r105.sessions import _ensure_export_deps, export_conversation
+from r105.state import ChatState
 
 
 def test_ensure_export_deps_missing(monkeypatch):
@@ -42,3 +43,15 @@ def test_ensure_export_deps_succeeds_when_available():
     else:
         # If deps are installed, we just confirm no exception
         assert True
+
+
+def test_plain_text_export_has_roles_and_content():
+    state = ChatState()
+    state.history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "world"},
+    ]
+    exported = export_conversation(state, "text")
+    assert "[1] USER" in exported
+    assert "[2] ASSISTANT" in exported
+    assert "hello" in exported and "world" in exported

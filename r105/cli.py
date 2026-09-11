@@ -203,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         json_mode=args.json_mode,
         auto_compact=state_overrides.get("auto_compact", True),
         cache_prompt=state_overrides.get("cache_prompt", False),
+        keybindings=state_overrides.get("keybindings") or {},
         theme=state_overrides.get("theme", "r105"),
         model=model,
         reasoning_effort=state_overrides.get("reasoning_effort", "auto"),

@@ -35,7 +35,7 @@ COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     ("Sessions", "/session load", "<name>", "Load and restore a saved session"),
     ("Sessions", "/session list", "", "List saved sessions"),
     ("Sessions", "/session delete", "<name>", "Delete a saved session"),
-    ("Sessions", "/export", "markdown|json|html", "Export conversation to a file"),
+    ("Sessions", "/export", "text|markdown|json|html", "Export conversation to a file"),
     # Plugins
     ("Plugins", "/plugin list", "", "List loaded custom tool plugins"),
     ("Plugins", "/plugin reload", "", "Reload plugins from disk"),

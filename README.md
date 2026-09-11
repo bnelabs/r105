@@ -293,6 +293,7 @@ Press `/` to open the interactive command palette with:
 | `/session list` | List all saved sessions with previews and timestamps |
 | `/session search <query>` | Search message text across saved sessions |
 | `/session delete <name>` | Delete a saved session |
+| `/export text` | Export conversation as plain text |
 | `/export markdown` | Export conversation as Markdown |
 | `/export json` | Export conversation as JSON |
 | `/export html` | Export conversation as a styled HTML page |
@@ -343,6 +344,19 @@ Press `/` to open the interactive command palette with:
 | `Ctrl+K` | Input | Kill to end of line |
 | `F1` / `Ctrl+H` | Any | Show help screen |
 | `Ctrl+Q` / `Ctrl+C` | Any | Quit |
+
+Core actions can be remapped in `config.json` by binding ID. The supported
+IDs are `quit`, `show_help`, `show_history`, `copy_last_message`,
+`show_tools`, and `cancel_request`:
+
+```json
+{
+  "keybindings": {
+    "show_tools": "ctrl+o",
+    "copy_last_message": "ctrl+y"
+  }
+}
+```
 
 ---
 
@@ -551,7 +565,7 @@ Sessions are stored as JSON files in `~/.config/r105/sessions/`. Each file conta
 
 ### Export Dependencies
 
-`markdown`, `json`, and `html` exports work out of the box. The `pdf`, `docx`, and `pptx` formats require the optional export extra:
+`text`, `markdown`, `json`, and `html` exports work out of the box. The `pdf`, `docx`, and `pptx` formats require the optional export extra:
 
 ```sh
 pip install "r105[export]"
@@ -620,6 +634,9 @@ r105 stores configuration in `~/.config/r105/`:
   "sandbox_backend": "bwrap",
   "auto_compact": true,
   "cache_prompt": false,
+  "keybindings": {
+    "show_tools": "ctrl+o"
+  },
   "theme": "r105",
   "show_thinking": true,
   "thinking_default_expanded": false,

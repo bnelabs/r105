@@ -36,6 +36,7 @@ class ChatState:
     # prefix. It is opt-in because other OpenAI-compatible providers may
     # reject unknown request fields.
     cache_prompt: bool = False
+    keybindings: dict[str, str] = field(default_factory=dict)
     theme: str = "r105"
     model: str = DEFAULT_MODEL
     reasoning_effort: str = "auto"

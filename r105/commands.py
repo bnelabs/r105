@@ -720,13 +720,13 @@ def _handle_session_command(args: list[str], state: ChatState) -> str:
 def _handle_export_command(
     args: list[str], state: ChatState, workspace_dir: Path | None
 ) -> str:
-    """Handle /export markdown|json|html command."""
+    """Handle /export text|markdown|json|html command."""
     if workspace_dir is None:
         return "workspace not configured"
 
     fmt = args[0] if args else "markdown"
-    if fmt not in {"markdown", "json", "html"}:
-        return f"unknown format: {fmt} (valid: markdown, json, html)"
+    if fmt not in {"text", "markdown", "json", "html"}:
+        return f"unknown format: {fmt} (valid: text, markdown, json, html)"
 
     if not state.history:
         return "nothing to export — conversation is empty"
@@ -738,7 +738,8 @@ def _handle_export_command(
     except Exception as exc:
         return f"export failed: {exc}"
 
-    output_path = workspace_dir / f"conversation-{datetime.datetime.now():%Y%m%d-%H%M%S}.{fmt if fmt != 'markdown' else 'md'}"
+    extension = {"markdown": "md", "text": "txt"}.get(fmt, fmt)
+    output_path = workspace_dir / f"conversation-{datetime.datetime.now():%Y%m%d-%H%M%S}.{extension}"
     output_path.write_text(content, encoding="utf-8")
 
     return f"exported {len(state.history)} messages to {output_path}"
