@@ -522,14 +522,19 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          {
-            printf '## r105 %s\n\n' "$VERSION"
-            awk -v version="$VERSION" '
-              $0 ~ "^## \\[" version "\\]" { in_release = 1; next }
-              in_release && /^## \[/ { exit }
-              in_release { print }
-            ' CHANGELOG.md
-          } > release-notes.md
+          notes_file="docs/release-notes/v${VERSION}.md"
+          if [[ -f "$notes_file" ]]; then
+            cp "$notes_file" release-notes.md
+          else
+            {
+              printf '## r105 %s\n\n' "$VERSION"
+              awk -v version="$VERSION" '
+                $0 ~ "^## \\[" version "\\]" { in_release = 1; next }
+                in_release && /^## \[/ { exit }
+                in_release { print }
+              ' CHANGELOG.md
+            } > release-notes.md
+          fi
           test -s release-notes.md
       - uses: softprops/action-gh-release@v3
         with:
