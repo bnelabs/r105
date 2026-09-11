@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `r105 doctor`: environment diagnostics (Python/config/sandbox/backend/
+  workspace/skills/API keys) with per-check pass/fail and exit status
+- `execute_python` confirmation gate: one-time per-session approval via
+  `/approve execute_python`, `--yes` CLI flag, or
+  `auto_approve_execute_python` config key (sandbox still applies)
+- Web tool rate limiting: 30 searches / 60 fetches per rolling minute
+  (cache hits don't consume budget)
+
 ### Fixed
 - Tool dispatch arity: `ToolRegistry.execute()` adapts to 0/1-arg handlers
   via `call_tool_handler()` (`r105/registry.py`), so `get_time`,

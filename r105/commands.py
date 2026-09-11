@@ -58,7 +58,7 @@ from r105.state import (
     ChatState,
     token_usage,
 )
-from r105.tools import _cache_clear
+from r105.tools import _cache_clear, approve_execute_python
 
 SLASH_COMMANDS = [
     "/",
@@ -82,6 +82,7 @@ SLASH_COMMANDS = [
     "/autocompact",
     "/reasoning",
     "/permissions",
+    "/approve",
     "/preview",
     "/session",
     "/export",
@@ -190,6 +191,7 @@ Chat
   /autocompact [on|off]          toggle auto-compaction at 80% context
   /reasoning auto|off|low|med..  set reasoning effort (model-provided)
   /permissions <posture>         set permission posture (full-access|restricted|sandboxed|off)
+  /approve execute_python        one-time approval for code execution
 
 Skills
   /skills                        list local skills
@@ -424,6 +426,13 @@ async def _cmd_permissions(ctx: CommandContext) -> str:
     return f"permission_posture={posture} (saved persistently)"
 
 
+async def _cmd_approve(ctx: CommandContext) -> str:
+    if not ctx.args or ctx.args[0] not in ("execute_python", "python"):
+        return "usage: /approve execute_python — one-time approval for code execution"
+    approve_execute_python()
+    return "execute_python approved for this session"
+
+
 async def _cmd_preview(ctx: CommandContext) -> str:
     if ctx.workspace_dir is None:
         return "workspace not configured"
@@ -523,6 +532,7 @@ COMMAND_DISPATCH: dict[str, CommandHandler] = {
     "/autocompact": _cmd_autocompact,
     "/reasoning": _cmd_reasoning,
     "/permissions": _cmd_permissions,
+    "/approve": _cmd_approve,
     "/preview": _cmd_preview,
     "/session": _cmd_session,
     "/export": _cmd_export,

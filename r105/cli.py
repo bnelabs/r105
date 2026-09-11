@@ -83,12 +83,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Load a saved session on startup",
     )
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Auto-approve execute_python calls (skip the confirmation gate)",
+    )
 
     subparsers = parser.add_subparsers(dest="command")
     send_parser = subparsers.add_parser("send", help="Send one prompt and exit")
     send_parser.add_argument("message", nargs="+")
     subparsers.add_parser("chat", help="Start interactive chat (default)")
     subparsers.add_parser("health", help="Check router health")
+    subparsers.add_parser("doctor", help="Diagnose environment: config, sandbox, backend, workspace")
     profiles_parser = subparsers.add_parser("profiles", help="Show router profiles")
     profiles_parser.add_argument("--raw", action="store_true", help="Print raw JSON")
     parser.set_defaults(command="chat")
@@ -203,11 +209,28 @@ def main(argv: list[str] | None = None) -> int:
         except (json.JSONDecodeError, OSError) as exc:
             print(f"warning: failed to load session: {exc}", file=sys.stderr)
 
+    # --yes bypasses the execute_python confirmation gate for this run.
+    from r105.tools import set_execute_python_auto_approve
+    set_execute_python_auto_approve(
+        bool(args.yes or config.get("auto_approve_execute_python", False))
+    )
+
     try:
         if args.command == "send":
             result = client.send(" ".join(args.message), state)
             _print_chat_result(result)
             return 0
+        if args.command == "doctor":
+            from r105.doctor import collect_probes, run_doctor
+
+            report = run_doctor(**collect_probes(
+                client=client,
+                backend_url=client.base_url,
+                workspace_dir=workspace_dir,
+                skills_dir=skills_dir,
+            ))
+            print(report.render())
+            return 0 if report.passed else 1
         if args.command == "health":
             print(json.dumps(client.health(), indent=2, sort_keys=True))  # type: ignore[attr-defined]
             return 0

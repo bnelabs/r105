@@ -34,6 +34,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "url": None,
     "allow_plugin_overrides": False,
     "docker_image": None,
+    "auto_approve_execute_python": False,
 }
 
 VALID_THEMES = {"r105", "dracula", "solarized-dark", "high-contrast"}
@@ -85,6 +86,7 @@ if _PYDANTIC_AVAILABLE:
         url: str | None = None
         allow_plugin_overrides: bool = False
         docker_image: str | None = None
+        auto_approve_execute_python: bool = False
 
         model_config = {"extra": "forbid"}
 

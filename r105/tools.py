@@ -19,6 +19,7 @@ import os
 import platform
 import re
 import subprocess
+import time
 
 # -- Tool registry (decorator-based, unified via ComponentRegistry) ----------
 from collections import OrderedDict
@@ -317,6 +318,83 @@ def _builtin_tool_names() -> set[str]:
     return set(get_tool_registry().names())
 
 
+# -- execute_python confirmation gate --------------------------------------
+# Code execution needs a one-time approval per process: ``/approve
+# execute_python`` in the TUI, ``--yes`` on the CLI, or the
+# ``auto_approve_execute_python`` config key. The sandbox still applies;
+# this gate is about intent, not isolation.
+
+_EXECUTE_PYTHON_APPROVED = False
+_EXECUTE_PYTHON_AUTO_APPROVE = False
+
+
+def approve_execute_python() -> None:
+    """Record one-time approval for execute_python (this process)."""
+    global _EXECUTE_PYTHON_APPROVED
+    _EXECUTE_PYTHON_APPROVED = True
+
+
+def set_execute_python_auto_approve(enabled: bool) -> None:
+    """Bypass the confirmation gate (``--yes`` / config)."""
+    global _EXECUTE_PYTHON_AUTO_APPROVE
+    _EXECUTE_PYTHON_AUTO_APPROVE = bool(enabled)
+
+
+def reset_execute_python_approval() -> None:
+    """Clear approval state (tests / session reset)."""
+    global _EXECUTE_PYTHON_APPROVED, _EXECUTE_PYTHON_AUTO_APPROVE
+    _EXECUTE_PYTHON_APPROVED = False
+    _EXECUTE_PYTHON_AUTO_APPROVE = False
+
+
+def execute_python_needs_approval() -> bool:
+    """True when an execute_python call would be gated right now."""
+    return not (_EXECUTE_PYTHON_APPROVED or _EXECUTE_PYTHON_AUTO_APPROVE)
+
+
+_EXECUTE_PYTHON_GATE_MESSAGE = (
+    "execute_python needs one-time approval before code can run. "
+    "Reply with /approve execute_python (this session), restart with --yes, "
+    "or set auto_approve_execute_python in config.json."
+)
+
+
+# -- Web tool rate limiting -------------------------------------------------
+# Token-bucket-ish guard: at most N *executed* calls per rolling window per
+# tool. Cache hits don't consume budget. Prevents runaway loops from
+# hammering external services.
+
+_WEB_RATE_LIMITS: dict[str, tuple[int, float]] = {
+    "web_search": (30, 60.0),
+    "web_fetch": (60, 60.0),
+}
+
+_web_call_times: dict[str, list[float]] = {}
+
+
+def reset_rate_limits() -> None:
+    """Clear recorded web-tool call timestamps (tests)."""
+    _web_call_times.clear()
+
+
+def _check_rate_limit(name: str) -> str | None:
+    """Record a call and return an error when the budget is exhausted."""
+    limit = _WEB_RATE_LIMITS.get(name)
+    if limit is None:
+        return None
+    max_calls, window = limit
+    now = time.monotonic()
+    recent = [t for t in _web_call_times.get(name, []) if now - t < window]
+    if len(recent) >= max_calls:
+        return (
+            f"error: {name} rate limited ({max_calls} calls per {window:.0f}s) — "
+            "try a different approach or wait before retrying"
+        )
+    recent.append(now)
+    _web_call_times[name] = recent
+    return None
+
+
 def execute_tool_call(
     call: dict[str, Any],
     workspace_dir: Path,
@@ -374,6 +452,26 @@ def execute_tool_call(
                 "name": name,
                 "content": f"{cached}\n\n[SYSTEM NOTE: This result was cached from a previous identical call.]",
             }
+
+    # Confirmation gate for code execution (intent, not isolation —
+    # the sandbox still applies once approved).
+    if name == "execute_python" and execute_python_needs_approval():
+        return {
+            "role": "tool",
+            "tool_call_id": call.get("id", ""),
+            "name": name,
+            "content": _EXECUTE_PYTHON_GATE_MESSAGE,
+        }
+
+    # Rate-limit web tools (cache hits above already bypassed this).
+    rate_error = _check_rate_limit(name)
+    if rate_error is not None:
+        return {
+            "role": "tool",
+            "tool_call_id": call.get("id", ""),
+            "name": name,
+            "content": rate_error,
+        }
 
     # Dispatch: try built-in registry → plugins → MCP.
     # SECURITY: built-ins always win over plugins/MCP when names collide,
