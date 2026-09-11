@@ -65,9 +65,39 @@ pipx install "r105[export]"
 brew install bnelabs/tap/r105
 ```
 
+### Linux and FreeBSD packages
+
+The release page includes native x86_64 packages with the standard extension
+for each package manager. Set `VERSION` to the release you downloaded:
+
+```sh
+VERSION=0.7.0
+
+# Ubuntu / Debian
+sudo apt install "./r105_${VERSION}_amd64.deb"
+
+# Arch Linux
+sudo pacman -U "r105-${VERSION}-1-x86_64.pkg.tar.zst"
+
+# Fedora / RHEL-like distributions
+sudo dnf install "./r105-${VERSION}-1.x86_64.rpm"
+
+# FreeBSD
+sudo pkg add "./r105-${VERSION}-freebsd-amd64.pkg"
+
+# Alpine Linux (verify SHA256SUMS before installing an unsigned local APK)
+sudo apk add --allow-untrusted "./r105-${VERSION}-r0.apk"
+```
+
+The Ubuntu, Arch, and Fedora packages use the Linux x86_64 binary built on
+Ubuntu 22.04. The FreeBSD and Alpine packages are built natively on their
+respective systems. The Alpine job is best effort because it targets a
+separate musl ABI; if that native build is unavailable, the other release
+assets are still published.
+
 ### Standalone binary
 
-Pre-built single-file executables are attached to [GitHub Releases](https://github.com/bnelabs/r105/releases) for Linux, macOS (x64 and ARM64), and Windows. Download the one for your platform, make it executable, and run — no Python install needed. The binaries are named `r105-linux-x64`, `r105-macos-x64`, `r105-macos-arm64`, and `r105-windows-x64.exe`.
+Pre-built single-file executables are attached to [GitHub Releases](https://github.com/bnelabs/r105/releases) as archives for Linux, macOS (x64 and ARM64), and Windows. Verify `SHA256SUMS`, extract the archive, make the Unix executable runnable, and place it on your `PATH` — no Python install needed. The archives are named `r105-linux-x64.tar.gz`, `r105-macos-x64.tar.gz`, `r105-macos-arm64.tar.gz`, and `r105-windows-x64.zip`.
 
 ### From source
 
@@ -501,7 +531,7 @@ def register(registry):
 
 Plugins are auto-discovered on startup. Use `/plugin reload` to reload without restarting.
 
-Plugin loading is validated: the file must expose `register(registry)` taking exactly one argument, and every tool needs a non-empty name/description, a parameters schema object, and a callable handler — violations are reported as specific warnings instead of silently skipping. Plugins can declare `__r105_min_version__ = "0.6.0"` and `PLUGIN_REQUIREMENTS = ["package_name"]`; incompatible plugins are skipped with a warning. `/plugin reload` drains active plugin calls before replacing handlers. Plugins cannot shadow built-in tools unless you opt in via the `allow_plugin_overrides` config key or `R105_ALLOW_PLUGIN_OVERRIDE=1`.
+Plugin loading is validated: the file must expose `register(registry)` taking exactly one argument, and every tool needs a non-empty name/description, a parameters schema object, and a callable handler — violations are reported as specific warnings instead of silently skipping. Plugins can declare `__r105_min_version__ = "0.7.0"` and `PLUGIN_REQUIREMENTS = ["package_name"]`; incompatible plugins are skipped with a warning. `/plugin reload` drains active plugin calls before replacing handlers. Plugins cannot shadow built-in tools unless you opt in via the `allow_plugin_overrides` config key or `R105_ALLOW_PLUGIN_OVERRIDE=1`.
 
 See [docs/TOOLS.md](docs/TOOLS.md) for the full API reference.
 
@@ -743,6 +773,10 @@ brew uninstall r105        # remove
 ### Standalone binary
 
 Download the latest binary from [GitHub Releases](https://github.com/bnelabs/r105/releases) and replace the old one.
+
+For archive downloads, verify `SHA256SUMS`, extract the archive, and replace
+the executable inside it. Package-manager installations can be upgraded with
+the same command used for the initial install.
 
 ### From source
 

@@ -38,6 +38,7 @@ from typing import Any
 
 import httpx
 
+from r105 import __version__
 from r105.errors import MCPConnectionError, MCPToolError
 
 
@@ -158,7 +159,7 @@ class MCPClientBase(abc.ABC):
         init_resp = self._call("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "r105", "version": "0.2.1"},
+            "clientInfo": {"name": "r105", "version": __version__},
         })
         if init_resp is None:
             raise MCPConnectionError(
@@ -175,7 +176,7 @@ class MCPClientBase(abc.ABC):
         init_resp = await self._acall("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "r105", "version": "0.2.1"},
+            "clientInfo": {"name": "r105", "version": __version__},
         })
         if init_resp is None:
             raise MCPConnectionError(

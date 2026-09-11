@@ -1,4 +1,4 @@
-name: Release (PyPI + Binaries)
+name: Release (PyPI, binaries, and distro packages)
 
 on:
   push:
@@ -9,9 +9,21 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    name: Validate release metadata
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check tag, project, runtime, and changelog versions
+        run: python packaging/check_release.py --tag "${GITHUB_REF_NAME}"
+
   pypi:
     name: Publish to PyPI
-    runs-on: ubuntu-latest
+    needs: validate
+    runs-on: ubuntu-22.04
     environment:
       name: pypi
       url: https://pypi.org/p/r105
@@ -20,38 +32,41 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install build twine && python -m build && twine check dist/*
-      - run: pip install twine && twine upload --skip-existing dist/*
+      - name: Build and validate Python distributions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+          python -m build
+          twine check dist/*
+      - name: Publish Python distributions
+        run: twine upload --skip-existing dist/*
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
 
   binary:
     name: Build ${{ matrix.name }}
+    needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            name: Linux
+          - os: ubuntu-22.04
+            name: Linux x86_64
             artifact: r105-linux
             path: dist/r105
-            suffix: r105-linux-x64
           - os: macos-26-intel
-            name: macOS x64
+            name: macOS x86_64
             artifact: r105-macos
             path: dist/r105
-            suffix: r105-macos-x64
           - os: windows-latest
-            name: Windows x64
+            name: Windows x86_64
             artifact: r105-windows
             path: dist/r105.exe
-            suffix: r105-windows-x64.exe
           - os: macos-26
-            name: macOS ARM
+            name: macOS ARM64
             artifact: r105-macos-arm
             path: dist/r105
-            suffix: r105-macos-arm64
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -59,61 +74,289 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: |
-          pip install pyinstaller .
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller .
       - name: Build standalone binary (Unix)
         if: matrix.os != 'windows-latest'
         run: |
-          pyinstaller --onefile --name r105 \
+          python -m PyInstaller --clean --onefile --name r105 \
             --hidden-import=r105.cli \
             --hidden-import=r105.tui \
             --hidden-import=r105.tui.screens \
             --hidden-import=r105.tui.widgets \
             --hidden-import=r105.themes \
             --add-data "r105/themes:r105/themes" \
+            --add-data "r105/skills:r105/skills" \
             r105/__main__.py
       - name: Build standalone binary (Windows)
         if: matrix.os == 'windows-latest'
         shell: cmd
         run: |
-          pyinstaller --onefile --name r105 ^
+          python -m PyInstaller --clean --onefile --name r105 ^
             --hidden-import=r105.cli ^
             --hidden-import=r105.tui ^
             --hidden-import=r105.tui.screens ^
             --hidden-import=r105.tui.widgets ^
             --hidden-import=r105.themes ^
             --add-data "r105/themes;r105/themes" ^
+            --add-data "r105/skills;r105/skills" ^
             r105\__main__.py
+      - name: Smoke test Unix binary
+        if: matrix.os != 'windows-latest'
+        run: ./dist/r105 --version
+      - name: Smoke test Windows binary
+        if: matrix.os == 'windows-latest'
+        shell: cmd
+        run: dist\r105.exe --version
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.path }}
+          if-no-files-found: error
+
+  linux-packages:
+    name: Build Ubuntu and Fedora packages
+    needs: [validate, binary]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
+        with:
+          name: r105-linux
+          path: artifacts/linux
+      - name: Extract release version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Install package builders
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+      - name: Build Ubuntu/Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_root="$RUNNER_TEMP/r105-deb"
+          mkdir -p "$package_root/DEBIAN" "$package_root/usr/bin"
+          mkdir -p "$package_root/usr/share/doc/r105"
+          install -m 0755 artifacts/linux/r105 "$package_root/usr/bin/r105"
+          install -m 0644 LICENSE "$package_root/usr/share/doc/r105/copyright"
+          install -m 0644 README.md "$package_root/usr/share/doc/r105/README.md"
+          sed "s/@VERSION@/${VERSION}/g" packaging/debian/control.in \
+            > "$package_root/DEBIAN/control"
+          mkdir -p dist
+          dpkg-deb --build --root-owner-group "$package_root" \
+            "dist/r105_${VERSION}_amd64.deb"
+          dpkg-deb --info "dist/r105_${VERSION}_amd64.deb"
+      - name: Build Fedora/RPM package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rpm_root="$RUNNER_TEMP/rpmbuild"
+          mkdir -p "$rpm_root/BUILD" "$rpm_root/BUILDROOT" "$rpm_root/RPMS" \
+            "$rpm_root/SOURCES" "$rpm_root/SPECS" "$rpm_root/SRPMS"
+          cp artifacts/linux/r105 "$rpm_root/SOURCES/r105"
+          cp LICENSE "$rpm_root/SOURCES/LICENSE"
+          cp README.md "$rpm_root/SOURCES/README.md"
+          release_date=$(date -u '+%a %b %d %Y')
+          sed -e "s/@VERSION@/${VERSION}/g" \
+              -e "s/@RELEASE_DATE@/${release_date}/g" \
+              packaging/fedora/r105.spec.in > "$rpm_root/SPECS/r105.spec"
+          rpmbuild --define "_topdir ${rpm_root}" -bb "$rpm_root/SPECS/r105.spec"
+          mkdir -p dist
+          cp "$rpm_root/RPMS/x86_64/r105-${VERSION}-1.x86_64.rpm" dist/
+          rpm -qpl "dist/r105-${VERSION}-1.x86_64.rpm"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: r105-linux-packages
+          path: dist/*
+          if-no-files-found: error
+
+  arch:
+    name: Build Arch Linux package
+    needs: [validate, binary]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
+        with:
+          name: r105-linux
+          path: artifacts/linux
+      - name: Extract release version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Build package in Arch Linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch_root="$RUNNER_TEMP/r105-arch"
+          mkdir -p "$arch_root"
+          cp artifacts/linux/r105 "$arch_root/r105"
+          cp LICENSE README.md "$arch_root/"
+          sed "s/@VERSION@/${VERSION}/g" packaging/arch/PKGBUILD.in \
+            > "$arch_root/PKGBUILD"
+          docker run --rm -v "$arch_root:/build" archlinux:base-devel \
+            bash -euc '
+              useradd --create-home builder
+              chown -R builder:builder /build
+              runuser -u builder -- bash -euc "cd /build && makepkg --noconfirm --nodeps --clean"
+            '
+          mkdir -p dist
+          package=$(find "$arch_root" -maxdepth 1 -type f -name 'r105-*.pkg.tar.zst' -print -quit)
+          test -n "$package"
+          cp "$package" dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: r105-arch
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+
+  freebsd:
+    name: Build FreeBSD package
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build native FreeBSD executable and package
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14"
+          usesh: true
+          mem: 8192
+          copyback: true
+          prepare: |
+            pkg update -f
+            pkg install -y ca_root_nss python312 py312-pip py312-virtualenv gmake binutils
+          run: |
+            set -eu
+            VERSION="${GITHUB_REF_NAME#v}"
+            VENV="$HOME/r105-venv"
+            python3.12 -m venv "$VENV"
+            "$VENV/bin/python" -m pip install --upgrade pip
+            "$VENV/bin/python" -m pip install --no-cache-dir pyinstaller .
+            "$VENV/bin/python" -m PyInstaller --clean --onefile --name r105 \
+              --distpath dist-freebsd --workpath build-freebsd --specpath build-freebsd \
+              --hidden-import=r105.cli \
+              --hidden-import=r105.tui \
+              --hidden-import=r105.tui.screens \
+              --hidden-import=r105.tui.widgets \
+              --hidden-import=r105.themes \
+              --add-data "r105/themes:r105/themes" \
+              --add-data "r105/skills:r105/skills" \
+              r105/__main__.py
+            mkdir -p freebsd-stage/usr/local/bin \
+              freebsd-stage/usr/local/share/licenses/r105 \
+              freebsd-stage/usr/local/share/doc/r105 \
+              dist
+            install -m 0755 dist-freebsd/r105 freebsd-stage/usr/local/bin/r105
+            install -m 0644 LICENSE freebsd-stage/usr/local/share/licenses/r105/LICENSE
+            install -m 0644 README.md freebsd-stage/usr/local/share/doc/r105/README.md
+            abi=$(pkg -vv | sed -n 's/^[[:space:]]*ABI = "\([^"]*\)".*/\1/p' | head -n 1)
+            test -n "$abi"
+            r105_sha=$(sha256 -q freebsd-stage/usr/local/bin/r105)
+            license_sha=$(sha256 -q freebsd-stage/usr/local/share/licenses/r105/LICENSE)
+            readme_sha=$(sha256 -q freebsd-stage/usr/local/share/doc/r105/README.md)
+            sed -e "s/@VERSION@/${VERSION}/g" \
+                -e "s/@ABI@/${abi}/g" \
+                -e "s/@R105_SHA256@/${r105_sha}/g" \
+                -e "s/@LICENSE_SHA256@/${license_sha}/g" \
+                -e "s/@README_SHA256@/${readme_sha}/g" \
+                packaging/freebsd/manifest.ucl.in > freebsd-manifest.ucl
+            pkg create -M freebsd-manifest.ucl -r freebsd-stage -o dist
+            package=$(find dist -maxdepth 1 -type f -name "r105-${VERSION}.pkg" -print -quit)
+            test -n "$package"
+            mv "$package" "dist/r105-${VERSION}-freebsd-amd64.pkg"
+            dist-freebsd/r105 --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: r105-freebsd
+          path: dist/r105-*.pkg
+          if-no-files-found: error
+
+  alpine:
+    name: Build Alpine Linux package
+    needs: validate
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build native musl executable and APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          output_root="$RUNNER_TEMP/r105-alpine"
+          mkdir -p "$output_root"
+          docker run --rm -e VERSION="$VERSION" \
+            -v "$GITHUB_WORKSPACE:/workspace" -v "$output_root:/out" \
+            alpine:3.22 sh -euxc '
+              apk add --no-cache alpine-sdk python3 py3-pip py3-virtualenv \
+                build-base libffi-dev openssl-dev
+              python3 -m venv /tmp/r105-venv
+              /tmp/r105-venv/bin/python -m pip install --upgrade pip
+              /tmp/r105-venv/bin/python -m pip install --no-cache-dir pyinstaller .
+              /tmp/r105-venv/bin/python -m PyInstaller --clean --onefile --name r105 \
+                --distpath /workspace/dist-alpine --workpath /workspace/build-alpine \
+                --specpath /workspace/build-alpine \
+                --hidden-import=r105.cli \
+                --hidden-import=r105.tui \
+                --hidden-import=r105.tui.screens \
+                --hidden-import=r105.tui.widgets \
+                --hidden-import=r105.themes \
+                --add-data "r105/themes:r105/themes" \
+                --add-data "r105/skills:r105/skills" \
+                r105/__main__.py
+              adduser -D builder
+              addgroup builder abuild
+              mkdir -p /var/cache/distfiles /workspace/alpine-package
+              chgrp abuild /var/cache/distfiles
+              chmod g+w /var/cache/distfiles
+              cp /workspace/dist-alpine/r105 /workspace/alpine-package/r105
+              cp /workspace/LICENSE /workspace/README.md /workspace/alpine-package/
+              sed "s/@VERSION@/${VERSION}/g" /workspace/packaging/alpine/APKBUILD.in \
+                > /workspace/alpine-package/APKBUILD
+              chown -R builder:abuild /workspace/alpine-package
+              su builder -s /bin/ash -c "cd /workspace/alpine-package && abuild-keygen -a -n && abuild checksum && abuild -r"
+              package=$(find /home/builder/packages -type f -name "r105-${VERSION}-r0.apk" -print -quit)
+              test -n "$package"
+              cp "$package" "/out/r105-${VERSION}-r0.apk"
+              mkdir -p /tmp/r105-root
+              apk add --allow-untrusted --no-network --root /tmp/r105-root \
+                "/out/r105-${VERSION}-r0.apk"
+              /tmp/r105-root/usr/bin/r105 --version
+            '
+          mkdir -p dist
+          cp "$output_root/r105-${VERSION}-r0.apk" dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: r105-alpine
+          path: dist/*.apk
+          if-no-files-found: error
 
   update-formulas:
-    name: Update Homebrew & Scoop formulas
-    needs: [pypi, binary]
-    runs-on: ubuntu-latest
+    name: Update Homebrew and Scoop formulas
+    needs: [pypi, binary, release]
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
         with:
           ref: main
           fetch-depth: 0
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install system dependencies
+      - name: Install formula tools
         run: |
-          sudo apt-get update && sudo apt-get install -y gettext jq
+          sudo apt-get update
+          sudo apt-get install -y gettext jq
       - name: Extract version from tag
-        run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+        run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - name: Get sdist SHA256 from PyPI
         run: |
-          URL="https://files.pythonhosted.org/packages/source/r/r105/r105-${RELEASE_VERSION}.tar.gz"
-          SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
-          echo "SDIST_SHA256=$SHA" >> $GITHUB_ENV
+          set -euo pipefail
+          url="https://files.pythonhosted.org/packages/source/r/r105/r105-${RELEASE_VERSION}.tar.gz"
+          sha=$(curl --fail --silent --show-error --location "$url" | sha256sum | cut -d' ' -f1)
+          echo "SDIST_SHA256=$sha" >> "$GITHUB_ENV"
       - name: Update Homebrew formula
         run: |
-          cat > docs/homebrew.rb << 'EOF'
+          cat > docs/homebrew.rb.in <<'EOF'
           class R105 < Formula
             include Language::Python::Virtualenv
             desc "r105 — Beyond the prompt. Rich terminal AI assistant for any OpenAI-compatible backend."
@@ -130,18 +373,21 @@ jobs:
             end
           end
           EOF
-          envsubst < docs/homebrew.rb > docs/homebrew.rb.tmp && mv docs/homebrew.rb.tmp docs/homebrew.rb
-      - uses: actions/download-artifact@v7
-        with:
-          name: r105-windows
-          path: artifacts/windows
+          envsubst < docs/homebrew.rb.in > docs/homebrew.rb
+          rm docs/homebrew.rb.in
       - name: Update Scoop formula
         run: |
-          PYPI_URL="https://files.pythonhosted.org/packages/source/r/r105/r105-${RELEASE_VERSION}.tar.gz"
-          WIN_SHA256=$(sha256sum artifacts/windows/r105.exe | cut -d' ' -f1)
-          jq --arg url "$PYPI_URL" --arg sha "${SDIST_SHA256}" --arg ver "${RELEASE_VERSION}" --arg win_sha "$WIN_SHA256" \
-            '.url = $url | .hash = $sha | .version = $ver | .architecture["64bit"].hash = $win_sha' \
-            docs/scoop.json > docs/scoop.json.tmp && mv docs/scoop.json.tmp docs/scoop.json
+          set -euo pipefail
+          pypi_url="https://files.pythonhosted.org/packages/source/r/r105/r105-${RELEASE_VERSION}.tar.gz"
+          win_url="https://github.com/bnelabs/r105/releases/download/v${RELEASE_VERSION}/r105-windows-x64.zip"
+          win_archive="$RUNNER_TEMP/r105-windows-x64.zip"
+          curl --fail --silent --show-error --location "$win_url" -o "$win_archive"
+          win_sha=$(sha256sum "$win_archive" | cut -d' ' -f1)
+          jq --arg url "$pypi_url" --arg sha "${SDIST_SHA256}" \
+            --arg ver "${RELEASE_VERSION}" --arg win_url "$win_url" --arg win_sha "$win_sha" \
+            '.url = $url | .hash = $sha | .version = $ver | .architecture["64bit"].url = $win_url | .architecture["64bit"].hash = $win_sha | .autoupdate.architecture["64bit"].url = $win_url' \
+            docs/scoop.json > docs/scoop.json.tmp
+          mv docs/scoop.json.tmp docs/scoop.json
       - name: Commit and push formula updates
         run: |
           git config user.name "r105 release bot"
@@ -154,9 +400,14 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [binary]
-    runs-on: ubuntu-latest
+    needs: [pypi, binary, linux-packages, arch, freebsd, alpine]
+    if: >-
+      always() && needs.pypi.result == 'success' && needs.binary.result == 'success' &&
+      needs.linux-packages.result == 'success' && needs.arch.result == 'success' &&
+      needs.freebsd.result == 'success'
+    runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v7
         with:
           name: r105-linux
@@ -173,17 +424,61 @@ jobs:
         with:
           name: r105-macos-arm
           path: artifacts/macos-arm
-      - name: Rename binaries with platform suffix
+      - uses: actions/download-artifact@v7
+        with:
+          name: r105-linux-packages
+          path: artifacts/linux-packages
+      - uses: actions/download-artifact@v7
+        with:
+          name: r105-arch
+          path: artifacts/arch
+      - uses: actions/download-artifact@v7
+        with:
+          name: r105-freebsd
+          path: artifacts/freebsd
+      - name: Download optional Alpine package
+        if: needs.alpine.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: r105-alpine
+          path: artifacts/alpine
+      - name: Prepare release archives and packages
+        shell: bash
         run: |
-          mv artifacts/linux/r105 artifacts/linux/r105-linux-x64
-          mv artifacts/macos/r105 artifacts/macos/r105-macos-x64
-          mv artifacts/windows/r105.exe artifacts/windows/r105-windows-x64.exe
-          mv artifacts/macos-arm/r105 artifacts/macos-arm/r105-macos-arm64
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p release-assets release-files/linux release-files/macos \
+            release-files/macos-arm release-files/windows
+          install -m 0755 artifacts/linux/r105 release-files/linux/r105
+          install -m 0755 artifacts/macos/r105 release-files/macos/r105
+          install -m 0755 artifacts/macos-arm/r105 release-files/macos-arm/r105
+          install -m 0644 LICENSE README.md release-files/linux/
+          install -m 0644 LICENSE README.md release-files/macos/
+          install -m 0644 LICENSE README.md release-files/macos-arm/
+          install -m 0644 artifacts/windows/r105.exe release-files/windows/r105.exe
+          install -m 0644 LICENSE README.md release-files/windows/
+          tar -C release-files/linux -czf "release-assets/r105-linux-x64.tar.gz" \
+            r105 LICENSE README.md
+          tar -C release-files/macos -czf "release-assets/r105-macos-x64.tar.gz" \
+            r105 LICENSE README.md
+          tar -C release-files/macos-arm -czf "release-assets/r105-macos-arm64.tar.gz" \
+            r105 LICENSE README.md
+          (cd release-files/windows && zip -q "$GITHUB_WORKSPACE/release-assets/r105-windows-x64.zip" \
+            r105.exe LICENSE README.md)
+          cp artifacts/linux-packages/*.deb artifacts/linux-packages/*.rpm release-assets/
+          cp artifacts/arch/*.pkg.tar.zst release-assets/
+          cp artifacts/freebsd/*.pkg release-assets/
+          if compgen -G "artifacts/alpine/*.apk" > /dev/null; then
+            cp artifacts/alpine/*.apk release-assets/
+          fi
+          (cd release-assets && sha256sum * > SHA256SUMS)
+          find release-assets -maxdepth 1 -type f -print -exec file {} \;
+          test -f "release-assets/r105_${VERSION}_amd64.deb"
+          test -f "release-assets/r105-${VERSION}-1.x86_64.rpm"
+          test -f "release-assets/r105-${VERSION}-1-x86_64.pkg.tar.zst"
+          test -f "release-assets/r105-${VERSION}-freebsd-amd64.pkg"
       - uses: softprops/action-gh-release@v3
         with:
-          files: |
-            artifacts/linux/r105-linux-x64
-            artifacts/macos/r105-macos-x64
-            artifacts/windows/r105-windows-x64.exe
-            artifacts/macos-arm/r105-macos-arm64
+          files: release-assets/*
           generate_release_notes: true

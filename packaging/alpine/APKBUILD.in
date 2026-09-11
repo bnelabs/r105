@@ -1,0 +1,20 @@
+# Maintainer: r105 maintainers <maintainers@r105.dev>
+pkgname=r105
+pkgver=@VERSION@
+pkgrel=0
+pkgdesc="Rich terminal AI assistant for OpenAI-compatible backends"
+url="https://github.com/bnelabs/r105"
+arch="x86_64"
+license="MIT"
+options="!check"
+source="r105 LICENSE README.md"
+
+build() {
+  :
+}
+
+package() {
+  install -Dm755 "$srcdir/r105" "$pkgdir/usr/bin/r105"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/r105/LICENSE"
+  install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/r105/README.md"
+}

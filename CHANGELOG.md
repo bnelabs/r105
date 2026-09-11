@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.7.0] — 2026-09-11
+
 ### Added
 - Typed `Client` facade with stable `chat()`, `stream_chat()`, and
   `list_models()` methods, while preserving concrete backend compatibility
@@ -43,6 +47,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (cache hits don't consume budget)
 - `Ctrl+X` / `cancel_tools` cancels a waiting local-tool batch
 - The status bar renders context usage as a visual progress bar
+- Release artifacts now include `.deb`, `.pkg.tar.zst`, `.rpm`, FreeBSD
+  `.pkg`, Alpine `.apk`, Unix `.tar.gz`, and Windows `.zip` packages
+- Release metadata validation checks the tag, project version, runtime version,
+  and changelog section before publishing
+- SSE streaming robustness: `event:` tracking with `event: error` surfacing
+  as `RouterAPIError`, malformed-frame counting with structured logging,
+  and exponential-backoff retries for transient pre-stream failures
+  (connect errors, timeouts, HTTP 5xx)
+- Sandbox fallback transparency: `detect_backend_with_reason()` /
+  `get_fallback_reason()` explain downgrades; a startup stderr warning and a
+  TUI status-bar `⚠ sandbox=<backend>` segment surface weak backends
+- Plugin validation: `register()` signature checks and tool-definition schema
+  validation report specific errors through `/plugin reload`
+- Ctrl+T tool inspector: modal screen listing every tool call with arguments
+  and result previews, with fuzzy filtering
+- `convert` tool: unit conversion across length, mass, time, data, speed,
+  volume, and temperature; `calculate` gains math functions and pi/e/tau
+- Session diffing: `/session load` previews unsaved messages and changed
+  settings before restoring
+- Collapsible long tool results with diff coloring and code highlighting
 
 ### Fixed
 - Web SSRF bypasses: redirects are checked before every hop, ambient proxies
@@ -66,34 +90,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cleared on `/session load`
 - `commands.py`: replaced five `assert`-after-guard checks with explicit
   error returns (asserts vanish under `python -O`)
-
-### Removed
-- RAG subsystem: `/rag` commands, `r105 ingest`/`search` CLI subcommands,
-  `--rag` flag, `ChatState.rag`, router `/rag/*` endpoints, and RAG docs.
-  The router backend now covers profiles + metadata only
-- Dead code: duplicate SSRF/HTML/DDG helpers folded into `r105/tools_web.py`
-  (which nothing imported), `_SAFE_ENV_PREFIXES_LEGACY` alias; web tools
-  send a versioned `r105/{__version__}` User-Agent
-
-### Added
-- SSE streaming robustness: `event:` tracking with `event: error` surfacing
-  as `RouterAPIError`, malformed-frame counting with structured logging,
-  and exponential-backoff retries for transient pre-stream failures
-  (connect errors, timeouts, HTTP 5xx)
-- Sandbox fallback transparency: `detect_backend_with_reason()` /
-  `get_fallback_reason()` explain downgrades, a startup stderr warning and
-  a TUI status-bar `⚠ sandbox=<backend>` segment surface weak backends
-- Plugin validation: `register()` signature check and tool-definition schema
-  validation with specific errors shown by `/plugin reload`
-- Ctrl+T tool inspector: modal screen listing every tool call with arguments
-  and result previews, with fuzzy filtering
-- `convert` tool: unit conversion across length, mass, time, data, speed,
-  volume, and temperature; `calculate` gains math functions and pi/e/tau
-- Session diffing: `/session load` previews unsaved messages and changed
-  settings before restoring
-- Collapsible long tool results with diff coloring and code highlighting
+- MCP initialization now reports the actual r105 runtime version
 
 ### Changed
+- Standalone release assets are archived with platform-specific extensions:
+  `.tar.gz` for Unix targets and `.zip` for Windows
+- The Linux release binary is built on Ubuntu 22.04 as the common glibc
+  baseline for Ubuntu, Arch, and Fedora packages
 - Slash-command handlers share `_apply_bool_toggle` / `_parse_choice`
   helpers; `ChatScreen.on_unmount` cancels the in-flight worker
 - Structure (no behavior change): `client.py` split into `payload.py`
@@ -102,6 +105,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `web_search`/`web_fetch` implementations moved to `tools_web.py`;
   tool-loop mechanics extracted to `tool_loop.py`; command handlers take
   a single `CommandContext` instead of five positional arguments
+
+### Removed
+- RAG subsystem: `/rag` commands, `r105 ingest`/`search` CLI subcommands,
+  `--rag` flag, `ChatState.rag`, router `/rag/*` endpoints, and RAG docs.
+  The router backend now covers profiles + metadata only
+- Dead code: duplicate SSRF/HTML/DDG helpers folded into `r105/tools_web.py`
+  (which nothing imported), `_SAFE_ENV_PREFIXES_LEGACY` alias; web tools
+  send a versioned `r105/{__version__}` User-Agent
 
 ## [0.6.0] — 2026-08
 
@@ -257,3 +268,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG integration with ingest, search, list, delete commands
 - File explorer sidebar
 - Token usage estimation and auto-compaction at 80% context
+
+[Unreleased]: https://github.com/bnelabs/r105/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/bnelabs/r105/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/bnelabs/r105/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/bnelabs/r105/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/bnelabs/r105/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/bnelabs/r105/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/bnelabs/r105/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/bnelabs/r105/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/bnelabs/r105/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/bnelabs/r105/releases/tag/v0.1.0

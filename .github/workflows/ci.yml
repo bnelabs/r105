@@ -39,6 +39,9 @@ jobs:
       - name: Validate exported config schema
         run: python -c "from r105.config import validate_config_schema; validate_config_schema()"
 
+      - name: Validate release metadata
+        run: python packaging/check_release.py
+
       - name: Run tests with coverage
         run: python -m pytest tests/ -v --cov=r105 --cov-report=term-missing --cov-report=xml
 

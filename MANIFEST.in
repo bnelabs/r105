@@ -1,4 +1,6 @@
 include README.md
 include ARCHITECTURE.md
 include CONTRIBUTING.md
+include LICENSE
 recursive-include r105/themes *.tcss
+recursive-include packaging *.in *.md *.py
