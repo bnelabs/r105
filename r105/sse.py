@@ -64,6 +64,7 @@ async def stream_sse(
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     tool_call_deltas: dict[int, dict[str, Any]] = {}
+    usage: dict[str, Any] = {}
     malformed_lines = 0
 
     def _note_malformed(line: str) -> None:
@@ -73,7 +74,7 @@ async def stream_sse(
             log_error("sse_malformed_line", line=line[:200], count=malformed_lines)
 
     async def _read(http: httpx.AsyncClient) -> None:
-        nonlocal content_parts, reasoning_parts, tool_call_deltas
+        nonlocal content_parts, reasoning_parts, tool_call_deltas, usage
         pending_event = "message"
         async with http.stream(
             "POST",
@@ -134,6 +135,10 @@ async def stream_sse(
                 if not isinstance(chunk, dict):
                     _note_malformed(data)
                     continue
+
+                chunk_usage = chunk.get("usage")
+                if isinstance(chunk_usage, dict):
+                    usage = chunk_usage
 
                 choices = chunk.get("choices")
                 if not isinstance(choices, list) or not choices:
@@ -252,5 +257,6 @@ async def stream_sse(
             }
         }],
         "timings": {},
+        "usage": usage,
     }
     return _parse_response(raw, started)

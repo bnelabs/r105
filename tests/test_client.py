@@ -150,6 +150,16 @@ class TestParseResponse:
         assert result.prompt_tps is None
         assert result.generation_tps is None
 
+    def test_response_usage_metadata_is_normalized(self) -> None:
+        raw = {
+            "choices": [{"message": {"content": "Hi"}}],
+            "usage": {"prompt_tokens": 40, "completion_tokens": 12},
+        }
+        result = _parse_response(raw, time.perf_counter())
+        assert result.prompt_tokens == 40
+        assert result.completion_tokens == 12
+        assert result.total_tokens == 52
+
 
 class TestRouterClientInit:
     """Tests for RouterClient construction."""

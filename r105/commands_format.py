@@ -21,14 +21,17 @@ def format_state(state: ChatState) -> str:
         f"json={state.json_mode} "
         f"cache_prompt={state.cache_prompt} "
         f"skills={','.join(state.active_skills) if state.active_skills else 'none'} "
-        f"ctx={usage.used_tokens}/{usage.context_tokens} ({usage.percent:.1f}%) "
+        f"ctx={usage.used_tokens}/{usage.context_tokens} ({usage.percent:.1f}%, {usage.estimate_label}) "
         f"turns={len(state.history) // 2}"
     )
 
 
 def status_line(state: ChatState) -> str:
     usage = token_usage(state)
-    return f"ctx={usage.used_tokens}/{usage.context_tokens} ({usage.percent:.1f}%)"
+    return (
+        f"ctx={usage.used_tokens}/{usage.context_tokens} "
+        f"({usage.percent:.1f}%, {usage.estimate_label})"
+    )
 
 
 def format_history(state: ChatState, limit: int = 12) -> str:

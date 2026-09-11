@@ -36,6 +36,7 @@ python -m pytest tests/ --cov=r105 --cov-report=term-missing
 |------|---------------|
 | `tests/test_client.py` | RouterClient helpers: `_build_payload`, `_parse_response`, `_extract_tool_calls` |
 | `tests/test_client_chaos.py` | Error handling, malformed SSE, streaming retries |
+| `tests/test_mcp_client.py` | MCP manager validation, disconnect, reconnect, and tool discovery |
 | `tests/test_errors.py` | Actionable backend error messages |
 | `tests/test_integration.py` | Full async flows with mocked HTTP responses (`pytest-httpx`) |
 | `tests/test_commands.py` | Slash command handlers and state mutations |

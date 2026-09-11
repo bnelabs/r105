@@ -202,6 +202,7 @@ result = await self.client.async_send("Tool results received. Continue.", ...)
          ├── theme → TUI theme (applied instantly via app.apply_theme)
          ├── auto_compact → triggers compaction at >80% context
          ├── cache_prompt → optional llama.cpp prompt-prefix reuse
+         ├── usage metadata → exact backend totals when returned; local fallback carries confidence
          ├── active_skills → loaded as system messages
          └── history → conversation state (mutated by RouterClient methods)
 

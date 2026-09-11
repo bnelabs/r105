@@ -662,7 +662,7 @@ class ChatView(VerticalScroll):
 
     def _follow_end(self) -> None:
         self._follow_pending = False
-        if not self.is_mounted:
+        if not self.is_mounted or not self._sticky_follow:
             return
         width = self.content_size.width or 80
         total = sum(self._measure(msg, width) for msg in self._messages)

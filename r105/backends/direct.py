@@ -100,6 +100,13 @@ class DirectClient(BaseClient):
         return payload
 
     @staticmethod
+    def _record_backend_usage(state: ChatState, result: ChatResult) -> None:
+        """Keep exact provider usage valid only for the history it measured."""
+        state.last_backend_total_tokens = result.total_tokens
+        state.last_backend_history_length = len(state.history)
+        state.last_backend_model = state.model if result.total_tokens is not None else None
+
+    @staticmethod
     def _record_send(message: str, state: ChatState, result: ChatResult) -> None:
         """Append user + assistant messages after a one-shot send."""
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": result.content}
@@ -109,6 +116,7 @@ class DirectClient(BaseClient):
             {"role": "user", "content": message},
             assistant_msg,
         ])
+        DirectClient._record_backend_usage(state, result)
 
     @staticmethod
     def _record_continue(state: ChatState, result: ChatResult) -> None:
@@ -117,6 +125,7 @@ class DirectClient(BaseClient):
         if result.tool_calls:
             assistant_msg["tool_calls"] = result.tool_calls
         state.history.append(assistant_msg)
+        DirectClient._record_backend_usage(state, result)
 
     # -- Sync API -----------------------------------------------------------
 

@@ -49,6 +49,12 @@ class ChatState:
     model_families: dict[str, str | None] = field(default_factory=dict)
     context_tokens: int = DEFAULT_CONTEXT_TOKENS
     history: list[dict[str, str]] = field(default_factory=list)
+    # Exact provider usage is populated after a response when the backend
+    # returns standard usage metadata. The history length/model guard keeps a
+    # stale response from being shown after a local state change.
+    last_backend_total_tokens: int | None = field(default=None, repr=False)
+    last_backend_history_length: int | None = field(default=None, repr=False)
+    last_backend_model: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -59,12 +65,34 @@ class ChatResult:
     generation_tps: float | None
     raw: dict[str, Any]
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class TokenEstimate:
+    """A local token estimate and how much confidence to place in it."""
+
+    tokens: int
+    source: str
+    confidence: float
+
+    @property
+    def confidence_label(self) -> str:
+        if self.confidence >= 0.9:
+            return "high"
+        if self.confidence >= 0.6:
+            return "medium"
+        return "low"
 
 
 @dataclass(frozen=True)
 class TokenUsage:
     used_tokens: int
     context_tokens: int
+    estimate_source: str = "heuristic"
+    confidence: float = 0.0
 
     @property
     def percent(self) -> float:
@@ -72,15 +100,61 @@ class TokenUsage:
             return 0.0
         return min(100.0, (self.used_tokens / self.context_tokens) * 100)
 
+    @property
+    def confidence_label(self) -> str:
+        if self.confidence >= 0.9:
+            return "high"
+        if self.confidence >= 0.6:
+            return "medium"
+        return "low"
+
+    @property
+    def estimate_label(self) -> str:
+        return f"{self.estimate_source}/{self.confidence_label}"
+
 
 def token_usage(state: ChatState) -> TokenUsage:
     texts: list[str] = []
     texts.extend(message.get("content", "") for message in skill_messages(state))
     texts.extend(str(message.get("content", "")) for message in state.history)
+    if (
+        state.last_backend_total_tokens is not None
+        and state.last_backend_history_length == len(state.history)
+        and state.last_backend_model == state.model
+    ):
+        return TokenUsage(
+            used_tokens=state.last_backend_total_tokens,
+            context_tokens=state.context_tokens,
+            estimate_source="backend",
+            confidence=1.0,
+        )
+
+    estimates = [estimate_token_info(text, model=state.model) for text in texts if text]
+    if not estimates:
+        return TokenUsage(
+            used_tokens=0,
+            context_tokens=state.context_tokens,
+            estimate_source="none",
+            confidence=1.0,
+        )
+    total = sum(item.tokens for item in estimates)
+    weights = sum(max(1, item.tokens) for item in estimates)
+    confidence = sum(item.confidence * max(1, item.tokens) for item in estimates) / weights
+    sources = {item.source for item in estimates}
+    source = next(iter(sources)) if len(sources) == 1 else "mixed"
     return TokenUsage(
-        used_tokens=sum(estimate_tokens(text) for text in texts),
+        used_tokens=total,
         context_tokens=state.context_tokens,
+        estimate_source=source,
+        confidence=confidence,
     )
+
+
+def invalidate_backend_usage(state: ChatState) -> None:
+    """Discard response usage after local history/model changes."""
+    state.last_backend_total_tokens = None
+    state.last_backend_history_length = None
+    state.last_backend_model = None
 
 
 def estimate_tokens(text: str, model: str | None = None) -> int:
@@ -92,12 +166,40 @@ def estimate_tokens(text: str, model: str | None = None) -> int:
     Qwen, Mistral) and accepts an optional *model* hint for family-specific
     tuning.
     """
+    return estimate_token_info(text, model=model).tokens
+
+
+def estimate_token_info(text: str, model: str | None = None) -> TokenEstimate:
+    """Return a token estimate plus its source and confidence score.
+
+    Backend usage metadata supersedes this local estimate after a response.
+    A model-specific tiktoken encoding is high confidence; generic tiktoken
+    and heuristic estimates are marked lower because they may not match a
+    llama.cpp or SentencePiece tokenizer exactly.
+    """
+    if not text:
+        return TokenEstimate(0, "none", 1.0)
     if _tiktoken_available():
-        count = _tiktoken_count(text, model=model)
-        # _tiktoken_count falls back to heuristic internally on failure.
-        if count > 0 or not text:
-            return count
-    return _heuristic_token_count(text, model=model)
+        count, encoding_source = _tiktoken_count_with_source(text, model=model)
+        if count is not None:
+            if encoding_source == "model":
+                return TokenEstimate(count, "tiktoken", 0.99)
+            if model and _sentencepiece_model_hint(model):
+                return TokenEstimate(count, "tiktoken-approx", 0.55)
+            return TokenEstimate(count, "tiktoken", 0.75)
+
+    heuristic = _heuristic_token_count(text, model=model)
+    has_non_ascii = any(ord(char) > 127 for char in text)
+    confidence = 0.25 if has_non_ascii else 0.35
+    return TokenEstimate(heuristic, "heuristic", confidence)
+
+
+def _sentencepiece_model_hint(model: str) -> bool:
+    lowered = model.lower()
+    return any(
+        family in lowered
+        for family in ("gemma", "llama", "mistral", "mixtral", "phi", "qwen")
+    )
 
 
 def _tiktoken_available(*_args: Any) -> bool:
@@ -119,13 +221,26 @@ def _tiktoken_count(text: str, model: str | None = None) -> int:
     """Count tokens using tiktoken with a fallback to heuristic."""
     if not text:
         return 0
+    count, _source = _tiktoken_count_with_source(text, model=model)
+    return count if count is not None else _heuristic_token_count(text, model=model)
+
+
+def _tiktoken_count_with_source(
+    text: str, model: str | None = None
+) -> tuple[int | None, str | None]:
+    """Return a tiktoken count and whether it used a model-specific encoding."""
+    if not text:
+        return 0, "empty"
     try:
         import tiktoken
+
         enc = None
+        encoding_source: str | None = None
         # Prefer a model-specific encoding when a hint is available.
         if model:
             try:
                 enc = tiktoken.encoding_for_model(model)
+                encoding_source = "model"
             except Exception:
                 enc = None
         if enc is None:
@@ -134,14 +249,15 @@ def _tiktoken_count(text: str, model: str | None = None) -> int:
             for name in ("o200k_base", "cl100k_base", "gpt2"):
                 try:
                     enc = tiktoken.get_encoding(name)
+                    encoding_source = "generic"
                     break
                 except Exception:
                     continue
         if enc is None:
-            return _heuristic_token_count(text, model=model)
-        return len(enc.encode(text, disallowed_special=()))
+            return None, None
+        return len(enc.encode(text, disallowed_special=())), encoding_source
     except Exception:
-        return _heuristic_token_count(text, model=model)
+        return None, None
 
 
 def _heuristic_token_count(text: str, model: str | None = None) -> int:

@@ -460,7 +460,7 @@ class ChatScreen(Screen[None]):
         pct = f"({usage.percent:.0f}%)" if usage.percent > 0 else ""
         return (
             f"r105  ·  {self.state.model}  ·  "
-            f"{usage.used_tokens}/{usage.context_tokens} {pct}  ·  "
+            f"{usage.used_tokens}/{usage.context_tokens} {pct} [{usage.estimate_label}]  ·  "
             f"{self.client.base_url}\n"
             f"profile={self.state.profile or 'auto'}  "
             f"quality={self.state.quality or 'auto'}  "

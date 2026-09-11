@@ -8,7 +8,7 @@ from textual.widgets import Static
 COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     # Chat
     ("Chat", "/state", "", "Show active settings (profile, quality, tokens)"),
-    ("Chat", "/tokens", "", "Show estimated context usage"),
+    ("Chat", "/tokens", "", "Show context usage, source, and confidence"),
     ("Chat", "/model", "[name]", "Show current model, list available, or switch models"),
     ("Chat", "/history", "", "Show last 12 messages in compact form"),
     ("Chat", "/clear", "", "Clear all conversation history"),
@@ -42,6 +42,7 @@ COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     # MCP
     ("MCP", "/mcp list", "", "List connected MCP servers"),
     ("MCP", "/mcp tools", "<server>", "List tools from an MCP server"),
+    ("MCP", "/mcp reconnect", "<server>", "Reconnect and rediscover an MCP server"),
     # System
     ("System", "/theme", "<name>", "Switch theme (r105, dracula, solarized-dark, high-contrast)"),
     ("System", "/health", "", "Check llama-router health"),

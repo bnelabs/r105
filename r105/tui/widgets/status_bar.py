@@ -95,7 +95,10 @@ class StatusBarWidget(Static):
     ) -> str:
         profile = state.profile or "auto"
         skills = f"+{len(state.active_skills)} skill" if state.active_skills else "plain"
-        ctx_line = f"ctx={usage.used_tokens}/{usage.context_tokens} ({usage.percent:.1f}%)"
+        ctx_line = (
+            f"ctx={usage.used_tokens}/{usage.context_tokens} "
+            f"({usage.percent:.1f}%, {usage.estimate_label})"
+        )
         line = (
             f"r105 {profile}/{skills}  │  {ctx_line}  │  Type / for commands, /exit to quit"
         )

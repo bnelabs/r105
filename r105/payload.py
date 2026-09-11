@@ -97,6 +97,29 @@ def _maybe_float(value: Any) -> float | None:
         return None
 
 
+def _maybe_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _extract_usage(raw: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+    """Extract OpenAI-compatible usage metadata when a backend provides it."""
+    usage = raw.get("usage")
+    if not isinstance(usage, dict):
+        return None, None, None
+    prompt = _maybe_int(usage.get("prompt_tokens"))
+    completion = _maybe_int(usage.get("completion_tokens"))
+    total = _maybe_int(usage.get("total_tokens"))
+    if total is None and prompt is not None and completion is not None:
+        total = prompt + completion
+    return prompt, completion, total
+
+
 def _build_payload(message: str, state: ChatState, tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Build the request payload for a chat completion.
 
@@ -143,6 +166,7 @@ def _parse_response(raw: dict[str, Any], started: float) -> ChatResult:
     content = _extract_assistant_content(raw)
     tool_calls = _extract_tool_calls(raw)
     timings = raw.get("timings") or {}
+    prompt_tokens, completion_tokens, total_tokens = _extract_usage(raw)
     return ChatResult(
         content=content,
         wall_seconds=wall_seconds,
@@ -150,4 +174,7 @@ def _parse_response(raw: dict[str, Any], started: float) -> ChatResult:
         generation_tps=_maybe_float(timings.get("predicted_per_second")),
         raw=raw,
         tool_calls=tool_calls,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
     )
