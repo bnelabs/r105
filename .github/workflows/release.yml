@@ -277,6 +277,8 @@ jobs:
   alpine:
     name: Build Alpine Linux package
     needs: validate
+    outputs:
+      artifact_available: ${{ steps.detect-artifact.outputs.available }}
     runs-on: ubuntu-22.04
     continue-on-error: true
     steps:
@@ -318,7 +320,7 @@ jobs:
               sed "s/@VERSION@/${VERSION}/g" /workspace/packaging/alpine/APKBUILD.in \
                 > /workspace/alpine-package/APKBUILD
               chown -R builder:abuild /workspace/alpine-package
-              su builder -s /bin/ash -c "cd /workspace/alpine-package && abuild-keygen -a -n && abuild checksum && abuild -r"
+              su builder -s /bin/ash -c "cd /workspace/alpine-package && abuild-keygen -a -n && abuild checksum && abuild"
               package=$(find /home/builder/packages -type f -name "r105-${VERSION}-r0.apk" -print -quit)
               test -n "$package"
               cp "$package" "/out/r105-${VERSION}-r0.apk"
@@ -329,7 +331,18 @@ jobs:
             '
           mkdir -p dist
           cp "$output_root/r105-${VERSION}-r0.apk" dist/
+      - name: Detect Alpine artifact
+        id: detect-artifact
+        if: always()
+        shell: bash
+        run: |
+          if compgen -G "$RUNNER_TEMP/r105-alpine/*.apk" > /dev/null; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/upload-artifact@v7
+        if: always() && steps.detect-artifact.outputs.available == 'true'
         with:
           name: r105-alpine
           path: dist/*.apk
@@ -457,7 +470,7 @@ jobs:
           name: r105-freebsd
           path: artifacts/freebsd
       - name: Download optional Alpine package
-        if: needs.alpine.result == 'success'
+        if: needs.alpine.outputs.artifact_available == 'true'
         continue-on-error: true
         uses: actions/download-artifact@v7
         with:
