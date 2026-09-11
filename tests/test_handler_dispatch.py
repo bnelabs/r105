@@ -10,8 +10,8 @@ import json
 from pathlib import Path
 
 from r105.plugins import PluginRegistry, ToolPlugin
-from r105.registry import call_tool_handler
-from r105.tools import ToolRegistry, execute_tool_call, get_tool_registry
+from r105.registry import ToolRegistry, call_tool_handler, get_tool_registry
+from r105.tools import execute_tool_call
 
 
 def _make_registry() -> ToolRegistry:

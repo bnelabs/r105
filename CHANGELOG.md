@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Slash-command handlers share `_apply_bool_toggle` / `_parse_choice`
   helpers; `ChatScreen.on_unmount` cancels the in-flight worker
+- Structure (no behavior change): `client.py` split into `payload.py`
+  (wire format), `sse.py` (streaming core), and `r105/backends/`
+  (`base`/`direct`/`router`); `ToolRegistry` moved to `registry.py`;
+  `web_search`/`web_fetch` implementations moved to `tools_web.py`;
+  tool-loop mechanics extracted to `tool_loop.py`; command handlers take
+  a single `CommandContext` instead of five positional arguments
 
 ## [0.6.0] — 2026-08
 

@@ -1,15 +1,32 @@
-"""Web helpers for tools — SSRF checks, HTML stripping, DDG parsing.
+"""Web helpers for tools — SSRF checks, HTML stripping, DDG parsing,
+and the registered ``web_search`` / ``web_fetch`` tool implementations.
 
-Extracted from ``r105/tools.py``. Pure helpers with no registry imports.
+Pure helpers plus thin registry wiring; no executor imports (no cycle with
+``r105.tools`` — both import the registry from ``r105.registry``).
 """
 
 from __future__ import annotations
 
 import html.parser
 import ipaddress
+import json
 import re
 import socket
+from typing import Any
 from urllib.parse import urlparse
+
+import httpx
+
+from r105 import __version__
+from r105.constants import (
+    WEB_FETCH_MAX_CHARS,
+    WEB_FETCH_TIMEOUT,
+    WEB_SEARCH_MAX_RESULTS,
+    WEB_SEARCH_TIMEOUT,
+)
+from r105.registry import get_tool_registry
+
+_USER_AGENT = f"r105/{__version__}"
 
 _ALLOWED_URL_SCHEMES = {"http", "https"}
 
@@ -138,3 +155,75 @@ def parse_ddg_results(html: str, max_results: int = 10) -> list[dict[str, str]]:
             "snippet": clean_html(snippets[i]) if i < len(snippets) else "",
         })
     return results
+
+
+@get_tool_registry().register(
+    name="web_search",
+    description="Search the web and return results with titles, URLs, and snippets.",
+    parameters={"query": {"type": "string", "description": "Search query string."}},
+    required=["query"],
+    needs_network=True,
+    needs_filesystem=False,
+    needs_output_truncation=True,
+)
+def web_search(arguments: dict[str, Any]) -> str:
+    """Search the web using DuckDuckGo HTML (no API key required)."""
+    query = arguments.get("query", "")
+    if not query:
+        return "error: query is required"
+
+    try:
+        response = httpx.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            timeout=WEB_SEARCH_TIMEOUT,
+            headers={"User-Agent": _USER_AGENT},
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        results = parse_ddg_results(response.text, WEB_SEARCH_MAX_RESULTS)
+        if not results:
+            return f"no results found for: {query}"
+        return json.dumps(results, indent=2, ensure_ascii=False)
+    except httpx.HTTPError as e:
+        return f"search error: {e}"
+    except Exception as e:
+        return f"search error: {e}"
+
+
+@get_tool_registry().register(
+    name="web_fetch",
+    description="Fetch a URL and return its text content (HTML tags removed).",
+    parameters={
+        "url": {"type": "string", "description": "URL to fetch."},
+        "max_length": {"type": "integer", "description": "Maximum characters to return (default: 8000)."},
+    },
+    required=["url"],
+    needs_network=True,
+    needs_filesystem=False,
+    needs_output_truncation=True,
+    needs_external_wrapping=True,
+)
+def web_fetch(arguments: dict[str, Any]) -> str:
+    """Fetch a URL and return its text content (HTML tags stripped)."""
+    url = arguments.get("url", "")
+    max_length = arguments.get("max_length", WEB_FETCH_MAX_CHARS)
+    if not url:
+        return "error: url is required"
+
+    try:
+        response = httpx.get(
+            url,
+            timeout=WEB_FETCH_TIMEOUT,
+            headers={"User-Agent": _USER_AGENT},
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        text = strip_html(response.text)
+        if len(text) > max_length:
+            text = text[:max_length] + f"\n... (truncated, original: {len(text)} chars)"
+        return text
+    except httpx.HTTPError as e:
+        return f"fetch error: {e}"
+    except Exception as e:
+        return f"fetch error: {e}"

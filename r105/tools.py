@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+__all__ = [
+    # Re-exported from r105.registry (backwards-compat import location).
+    "RegisteredTool",
+    "ToolHandler",
+    "ToolRegistry",
+    "execute_tool_call",
+    "get_tool_definitions",
+    "get_tool_registry",
+]
+
 import ast
 import datetime
 import json
@@ -12,24 +22,20 @@ import subprocess
 
 # -- Tool registry (decorator-based, unified via ComponentRegistry) ----------
 from collections import OrderedDict
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-import httpx
-
-from r105 import __version__
 from r105.constants import (
     TOOL_MAX_OUTPUT_CHARS,
-    WEB_FETCH_MAX_CHARS,
-    WEB_FETCH_TIMEOUT,
-    WEB_SEARCH_MAX_RESULTS,
-    WEB_SEARCH_TIMEOUT,
 )
 from r105.mcp_client import get_mcp_manager
 from r105.plugins import get_registry
-from r105.registry import ComponentRegistry, call_tool_handler
+from r105.registry import (
+    RegisteredTool,
+    ToolHandler,
+    ToolRegistry,
+    get_tool_registry,
+)
 from r105.sandbox import (
     SandboxProfile,
     current_posture,
@@ -38,134 +44,7 @@ from r105.sandbox import (
     profile_for_tool,
 )
 from r105.tools_math import calculate_expression, convert_units
-from r105.tools_web import check_ssrf, parse_ddg_results, strip_html
-
-_USER_AGENT = f"r105/{__version__}"
-
-# Handler signature: (arguments: dict, workspace_dir: Path, **kwargs) -> str
-ToolHandler = Callable[..., str]
-
-
-@dataclass
-class RegisteredTool:
-    """Metadata + handler for a registered built-in tool."""
-
-    name: str
-    description: str
-    parameters: dict[str, Any]
-    required: list[str] = field(default_factory=list)
-    needs_network: bool = False
-    needs_filesystem: bool = False
-    needs_output_truncation: bool = True
-    needs_external_wrapping: bool = False  # XML <tool_output> tags
-    handler: ToolHandler | None = None
-
-    def to_definition(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": self.parameters,
-                    "required": self.required,
-                },
-            },
-        }
-
-
-class ToolRegistry(ComponentRegistry["RegisteredTool"]):
-    """Decorator-based registry for built-in tools (unified abstraction).
-
-    Subclasses :class:`r105.registry.ComponentRegistry` so tools and plugins
-    share shadowing protection, protected-name handling, and warning semantics.
-
-    Usage::
-
-        registry = ToolRegistry()
-
-        @registry.register(
-            name="my_tool",
-            description="Does something useful.",
-            parameters={
-                "input": {"type": "string", "description": "Input value."},
-            },
-            required=["input"],
-        )
-        def my_tool(arguments: dict, workspace_dir: Path) -> str:
-            return f"result: {arguments['input']}"
-    """
-
-    def __init__(self, *, allow_overwrite: bool = False) -> None:
-        super().__init__(allow_overwrite=allow_overwrite)
-
-    @property
-    def _tools(self) -> dict[str, RegisteredTool]:
-        # Backwards-compat: existing code touches ``registry._tools`` directly.
-        return self._items
-
-    @_tools.setter
-    def _tools(self, value: dict[str, RegisteredTool]) -> None:
-        self._items = value
-
-    def register(
-        self,
-        name: str,
-        description: str = "",
-        parameters: dict[str, Any] | None = None,
-        *,
-        required: list[str] | None = None,
-        needs_network: bool = False,
-        needs_filesystem: bool = False,
-        needs_output_truncation: bool = True,
-        needs_external_wrapping: bool = False,
-        allow_overwrite: bool | None = None,
-    ) -> Callable[[ToolHandler], ToolHandler]:
-        """Decorator that registers a function as a tool handler."""
-        def decorator(handler: ToolHandler) -> ToolHandler:
-            tool = RegisteredTool(
-                name=name,
-                description=description,
-                parameters=parameters or {},
-                required=required or [],
-                needs_network=needs_network,
-                needs_filesystem=needs_filesystem,
-                needs_output_truncation=needs_output_truncation,
-                needs_external_wrapping=needs_external_wrapping,
-                handler=handler,
-            )
-            # Route through the unified registry so shadowing is checked.
-            self.register_item(name, tool, allow_overwrite=allow_overwrite)
-            return handler
-        return decorator
-
-    def get(self, name: str) -> RegisteredTool | None:
-        return self._tools.get(name)
-
-    def execute(self, name: str, arguments: dict[str, Any], workspace_dir: Path, **kwargs: Any) -> str | None:
-        """Execute a registered tool. Returns None if not found."""
-        tool = self._tools.get(name)
-        if tool is None or tool.handler is None:
-            return None
-        result = call_tool_handler(tool.handler, arguments, workspace_dir, **kwargs)
-        return cast("str | None", result)
-
-    def get_definitions(self) -> list[dict[str, Any]]:
-        return [t.to_definition() for t in self._tools.values()]
-
-    def list_tools(self) -> list[RegisteredTool]:
-        return list(self._tools.values())
-
-
-# Module-level singleton
-_TOOL_REGISTRY = ToolRegistry()
-
-
-def get_tool_registry() -> ToolRegistry:
-    """Return the global tool registry singleton."""
-    return _TOOL_REGISTRY
-
+from r105.tools_web import check_ssrf
 
 # -- Limits for tool arguments ------------------------------------------
 
@@ -787,80 +666,6 @@ def _resolve_path(path: str, workspace_dir: Path) -> Path:
         ) from err
 
     return resolved
-
-
-# -- Web tools ----------------------------------------------------------
-
-@get_tool_registry().register(
-    name="web_search",
-    description="Search the web and return results with titles, URLs, and snippets.",
-    parameters={"query": {"type": "string", "description": "Search query string."}},
-    required=["query"],
-    needs_network=True,
-    needs_filesystem=False,
-    needs_output_truncation=True,
-)
-def web_search(arguments: dict[str, Any]) -> str:
-    """Search the web using DuckDuckGo HTML (no API key required)."""
-    query = arguments.get("query", "")
-    if not query:
-        return "error: query is required"
-
-    try:
-        response = httpx.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            timeout=WEB_SEARCH_TIMEOUT,
-            headers={"User-Agent": _USER_AGENT},
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        results = parse_ddg_results(response.text, WEB_SEARCH_MAX_RESULTS)
-        if not results:
-            return f"no results found for: {query}"
-        return json.dumps(results, indent=2, ensure_ascii=False)
-    except httpx.HTTPError as e:
-        return f"search error: {e}"
-    except Exception as e:
-        return f"search error: {e}"
-
-
-@get_tool_registry().register(
-    name="web_fetch",
-    description="Fetch a URL and return its text content (HTML tags removed).",
-    parameters={
-        "url": {"type": "string", "description": "URL to fetch."},
-        "max_length": {"type": "integer", "description": "Maximum characters to return (default: 8000)."},
-    },
-    required=["url"],
-    needs_network=True,
-    needs_filesystem=False,
-    needs_output_truncation=True,
-    needs_external_wrapping=True,
-)
-def web_fetch(arguments: dict[str, Any]) -> str:
-    """Fetch a URL and return its text content (HTML tags stripped)."""
-    url = arguments.get("url", "")
-    max_length = arguments.get("max_length", WEB_FETCH_MAX_CHARS)
-    if not url:
-        return "error: url is required"
-
-    try:
-        response = httpx.get(
-            url,
-            timeout=WEB_FETCH_TIMEOUT,
-            headers={"User-Agent": _USER_AGENT},
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        text = strip_html(response.text)
-        if len(text) > max_length:
-            text = text[:max_length] + f"\n... (truncated, original: {len(text)} chars)"
-        return text
-    except httpx.HTTPError as e:
-        return f"fetch error: {e}"
-    except Exception as e:
-        return f"fetch error: {e}"
 
 
 # -- Utility tools ------------------------------------------------------
