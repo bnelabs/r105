@@ -327,8 +327,7 @@ jobs:
               test -n "$package"
               cp "$package" "/out/r105-${VERSION}-r0.apk"
               mkdir -p /tmp/r105-root
-              apk extract --destination /tmp/r105-root \
-                "/out/r105-${VERSION}-r0.apk"
+              tar -xzf "/out/r105-${VERSION}-r0.apk" -C /tmp/r105-root
               /tmp/r105-root/usr/bin/r105 --version
             '
           mkdir -p dist
