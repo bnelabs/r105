@@ -320,7 +320,9 @@ jobs:
               sed "s/@VERSION@/${VERSION}/g" /workspace/packaging/alpine/APKBUILD.in \
                 > /workspace/alpine-package/APKBUILD
               chown -R builder:abuild /workspace/alpine-package
-              su builder -s /bin/ash -c "cd /workspace/alpine-package && abuild-keygen -a -n && abuild checksum && abuild"
+              su builder -s /bin/ash -c "cd /workspace/alpine-package && abuild-keygen -a -n && abuild checksum"
+              install -m 0644 /home/builder/.abuild/*.rsa.pub /etc/apk/keys/
+              su builder -s /bin/ash -c "cd /workspace/alpine-package && abuild"
               package=$(find /home/builder/packages -type f -name "r105-${VERSION}-r0.apk" -print -quit)
               test -n "$package"
               cp "$package" "/out/r105-${VERSION}-r0.apk"

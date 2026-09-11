@@ -569,6 +569,7 @@ async def _cmd_connect(ctx: CommandContext) -> str:
         return f"backend={backend or 'auto'}\nurl={url or 'auto'}"
 
     provider = PROVIDER_ALIASES.get(provider, provider)
+    credential_env: str | None = None
     if provider in {"url", "custom"}:
         if len(ctx.args) != 2:
             return "usage: /connect url <https://host/v1>"
