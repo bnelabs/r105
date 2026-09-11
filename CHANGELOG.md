@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/mcp reconnect <server>` with fresh tool discovery after reconnect
 - Configurable core keybindings through the `keybindings` config map
 - Dependency-free plain-text conversation export via `/export text`
+- `/config reload` for applying supported config changes during a live session
 - `r105 doctor`: environment diagnostics (Python/config/sandbox/backend/
   workspace/skills/API keys) with per-check pass/fail and exit status
 - `execute_python` confirmation gate: one-time per-session approval via

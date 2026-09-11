@@ -119,6 +119,37 @@ class TestProfileCommands:
         _run(handle_slash_command("/cache-prompt off", state))
         assert state.cache_prompt is False
 
+    def test_config_reload_applies_file_settings(self, state, tmp_path, monkeypatch):
+        from r105 import config as r105_config
+
+        config_path = tmp_path / "config.json"
+        monkeypatch.setattr(r105_config, "CONFIG_PATH", config_path)
+        monkeypatch.setattr(r105_config, "CONFIG_DIR", tmp_path)
+        config_path.write_text(
+            '{"theme": "dracula", "cache_prompt": true, '
+            '"keybindings": {"show_tools": "ctrl+o"}}',
+            encoding="utf-8",
+        )
+
+        result = _run(handle_slash_command("/config reload", state))
+
+        assert "config reloaded" in result
+        assert state.theme == "dracula"
+        assert state.cache_prompt is True
+        assert state.keybindings == {"show_tools": "ctrl+o"}
+
+    def test_config_reload_reports_invalid_file(self, state, tmp_path, monkeypatch):
+        from r105 import config as r105_config
+
+        config_path = tmp_path / "config.json"
+        monkeypatch.setattr(r105_config, "CONFIG_PATH", config_path)
+        config_path.write_text('{"typo": true}', encoding="utf-8")
+
+        result = _run(handle_slash_command("/config reload", state))
+
+        assert "config reload failed" in result
+        assert state.theme == "r105"
+
 
 class TestThemeCommand:
     """Tests for /theme command."""

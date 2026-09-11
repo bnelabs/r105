@@ -207,6 +207,7 @@ result = await self.client.async_send("Tool results received. Continue.", ...)
          └── history → conversation state (mutated by RouterClient methods)
 
   save_config() writes persistent keys (theme, auto_compact, cache_prompt, keybindings) back to config.json
+  /config reload applies supported state settings from config.json without restarting
 ```
 
 ### Config File Format

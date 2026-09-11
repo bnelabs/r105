@@ -47,7 +47,7 @@ def _is_exact_command(text: str) -> bool:
     """
     first_word = text.strip().split()[0] if text.strip() else ""
     for _cat, cmd, _usage, _desc in COMMAND_DEFS:
-        if cmd == first_word:
+        if cmd == first_word or cmd.split()[0] == first_word:
             return True
     return False
 
@@ -195,6 +195,16 @@ class ChatScreen(Screen[None]):
         # capability (respecting model_families config overrides) so the
         # transcript handles the new model's output correctly.
         if text.startswith("/model"):
+            chat_view.set_gemma4_channel_syntax(
+                uses_gemma4_channel_syntax(self.state.model, self.state.model_families)
+            )
+        if text.startswith("/config"):
+            # Config reload updates settings that the live app owns. Textual
+            # keymap changes and transcript rendering flags need an explicit
+            # refresh because the command handler only has the shared state.
+            self.app.set_keymap(self.state.keybindings)
+            chat_view.show_thinking = self.state.show_thinking
+            chat_view.thinking_default_expanded = self.state.thinking_default_expanded
             chat_view.set_gemma4_channel_syntax(
                 uses_gemma4_channel_syntax(self.state.model, self.state.model_families)
             )

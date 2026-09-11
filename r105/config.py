@@ -293,11 +293,15 @@ def _validate_config_manual(raw: dict[str, Any]) -> None:
         raise ValueError("docker_image must be a string or null")
 
 
-def ensure_config() -> dict[str, Any]:
+def ensure_config(*, strict: bool | None = None) -> dict[str, Any]:
     """Read the config file, creating a default one if it doesn't exist.
 
-    Returns the merged config (defaults + file overrides).
+    Returns the merged config (defaults + file overrides). When *strict* is
+    provided it overrides ``R105_STRICT_CONFIG`` for this read; this lets the
+    TUI's explicit reload command report a bad file instead of silently
+    retaining the current state.
     """
+    strict_mode = strict_config_enabled() if strict is None else strict
     config = dict(DEFAULT_CONFIG)
     if CONFIG_PATH.is_file():
         try:
@@ -307,15 +311,55 @@ def ensure_config() -> dict[str, Any]:
             except ValueError:
                 # Invalid config file - ignore it and fall back to defaults
                 # unless strict mode was requested explicitly.
-                if strict_config_enabled():
+                if strict_mode:
                     raise
                 return config
             if isinstance(raw, dict):
                 config.update(raw)
         except (json.JSONDecodeError, OSError) as exc:
-            if strict_config_enabled():
+            if strict_mode:
                 raise ValueError(f"cannot read config at {CONFIG_PATH}: {exc}") from exc
     return config
+
+
+def apply_config_to_state(state: Any, config: dict[str, Any] | None = None) -> set[str]:
+    """Apply effective config values to a live ``ChatState``.
+
+    This is used by ``/config reload``. It deliberately updates only settings
+    represented by ``ChatState``; workspace paths and MCP connection lists
+    still require a restart or an explicit reconnect operation. The returned
+    set contains field names whose values changed.
+    """
+    from r105.state import DEFAULT_MODEL
+
+    effective = config if config is not None else ensure_config(strict=True)
+    desired: dict[str, Any] = {
+        "theme": effective.get("theme") or "r105",
+        "profile": effective.get("profile"),
+        "quality": effective.get("quality"),
+        "model": effective.get("model") or DEFAULT_MODEL,
+        "auto_compact": bool(effective.get("auto_compact", True)),
+        "cache_prompt": bool(effective.get("cache_prompt", False)),
+        "keybindings": dict(effective.get("keybindings") or {}),
+        "reasoning_effort": effective.get("reasoning_effort") or "auto",
+        "permission_posture": effective.get("permission_posture") or "sandboxed",
+        "show_thinking": bool(effective.get("show_thinking", True)),
+        "thinking_default_expanded": bool(effective.get("thinking_default_expanded", False)),
+        "model_contexts": dict(effective.get("model_contexts") or {}),
+        "model_families": dict(effective.get("model_families") or {}),
+    }
+    context_tokens = effective.get("context_tokens")
+    if isinstance(context_tokens, int) and context_tokens > 0:
+        desired["context_tokens"] = context_tokens
+
+    changed: set[str] = set()
+    for field, value in desired.items():
+        if not hasattr(state, field):
+            continue
+        if getattr(state, field) != value:
+            setattr(state, field, value)
+            changed.add(field)
+    return changed
 
 
 def config_schema() -> dict[str, Any]:

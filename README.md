@@ -268,6 +268,7 @@ Press `/` to open the interactive command palette with:
 | `/json [on\|off]` | Toggle JSON object response mode |
 | `/max <tokens>` | Override max output tokens |
 | `/cache-prompt [on\|off]` | Enable llama.cpp prompt-prefix caching |
+| `/config reload` | Reload supported `config.json` settings into the current session |
 | `/autocompact [on\|off]` | Toggle auto-compaction at 80% context threshold |
 | `/reasoning auto\|off\|low\|medium\|high` | Set reasoning effort (sent to capable backends) |
 | `/permissions <posture>` | Set tool-execution posture (`full-access\|restricted\|sandboxed\|off`) |
@@ -601,6 +602,11 @@ The context indicator reports its measurement source and confidence. After a
 backend returns standard `usage` metadata, r105 uses the provider's exact
 total. Before that, it uses tiktoken when available and labels generic or
 heuristic estimates with lower confidence.
+
+Use `/config reload` after editing `config.json` to apply live session settings
+such as the theme, model, context overrides, prompt caching, keybindings, and
+permission posture. Workspace paths and MCP server lists remain startup-level
+settings; use `/mcp reconnect <server>` for an individual MCP connection.
 
 ### Prompt Caching
 
