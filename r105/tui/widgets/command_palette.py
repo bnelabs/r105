@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from textual.geometry import Region, Spacing
 from textual.widgets import OptionList
 
 # Structured command definitions: (category, command, usage, description)
@@ -248,6 +249,36 @@ class CommandPalette(OptionList):
             )
             self.highlighted = selected_option
             self.call_after_refresh(self.scroll_to_highlight)
+
+    def scroll_to_highlight(self, top: bool = False) -> None:
+        """Keep the highlighted command one row clear of the bottom border.
+
+        ``OptionList.scroll_to_highlight`` considers an option whose bottom
+        edge touches the viewport edge visible. On some terminal renderers,
+        including Windows consoles, that row is drawn against the border and
+        appears clipped. Reserve one row below the highlighted option so the
+        selection remains readable when navigating down.
+        """
+        highlighted = self.highlighted
+        if highlighted is None or not self.is_mounted:
+            return
+
+        self._update_lines()
+        try:
+            y = self._index_to_line[highlighted]
+            height = self._heights[highlighted]
+        except KeyError:
+            return
+
+        self.scroll_to_region(
+            Region(0, y, self.scrollable_content_region.width, height),
+            spacing=Spacing(bottom=1),
+            force=True,
+            animate=False,
+            top=top,
+            immediate=True,
+            x_axis=False,
+        )
 
     def _selected_line_index(self) -> int:
         """Return the rendered line containing the selected command."""
