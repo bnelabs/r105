@@ -327,7 +327,7 @@ jobs:
               test -n "$package"
               cp "$package" "/out/r105-${VERSION}-r0.apk"
               mkdir -p /tmp/r105-root
-              apk add --initdb --allow-untrusted --no-network --root /tmp/r105-root \
+              apk extract --destination /tmp/r105-root \
                 "/out/r105-${VERSION}-r0.apk"
               /tmp/r105-root/usr/bin/r105 --version
             '
