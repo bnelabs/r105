@@ -268,7 +268,7 @@ class ChatScreen(Screen[None]):
                 backend=config.get("backend"),
             )
             if hasattr(self.app, "r105_client"):
-                self.app.r105_client = self.client  # type: ignore[attr-defined]
+                self.app.r105_client = self.client
             self._backend_health = "checking"
             self._start_health_check()
             self._refresh_all()
