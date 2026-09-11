@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Versioned session files with legacy migration, full-text `/session search`,
   and model/context prompt settings preserved across session loads
 - Visible SSE retry status and actionable backend error messages in the TUI
+- Backend usage metadata with token-estimate source/confidence indicators
+- `/mcp reconnect <server>` with fresh tool discovery after reconnect
 - `r105 doctor`: environment diagnostics (Python/config/sandbox/backend/
   workspace/skills/API keys) with per-check pass/fail and exit status
 - `execute_python` confirmation gate: one-time per-session approval via

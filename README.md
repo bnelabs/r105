@@ -258,7 +258,7 @@ Press `/` to open the interactive command palette with:
 | Command | Description |
 |---------|-------------|
 | `/state` | Show active settings (profile, quality, tokens, model) |
-| `/tokens` | Show estimated context token usage and capacity |
+| `/tokens` | Show context usage, estimate source, and confidence |
 | `/model [name]` | Show current model, list available, or switch models (persistent) |
 | `/history` | Show compact transcript preview of last messages |
 | `/clear` | Clear all conversation history |
@@ -305,6 +305,7 @@ Press `/` to open the interactive command palette with:
 | `/plugin reload` | Reload plugins from disk |
 | `/mcp list` | List connected MCP servers and their tool counts |
 | `/mcp tools <server>` | List tools exposed by a specific MCP server |
+| `/mcp reconnect <server>` | Reconnect a server and rediscover its tools |
 
 #### Workspace & System
 
@@ -581,6 +582,11 @@ When conversation context approaches 80% of the model's capacity, r105 can autom
 
 - **`/autocompact on|off`** — toggle from within the TUI
 - **`auto_compact` field** in `config.json` — persistent default
+
+The context indicator reports its measurement source and confidence. After a
+backend returns standard `usage` metadata, r105 uses the provider's exact
+total. Before that, it uses tiktoken when available and labels generic or
+heuristic estimates with lower confidence.
 
 ### Prompt Caching
 

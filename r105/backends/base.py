@@ -26,6 +26,7 @@ from r105.sse import stream_sse
 from r105.state import (
     ChatResult,
     ChatState,
+    invalidate_backend_usage,
 )
 
 
@@ -266,6 +267,7 @@ class BaseClient(abc.ABC):
             {"role": "system", "content": f"Conversation summary so far:\n{result.content}"},
             *recent,
         ]
+        invalidate_backend_usage(state)
         return result
 
     async def async_compact(
@@ -282,6 +284,7 @@ class BaseClient(abc.ABC):
             {"role": "system", "content": f"Conversation summary so far:\n{result.content}"},
             *recent,
         ]
+        invalidate_backend_usage(state)
         return result
 
     # -- SSE streaming (shared) ---------------------------------------------

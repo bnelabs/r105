@@ -10,6 +10,7 @@ from r105.state import (
     VALID_QUALITIES,
     ChatState,
     TokenUsage,
+    estimate_token_info,
     estimate_tokens,
     token_usage,
 )
@@ -76,6 +77,15 @@ class TestTokenUsage:
         usage = TokenUsage(used_tokens=100, context_tokens=-1)
         assert usage.percent == 0.0
 
+    def test_estimate_label(self):
+        usage = TokenUsage(
+            used_tokens=100,
+            context_tokens=1000,
+            estimate_source="backend",
+            confidence=1.0,
+        )
+        assert usage.estimate_label == "backend/high"
+
 
 class TestEstimateTokens:
     """Tests for the simple token estimator."""
@@ -95,6 +105,23 @@ class TestEstimateTokens:
         # Should count punctuation as separate tokens
         tokens = estimate_tokens("a, b; c: d.")
         assert tokens > 0
+
+    def test_reports_heuristic_confidence_when_tiktoken_unavailable(self, monkeypatch):
+        monkeypatch.setattr("r105.state._tiktoken_available", lambda: False)
+        estimate = estimate_token_info("hello world", model="gemma-4-12b-it")
+        assert estimate.source == "heuristic"
+        assert estimate.confidence_label == "low"
+
+    def test_reports_model_specific_tiktoken_confidence(self, monkeypatch):
+        monkeypatch.setattr("r105.state._tiktoken_available", lambda: True)
+        monkeypatch.setattr(
+            "r105.state._tiktoken_count_with_source",
+            lambda text, model=None: (7, "model"),
+        )
+        estimate = estimate_token_info("hello world", model="gpt-4o")
+        assert estimate.tokens == 7
+        assert estimate.source == "tiktoken"
+        assert estimate.confidence_label == "high"
 
 
 class TestTokenUsageWithHistory:
@@ -127,6 +154,16 @@ class TestTokenUsageWithHistory:
         usage = token_usage(state)
         # Skills contribute to token count
         assert usage.used_tokens > 0
+
+    def test_backend_usage_supersedes_local_estimate(self):
+        state = ChatState()
+        state.history = [{"role": "user", "content": "hello"}]
+        state.last_backend_total_tokens = 123
+        state.last_backend_history_length = 1
+        state.last_backend_model = state.model
+        usage = token_usage(state)
+        assert usage.used_tokens == 123
+        assert usage.estimate_label == "backend/high"
 
 
 class TestValidConstants:

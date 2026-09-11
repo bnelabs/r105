@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from r105.config import CONFIG_DIR
-from r105.state import ChatState
+from r105.state import ChatState, invalidate_backend_usage
 
 SESSION_DIR = CONFIG_DIR / "sessions"
 
@@ -172,6 +172,7 @@ def _restore_state(state: ChatState, data: dict[str, Any]) -> None:
         state.context_tokens = saved["context_tokens"]
     state.active_skills = saved.get("active_skills") or []
     state.skill_params = saved.get("skill_params") or {}
+    invalidate_backend_usage(state)
 
 
 def save_session(state: ChatState, name: str) -> Path:

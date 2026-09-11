@@ -57,6 +57,7 @@ from r105.state import (
     VALID_QUALITIES,
     VALID_REASONING_EFFORTS,
     ChatState,
+    invalidate_backend_usage,
     token_usage,
 )
 from r105.tools import _cache_clear, approve_execute_python
@@ -181,7 +182,7 @@ def command_menu() -> str:
 
 Chat
   /state                         show active settings
-  /tokens                        show estimated context usage
+  /tokens                        show context usage, source, and confidence
   /model                         show active model and context capacity
   /history                       show compact transcript preview
   /clear                         clear chat history
@@ -217,6 +218,7 @@ Sessions
   /plugin reload                 reload plugins from disk
   /mcp list                      list connected MCP servers
   /mcp tools <server>            list tools from an MCP server
+  /mcp reconnect <server>        reconnect an MCP server and rediscover tools
 
 System
   /health                        show router health
@@ -246,6 +248,7 @@ async def _cmd_model(ctx: CommandContext) -> str:
     # /model <name> — switch models
     if ctx.args:
         ctx.state.model = ctx.args[0]
+        invalidate_backend_usage(ctx.state)
         save_config({"model": ctx.state.model})
         # Re-resolve the context-window capacity for the new model
         backend_ctx: int | None = None
@@ -282,6 +285,7 @@ async def _cmd_history(ctx: CommandContext) -> str:
 
 async def _cmd_clear(ctx: CommandContext) -> str:
     ctx.state.history.clear()
+    invalidate_backend_usage(ctx.state)
     return "history cleared"
 
 
@@ -293,6 +297,7 @@ async def _cmd_compact(ctx: CommandContext) -> str:
         result = await ctx.client.async_compact(ctx.state, client=ctx.http_client)
     except httpx.HTTPError as exc:
         return f"compact failed: {exc}"
+    invalidate_backend_usage(ctx.state)
     after = token_usage(ctx.state).used_tokens
     return f"compacted {before}→{after} tokens\n{result.content}"
 
@@ -770,7 +775,7 @@ def _handle_plugin_command(args: list[str]) -> str:
 
 
 def _handle_mcp_command(args: list[str]) -> str:
-    """Handle /mcp list|tools commands."""
+    """Handle /mcp list|tools|reconnect commands."""
     manager = get_mcp_manager()
 
     if not args or args[0] == "list":
@@ -798,7 +803,16 @@ def _handle_mcp_command(args: list[str]) -> str:
             lines.append(f"  {t.name}: {t.description[:100]}")
         return "\n".join(lines)
 
-    return "usage: /mcp list|tools"
+    if args[0] == "reconnect":
+        if len(args) < 2:
+            return "usage: /mcp reconnect <server>"
+        server_name = args[1]
+        error = manager.reconnect_server(server_name)
+        if error is not None:
+            return f"MCP reconnect failed: {error}"
+        return f"MCP server reconnected: {server_name} (tools rediscovered)"
+
+    return "usage: /mcp list|tools|reconnect"
 
 
 def _format_state(state: ChatState) -> str:

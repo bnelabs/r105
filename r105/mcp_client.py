@@ -113,6 +113,11 @@ class MCPClientBase(abc.ABC):
     def connected(self) -> bool:
         return self._connected
 
+    @property
+    def config(self) -> MCPServerConfig:
+        """Return the connection settings used to create this client."""
+        return self._config
+
     # -- Lifecycle ----------------------------------------------------------
 
     @abc.abstractmethod
@@ -645,22 +650,27 @@ class MCPManager:
     def __init__(self) -> None:
         self._clients: dict[str, MCPClientBase] = {}
 
+    @staticmethod
+    def _make_client(config: MCPServerConfig) -> MCPClientBase:
+        if config.transport == "sse":
+            if not config.url:
+                raise MCPConnectionError(
+                    f"SSE server '{config.name}': missing 'url'"
+                )
+            return MCPSSEClient(config)
+        if not config.command:
+            raise MCPConnectionError(
+                f"stdio server '{config.name}': missing 'command'"
+            )
+        return MCPStdioClient(config)
+
     def connect_server(self, config: MCPServerConfig) -> str | None:
         """Connect to an MCP server. Returns None on success, error string on failure."""
         if config.name in self._clients:
             return f"server '{config.name}' already connected"
 
-        client: MCPClientBase
-        if config.transport == "sse":
-            if not config.url:
-                return f"SSE server '{config.name}': missing 'url'"
-            client = MCPSSEClient(config)
-        else:
-            if not config.command:
-                return f"stdio server '{config.name}': missing 'command'"
-            client = MCPStdioClient(config)
-
         try:
+            client = self._make_client(config)
             client.connect()
         except MCPConnectionError as exc:
             return str(exc)
@@ -669,6 +679,31 @@ class MCPManager:
 
         self._clients[config.name] = client
         return None  # success
+
+    def reconnect_server(self, name: str) -> str | None:
+        """Reconnect a server using its original configuration.
+
+        The old client is closed before a fresh transport is created. A
+        failed reconnect removes the dead client so the manager never
+        advertises stale tools as available.
+        """
+        old_client = self._clients.pop(name, None)
+        if old_client is None:
+            return f"server '{name}' not connected"
+        config = old_client.config
+        try:
+            old_client.close()
+        except Exception:
+            pass
+        try:
+            client = self._make_client(config)
+            client.connect()
+        except MCPConnectionError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"failed to reconnect to '{name}': {exc}"
+        self._clients[name] = client
+        return None
 
     def disconnect_server(self, name: str) -> bool:
         """Disconnect and remove an MCP server. Returns True if it existed."""
@@ -735,21 +770,34 @@ class MCPManager:
         """Async variant of :meth:`connect_server` (non-blocking)."""
         if config.name in self._clients:
             return f"server '{config.name}' already connected"
-        if config.transport == "sse":
-            if not config.url:
-                return f"SSE server '{config.name}': missing 'url'"
-            client: MCPClientBase = MCPSSEClient(config)
-        else:
-            if not config.command:
-                return f"stdio server '{config.name}': missing 'command'"
-            client = MCPStdioClient(config)
         try:
+            client = self._make_client(config)
             await client.async_connect()
         except MCPConnectionError as exc:
             return str(exc)
         except Exception as exc:
             return f"failed to connect to '{config.name}': {exc}"
         self._clients[config.name] = client
+        return None
+
+    async def async_reconnect_server(self, name: str) -> str | None:
+        """Async reconnect variant that keeps the event loop non-blocking."""
+        old_client = self._clients.pop(name, None)
+        if old_client is None:
+            return f"server '{name}' not connected"
+        config = old_client.config
+        try:
+            await old_client.async_close()
+        except Exception:
+            pass
+        try:
+            client = self._make_client(config)
+            await client.async_connect()
+        except MCPConnectionError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"failed to reconnect to '{name}': {exc}"
+        self._clients[name] = client
         return None
 
     async def async_disconnect_all(self) -> None:

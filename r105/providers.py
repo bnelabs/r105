@@ -30,6 +30,39 @@ from r105.constants import DEFAULT_HTTP_TIMEOUT
 from r105.state import DEFAULT_MODEL, ChatResult, ChatState
 
 
+def _native_usage(data: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+    """Normalize Anthropic/Gemini usage metadata to r105's usage fields."""
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        usage = data.get("usageMetadata")
+    if not isinstance(usage, dict):
+        return None, None, None
+
+    def _int(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    prompt = _int(usage.get("prompt_tokens", usage.get("input_tokens", usage.get("promptTokenCount"))))
+    completion = _int(
+        usage.get("completion_tokens", usage.get("output_tokens", usage.get("candidatesTokenCount")))
+    )
+    total = _int(usage.get("total_tokens", usage.get("totalTokenCount")))
+    if total is None and prompt is not None and completion is not None:
+        total = prompt + completion
+    return prompt, completion, total
+
+
+def _record_provider_usage(state: ChatState, result: ChatResult) -> None:
+    state.last_backend_total_tokens = result.total_tokens
+    state.last_backend_history_length = len(state.history)
+    state.last_backend_model = state.model if result.total_tokens is not None else None
+
+
 def _extract_text_from_anthropic(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     """Extract (content, tool_calls) from an Anthropic Messages response."""
     blocks = data.get("content") or []
@@ -129,14 +162,18 @@ class AnthropicAdapter:
             if own_client:
                 await http.aclose()
         content, tool_calls = _extract_text_from_anthropic(data)
+        prompt_tokens, completion_tokens, total_tokens = _native_usage(data)
         result = ChatResult(
             content=content, wall_seconds=time.perf_counter() - started,
             prompt_tps=None, generation_tps=None, raw=data, tool_calls=tool_calls,
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
         )
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
         state.history.extend([{"role": "user", "content": message}, assistant_msg])
+        _record_provider_usage(state, result)
         return result
 
 
@@ -221,14 +258,18 @@ class GeminiAdapter:
             if own_client:
                 await http.aclose()
         content, tool_calls = _extract_text_from_gemini(data)
+        prompt_tokens, completion_tokens, total_tokens = _native_usage(data)
         result = ChatResult(
             content=content, wall_seconds=time.perf_counter() - started,
             prompt_tps=None, generation_tps=None, raw=data, tool_calls=tool_calls,
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
         )
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
         state.history.extend([{"role": "user", "content": message}, assistant_msg])
+        _record_provider_usage(state, result)
         return result
 
 

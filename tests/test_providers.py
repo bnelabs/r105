@@ -10,6 +10,7 @@ from r105.providers import (
     GeminiAdapter,
     _extract_text_from_anthropic,
     _extract_text_from_gemini,
+    _native_usage,
     _openai_tools_to_anthropic,
     detect_provider,
 )
@@ -108,3 +109,14 @@ class TestDetectProvider:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setenv("GEMINI_API_KEY", "y")
         assert detect_provider() == "anthropic"
+
+
+def test_native_usage_normalization():
+    assert _native_usage({"usage": {"input_tokens": 9, "output_tokens": 4}}) == (9, 4, 13)
+    assert _native_usage({
+        "usageMetadata": {
+            "promptTokenCount": 20,
+            "candidatesTokenCount": 5,
+            "totalTokenCount": 25,
+        }
+    }) == (20, 5, 25)
