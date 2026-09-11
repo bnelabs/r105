@@ -5,6 +5,35 @@ All notable changes to r105 are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- RAG subsystem: `/rag` commands, `r105 ingest`/`search` CLI subcommands,
+  `--rag` flag, `ChatState.rag`, router `/rag/*` endpoints, and RAG docs.
+  The router backend now covers profiles + metadata only
+
+### Added
+- SSE streaming robustness: `event:` tracking with `event: error` surfacing
+  as `RouterAPIError`, malformed-frame counting with structured logging,
+  and exponential-backoff retries for transient pre-stream failures
+  (connect errors, timeouts, HTTP 5xx)
+- Sandbox fallback transparency: `detect_backend_with_reason()` /
+  `get_fallback_reason()` explain downgrades, a startup stderr warning and
+  a TUI status-bar `⚠ sandbox=<backend>` segment surface weak backends
+- Plugin validation: `register()` signature check and tool-definition schema
+  validation with specific errors shown by `/plugin reload`
+- Ctrl+T tool inspector: modal screen listing every tool call with arguments
+  and result previews, with fuzzy filtering
+- `convert` tool: unit conversion across length, mass, time, data, speed,
+  volume, and temperature; `calculate` gains math functions and pi/e/tau
+- Session diffing: `/session load` previews unsaved messages and changed
+  settings before restoring
+- Collapsible long tool results with diff coloring and code highlighting
+
+### Changed
+- Slash-command handlers share `_apply_bool_toggle` / `_parse_choice`
+  helpers; `ChatScreen.on_unmount` cancels the in-flight worker
+
 ## [0.6.0] — 2026-08
 
 ### Added

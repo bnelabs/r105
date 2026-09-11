@@ -1,10 +1,10 @@
 """Backend-agnostic HTTP client — OpenAI-compatible, Router, and Ollama.
 
 r105 can connect to any OpenAI-compatible API (OpenAI, Ollama, vLLM, etc.),
-to a llama-router backend (with profiles + RAG), or to Ollama's native API.
+to a llama-router backend (with profiles), or to Ollama's native API.
 
 Auto-detection order:
-1. R105_URL / --url set → RouterClient (has profiles + RAG)
+1. R105_URL / --url set → RouterClient (has profiles)
 2. OPENAI_API_KEY set → DirectClient (OpenAI-compatible)
 3. otherwise → check local Ollama, then fall back to DirectClient
 
@@ -18,6 +18,7 @@ All backends share the same core chat methods:
 from __future__ import annotations
 
 import abc
+import asyncio
 import json
 import os
 import re
@@ -53,6 +54,13 @@ _GEMMA4_TOOL_CALL_RE = re.compile(
     r"<\|tool_call\|>\s*(\{.*?\})\s*(?:<\|tool_result\|>|$)", re.DOTALL
 )
 
+# SSE retry policy for transient pre-stream failures (connect errors,
+# timeouts, HTTP 5xx before the first byte). Once streaming has started
+# (content buffered) failures are raised immediately — the backend has no
+# resume protocol, so a mid-stream retry would duplicate or lose tokens.
+_SSE_MAX_ATTEMPTS = 3
+_SSE_RETRY_BASE_SECONDS = 0.5
+
 # ---------------------------------------------------------------------------
 # Shared helpers (used by all backends)
 # ---------------------------------------------------------------------------
@@ -62,8 +70,6 @@ def _metadata_from_state(state: ChatState) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     if state.profile:
         metadata["profile"] = state.profile
-    if state.rag is not None:
-        metadata["rag"] = state.rag
     if state.quality:
         metadata["quality"] = state.quality
     return metadata
@@ -192,8 +198,7 @@ class BackendCapabilities:
     """What features a backend supports. Used to gate commands."""
 
     profiles: bool = False
-    rag: bool = False
-    metadata: bool = False  # profile/quality/rag metadata in payload
+    metadata: bool = False  # profile/quality metadata in payload
 
 
 # ---------------------------------------------------------------------------
@@ -460,15 +465,32 @@ class BaseClient(abc.ABC):
         ``config_families`` (from the ``model_families`` config key) is passed
         to the family gate so config-driven family overrides also apply to
         native Gemma-4 tool-call parsing.
+
+        Robustness contract:
+        - ``event:`` lines are tracked per the SSE spec; an ``event: error``
+          frame raises :class:`RouterAPIError` with the server payload.
+        - Malformed ``data:`` frames are skipped and counted (logged with
+          context); a truncated stream returns whatever was buffered.
+        - Transient pre-stream failures (connect errors, timeouts, HTTP 5xx)
+          are retried with exponential backoff up to ``_SSE_MAX_ATTEMPTS``.
+          Mid-stream failures are raised — there is no resume protocol.
         """
         started = time.perf_counter()
 
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_call_deltas: dict[int, dict[str, Any]] = {}
+        malformed_lines = 0
+
+        def _note_malformed(line: str) -> None:
+            nonlocal malformed_lines
+            malformed_lines += 1
+            if malformed_lines <= 3 or malformed_lines % 25 == 0:
+                log_error("sse_malformed_line", line=line[:200], count=malformed_lines)
 
         async def _read(http: httpx.AsyncClient) -> None:
             nonlocal content_parts, reasoning_parts, tool_call_deltas
+            pending_event = "message"
             async with http.stream(
                 "POST",
                 self._url("/v1/chat/completions"),
@@ -476,23 +498,70 @@ class BaseClient(abc.ABC):
                 headers=self._headers(),
                 timeout=self.timeout,
             ) as response:
-                response.raise_for_status()
+                if response.is_error:
+                    # NOTE: _check_response() cannot be used here — it reads
+                    # ``response.text``, which raises ResponseNotRead on an
+                    # unread streaming response. Read the error body first.
+                    body = await response.aread()
+                    try:
+                        body_text = body.decode("utf-8", "replace")
+                    except Exception:
+                        body_text = ""
+                    log_error(
+                        "api_error",
+                        status_code=response.status_code,
+                        url=str(response.url),
+                    )
+                    raise RouterAPIError(
+                        f"API error {response.status_code}: {response.reason_phrase}",
+                        status_code=response.status_code,
+                        response_body=body_text[:500],
+                    )
                 async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
+                    if not line:
+                        # Blank line = SSE dispatch boundary; reset event type.
+                        pending_event = "message"
                         continue
-                    data = line[6:]
+                    if line.startswith(":"):
+                        continue  # SSE comment / heartbeat
+                    if line.startswith("event:"):
+                        pending_event = line[6:].strip() or "message"
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:]
+                    if data.startswith(" "):
+                        data = data[1:]
                     if data == "[DONE]":
                         break
+                    if pending_event == "error":
+                        pending_event = "message"
+                        raise RouterAPIError(
+                            f"Stream error from backend: {data[:500]}",
+                            status_code=response.status_code,
+                            response_body=data[:500],
+                        )
 
                     try:
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
+                        _note_malformed(data)
+                        continue
+                    if not isinstance(chunk, dict):
+                        _note_malformed(data)
                         continue
 
-                    choices = chunk.get("choices") or []
-                    if not choices:
+                    choices = chunk.get("choices")
+                    if not isinstance(choices, list) or not choices:
                         continue
-                    delta = choices[0].get("delta") or {}
+                    first = choices[0]
+                    if not isinstance(first, dict):
+                        _note_malformed(data)
+                        continue
+                    delta = first.get("delta") or {}
+                    if not isinstance(delta, dict):
+                        _note_malformed(data)
+                        continue
 
                     content_delta = delta.get("content", "")
                     if isinstance(content_delta, str) and content_delta:
@@ -504,8 +573,15 @@ class BaseClient(abc.ABC):
                         reasoning_parts.append(reasoning_delta)
 
                     tc_deltas = delta.get("tool_calls") or []
+                    if not isinstance(tc_deltas, list):
+                        _note_malformed(data)
+                        continue
                     for tc in tc_deltas:
+                        if not isinstance(tc, dict):
+                            continue
                         idx = tc.get("index", 0)
+                        if not isinstance(idx, int):
+                            continue
                         if idx not in tool_call_deltas:
                             tool_call_deltas[idx] = {
                                 "id": tc.get("id", ""),
@@ -516,16 +592,43 @@ class BaseClient(abc.ABC):
                         if tc.get("id"):
                             entry["id"] = tc["id"]
                         func = tc.get("function") or {}
+                        if not isinstance(func, dict):
+                            continue
                         if func.get("name"):
                             entry["function"]["name"] += func["name"]
                         if func.get("arguments"):
                             entry["function"]["arguments"] += func["arguments"]
 
-        if client is not None:
-            await _read(client)
-        else:
-            async with httpx.AsyncClient() as ac:
-                await _read(ac)
+        def _stream_started() -> bool:
+            return bool(content_parts or reasoning_parts or tool_call_deltas)
+
+        async def _backoff(attempt: int, reason: str) -> None:
+            delay = _SSE_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            log_error("sse_retry", attempt=attempt, delay_seconds=delay, reason=reason)
+            await asyncio.sleep(delay)
+
+        for attempt in range(1, _SSE_MAX_ATTEMPTS + 1):
+            try:
+                if client is not None:
+                    await _read(client)
+                else:
+                    async with httpx.AsyncClient() as ac:
+                        await _read(ac)
+                break
+            except RouterAPIError as exc:
+                transient = exc.status_code is not None and 500 <= exc.status_code <= 599
+                if transient and not _stream_started() and attempt < _SSE_MAX_ATTEMPTS:
+                    await _backoff(attempt, f"http_{exc.status_code}")
+                    continue
+                raise
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                if not _stream_started() and attempt < _SSE_MAX_ATTEMPTS:
+                    await _backoff(attempt, type(exc).__name__)
+                    continue
+                raise
+
+        if malformed_lines:
+            log_error("sse_malformed_summary", count=malformed_lines)
 
         content = "".join(content_parts)
         tool_calls = [tool_call_deltas[i] for i in sorted(tool_call_deltas)]
@@ -573,7 +676,7 @@ class DirectClient(BaseClient):
     """Client for any OpenAI-compatible API.
 
     Supports: OpenAI, vLLM, Ollama (OpenAI mode), Groq, Together, etc.
-    Does NOT support profiles, RAG, or metadata — those are RouterClient-only.
+    Does NOT support profiles or metadata — those are RouterClient-only.
 
     Environment variables:
         OPENAI_API_KEY     — API key (optional, for authenticated endpoints)
@@ -737,14 +840,14 @@ class DirectClient(BaseClient):
         try:
             data = await self.async_list_models(client)
             return {"ok": True, "models_available": len(data.get("data", []))}
-        except Exception as exc:
+        except (httpx.HTTPError, RouterAPIError, OSError, TimeoutError) as exc:
             return {"ok": False, "error": str(exc)}
 
     def health(self) -> dict[str, Any]:
         try:
             data = self.list_models()
             return {"ok": True, "models_available": len(data.get("data", []))}
-        except Exception as exc:
+        except (httpx.HTTPError, RouterAPIError, OSError, TimeoutError) as exc:
             return {"ok": False, "error": str(exc)}
 
     def list_models(self) -> dict[str, Any]:
@@ -842,16 +945,15 @@ class DirectClient(BaseClient):
 
 
 # ---------------------------------------------------------------------------
-# RouterClient — llama-router backend (profiles + RAG + metadata)
+# RouterClient — llama-router backend (profiles + metadata)
 # ---------------------------------------------------------------------------
 
 
 class RouterClient(DirectClient):
-    """Client for llama-router — adds profiles, RAG, and metadata to DirectClient.
+    """Client for llama-router — adds profiles and metadata to DirectClient.
 
     The llama-router wraps any OpenAI-compatible endpoint and adds:
     - Task profiles (coding, creative, tool_agent, etc.)
-    - RAG (Retrieval-Augmented Generation) with ingest/search/delete
     - Quality hints and throughput metrics in responses
 
     This is the *optional* upgrade backend. Without it, DirectClient works fine.
@@ -870,7 +972,7 @@ class RouterClient(DirectClient):
 
     @property
     def capabilities(self) -> BackendCapabilities:
-        return BackendCapabilities(profiles=True, rag=True, metadata=True)
+        return BackendCapabilities(profiles=True, metadata=True)
 
     # -- Payload hooks (Template Method: only override payload building) ----
 
@@ -907,75 +1009,10 @@ class RouterClient(DirectClient):
         response.raise_for_status()
         return cast(dict[str, Any], response.json())
 
-    def ingest(self, paths: list[str] | None = None, urls: list[str] | None = None) -> dict[str, Any]:
-        response = self._sync_request(
-            "POST", "/rag/ingest",
-            json={"paths": paths or [], "urls": urls or []},
-        )
-        response.raise_for_status()
-        return cast(dict[str, Any], response.json())
-
-    def search(self, query: str, top_k: int = 5) -> dict[str, Any]:
-        response = self._sync_request(
-            "POST", "/rag/search",
-            json={"query": query, "top_k": top_k},
-        )
-        response.raise_for_status()
-        return cast(dict[str, Any], response.json())
-
-    def list_rag_documents(self) -> dict[str, Any]:
-        response = self._sync_request("GET", "/rag/documents", timeout=10.0)
-        response.raise_for_status()
-        return cast(dict[str, Any], response.json())
-
-    def delete_rag_document(self, doc_id: str) -> dict[str, Any]:
-        response = self._sync_request("DELETE", f"/rag/documents/{doc_id}", timeout=10.0)
-        response.raise_for_status()
-        return cast(dict[str, Any], response.json())
-
     # -- Router-specific async endpoints ------------------------------------
 
     async def async_profiles(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
         response = await self._async_request("GET", "/profiles", client=client, timeout=10.0)
-        response.raise_for_status()
-        return cast(dict[str, Any], response.json())
-
-    async def async_ingest(
-        self,
-        paths: list[str] | None = None,
-        urls: list[str] | None = None,
-        client: httpx.AsyncClient | None = None,
-    ) -> dict[str, Any]:
-        response = await self._async_request(
-            "POST", "/rag/ingest", client=client,
-            json={"paths": paths or [], "urls": urls or []},
-        )
-        response.raise_for_status()
-        return cast(dict[str, Any], response.json())
-
-    async def async_search(
-        self, query: str, top_k: int = 5, client: httpx.AsyncClient | None = None
-    ) -> dict[str, Any]:
-        response = await self._async_request(
-            "POST", "/rag/search", client=client,
-            json={"query": query, "top_k": top_k},
-        )
-        response.raise_for_status()
-        return cast(dict[str, Any], response.json())
-
-    async def async_list_rag_documents(
-        self, client: httpx.AsyncClient | None = None
-    ) -> dict[str, Any]:
-        response = await self._async_request("GET", "/rag/documents", client=client, timeout=10.0)
-        response.raise_for_status()
-        return cast(dict[str, Any], response.json())
-
-    async def async_delete_rag_document(
-        self, doc_id: str, client: httpx.AsyncClient | None = None
-    ) -> dict[str, Any]:
-        response = await self._async_request(
-            "DELETE", f"/rag/documents/{doc_id}", client=client, timeout=10.0
-        )
         response.raise_for_status()
         return cast(dict[str, Any], response.json())
 
@@ -1014,7 +1051,7 @@ def create_client(
     4. Otherwise → DirectClient at OPENAI_BASE_URL or default
 
     When *backend* is ``"router"``, force RouterClient (fails if unreachable).
-    When *backend* is ``"direct"``, force DirectClient (no profiles/RAG).
+    When *backend* is ``"direct"``, force DirectClient (no profiles).
     """
     explicit_url = base_url is not None and base_url != ""
 

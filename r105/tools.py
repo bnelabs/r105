@@ -7,7 +7,6 @@ import datetime
 import html.parser
 import ipaddress
 import json
-import operator
 import os
 import platform
 import re
@@ -40,6 +39,7 @@ from r105.sandbox import (
     posture_allows_tool,
     profile_for_tool,
 )
+from r105.tools_math import calculate_expression, convert_units
 
 # Handler signature: (arguments: dict, workspace_dir: Path, **kwargs) -> str
 ToolHandler = Callable[..., str]
@@ -281,6 +281,14 @@ def _validate_tool_args(name: str, arguments: dict[str, Any]) -> str | None:
         expression = arguments.get("expression", "")
         if not expression:
             return "expression is required"
+
+    elif name == "convert":
+        if arguments.get("value") is None or "value" not in arguments:
+            return "value is required"
+        if not arguments.get("from_unit"):
+            return "from_unit is required"
+        if not arguments.get("to_unit"):
+            return "to_unit is required"
 
     return None
 
@@ -1006,36 +1014,6 @@ def _clean_html(text: str) -> str:
 
 # -- Utility tools ------------------------------------------------------
 
-# Allowed operators and functions for safe calculate()
-_SAFE_OPS: dict[type, Any] = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.FloorDiv: operator.floordiv,
-    ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
-    ast.USub: operator.neg,
-    ast.UAdd: operator.pos,
-}
-
-
-def _safe_eval(node: ast.AST) -> Any:
-    """Recursively evaluate a safe AST expression (no builtins, no calls)."""
-    if isinstance(node, ast.Constant):
-        return node.value
-    if isinstance(node, ast.UnaryOp):
-        op = _SAFE_OPS.get(type(node.op))
-        if op is None:
-            raise ValueError(f"unsafe operator: {type(node.op).__name__}")
-        return op(_safe_eval(node.operand))
-    if isinstance(node, ast.BinOp):
-        op = _SAFE_OPS.get(type(node.op))
-        if op is None:
-            raise ValueError(f"unsafe operator: {type(node.op).__name__}")
-        return op(_safe_eval(node.left), _safe_eval(node.right))
-    raise ValueError(f"unsafe expression: {type(node).__name__}")
-
 
 @get_tool_registry().register(
     name="get_time",
@@ -1052,7 +1030,10 @@ def get_time() -> str:
 
 @get_tool_registry().register(
     name="calculate",
-    description="Safely evaluate a mathematical expression (+, -, *, /, **, %, parentheses).",
+    description=(
+        "Safely evaluate a mathematical expression (+, -, *, /, **, %, "
+        "parentheses, math functions like sqrt/sin/log, constants pi/e/tau)."
+    ),
     parameters={"expression": {"type": "string", "description": "Arithmetic expression to evaluate."}},
     required=["expression"],
     needs_network=False,
@@ -1060,16 +1041,40 @@ def get_time() -> str:
     needs_output_truncation=False,
 )
 def calculate(arguments: dict[str, Any]) -> str:
-    """Safely evaluate a mathematical expression. Only arithmetic allowed."""
+    """Safely evaluate a mathematical expression (delegates to tools_math)."""
     expression = arguments.get("expression", "")
     if not expression:
         return "error: expression is required"
+    return calculate_expression(expression)
+
+
+@get_tool_registry().register(
+    name="convert",
+    description=(
+        "Convert a value between units (length, mass, time, data, speed, "
+        "volume, temperature). E.g. value=5, from_unit='km', to_unit='mi'."
+    ),
+    parameters={
+        "value": {"type": "number", "description": "Numeric value to convert."},
+        "from_unit": {"type": "string", "description": "Source unit (e.g. 'km', 'lb', 'C')."},
+        "to_unit": {"type": "string", "description": "Target unit (e.g. 'mi', 'kg', 'F')."},
+    },
+    required=["value", "from_unit", "to_unit"],
+    needs_network=False,
+    needs_filesystem=False,
+    needs_output_truncation=False,
+)
+def convert(arguments: dict[str, Any]) -> str:
+    """Convert between units (delegates to tools_math)."""
     try:
-        tree = ast.parse(expression.strip(), mode="eval")
-        result = _safe_eval(tree.body)
-        return str(result)
-    except (SyntaxError, ValueError, ZeroDivisionError) as exc:
-        return f"calculate error: {exc}"
+        value = float(arguments.get("value", ""))
+    except (TypeError, ValueError):
+        return f"convert error: value must be a number, got {arguments.get('value')!r}"
+    from_unit = str(arguments.get("from_unit", ""))
+    to_unit = str(arguments.get("to_unit", ""))
+    if not from_unit or not to_unit:
+        return "convert error: from_unit and to_unit are required"
+    return convert_units(value, from_unit, to_unit)
 
 
 @get_tool_registry().register(

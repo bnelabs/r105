@@ -21,7 +21,6 @@ class TestChatState:
     def test_defaults(self):
         state = ChatState()
         assert state.profile is None
-        assert state.rag is None
         assert state.quality is None
         assert state.max_tokens is None
         assert state.json_mode is False
@@ -35,7 +34,6 @@ class TestChatState:
     def test_custom_values(self):
         state = ChatState(
             profile="coding",
-            rag=True,
             quality="best",
             max_tokens=4096,
             json_mode=True,
@@ -45,7 +43,6 @@ class TestChatState:
             skill_params={"concise": {"key": "val"}},
         )
         assert state.profile == "coding"
-        assert state.rag is True
         assert state.quality == "best"
         assert state.max_tokens == 4096
         assert state.json_mode is True

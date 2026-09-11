@@ -7,7 +7,7 @@ from textual.widgets import Static
 # Structured command definitions: (category, command, usage, description)
 COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     # Chat
-    ("Chat", "/state", "", "Show active settings (profile, rag, quality, tokens)"),
+    ("Chat", "/state", "", "Show active settings (profile, quality, tokens)"),
     ("Chat", "/tokens", "", "Show estimated context usage"),
     ("Chat", "/model", "[name]", "Show current model, list available, or switch models"),
     ("Chat", "/history", "", "Show last 12 messages in compact form"),
@@ -20,13 +20,6 @@ COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     ("Chat", "/autocompact", "[on|off]", "Toggle auto-compaction at 80% context"),
     ("Chat", "/reasoning", "auto|off|low|medium|high", "Set reasoning effort (sent to model-capable backends)"),
     ("Chat", "/permissions", "full-access|restricted|sandboxed|off", "Set permission posture for tool execution"),
-    # RAG
-    ("RAG", "/rag", "on|off", "Toggle RAG metadata for chat requests"),
-    ("RAG", "/rag ingest", "<path-or-url>...", "Ingest local files/directories or URLs"),
-    ("RAG", "/rag search", "<query>", "Search the active RAG index"),
-    ("RAG", "/rag list", "", "List all indexed documents"),
-    ("RAG", "/rag delete", "<id>", "Remove a document from the RAG index"),
-    ("RAG", "/rag update", "<path>", "Re-index specific paths"),
     # Skills
     ("Skills", "/skills", "", "List available skill files"),
     ("Skills", "/skill use", "<name> [key=val...]", "Add a skill with optional params"),

@@ -28,7 +28,6 @@ VALID_PERMISSION_POSTURES = {"full-access", "restricted", "sandboxed", "off"}
 @dataclass
 class ChatState:
     profile: str | None = None
-    rag: bool | None = None
     quality: str | None = None
     max_tokens: int | None = None
     json_mode: bool = False

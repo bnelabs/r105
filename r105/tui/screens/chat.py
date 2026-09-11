@@ -28,6 +28,7 @@ from r105.constants import (
     TOOL_TIMEOUT_WEB_SEARCH,
 )
 from r105.model_catalog import uses_gemma4_channel_syntax
+from r105.sandbox import weak_backend_warning
 from r105.sessions import auto_save
 from r105.state import ChatState, token_usage
 from r105.tools import execute_tool_call, get_tool_definitions
@@ -53,10 +54,11 @@ def _is_exact_command(text: str) -> bool:
 
 
 class ChatScreen(Screen[None]):
-    """The main chat screen with split layout: chat + file explorer/RAG pane."""
+    """The main chat screen with split layout: chat + file explorer pane."""
 
     BINDINGS = [
         ("ctrl+y", "copy_last_message", "Copy last response"),
+        ("ctrl+t", "show_tools", "Inspect tool calls"),
         ("escape", "cancel_request", "Cancel current request"),
     ]
 
@@ -72,8 +74,19 @@ class ChatScreen(Screen[None]):
         self.workspace = workspace_dir
         self._http = httpx.AsyncClient()
         self._active_worker: Any | None = None
+        # Cheap read (no detection): warns only if a weak backend is active.
+        self._sandbox_warning = weak_backend_warning() or ""
 
     async def on_unmount(self) -> None:
+        # Cancel any in-flight LLM/tool worker so background tasks do not
+        # outlive the screen (leaked workers keep the httpx pool and the
+        # asyncio loop busy after the UI is gone).
+        worker, self._active_worker = self._active_worker, None
+        if worker is not None:
+            try:
+                worker.cancel()
+            except Exception:
+                pass
         saved = auto_save(self.state)
         if saved:
             self._notify(f"Session autosaved: {saved}", severity="information")
@@ -139,6 +152,12 @@ class ChatScreen(Screen[None]):
         else:
             chat_view = self.query_one("#chat-view", ChatView)
             chat_view.add_system("[dim]Clipboard unavailable (install xclip or wl-copy)[/dim]")
+
+    def action_show_tools(self) -> None:
+        """Open the tool-call inspection screen (Ctrl+T)."""
+        from r105.tui.screens.tools_screen import ToolsScreen
+
+        self.app.push_screen(ToolsScreen(self.state))
 
     def action_cancel_request(self) -> None:
         """Cancel the in-flight LLM request (Esc). Shows a [CANCELED] marker."""
@@ -503,7 +522,6 @@ class ChatScreen(Screen[None]):
             f"{usage.used_tokens}/{usage.context_tokens} {pct}  ·  "
             f"{self.client.base_url}\n"
             f"profile={self.state.profile or 'auto'}  "
-            f"rag={self.state.rag if self.state.rag is not None else 'auto'}  "
             f"quality={self.state.quality or 'auto'}  "
             f"auto-compact={'on' if self.state.auto_compact else 'off'}  "
             f"skills={','.join(self.state.active_skills) if self.state.active_skills else 'none'}"
@@ -523,7 +541,7 @@ class ChatScreen(Screen[None]):
         try:
             usage = token_usage(self.state)
             self.query_one("#status-bar", StatusBarWidget).update_status(
-                self.state, usage
+                self.state, usage, sandbox_warning=self._sandbox_warning or None
             )
         except Exception:
             pass

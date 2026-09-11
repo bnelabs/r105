@@ -1,4 +1,4 @@
-"""Bottom status bar showing profile, RAG, quality, context usage, and streaming status."""
+"""Bottom status bar showing profile, quality, context usage, and streaming status."""
 
 from __future__ import annotations
 
@@ -22,13 +22,27 @@ class StatusBarWidget(Static):
         self._streaming: bool = False
         self._stream_frame: int = 0
         self._last_stream_update: float = 0.0
+        self._sandbox_warning: str = ""
 
-    def update_status(self, state: ChatState, usage: TokenUsage) -> None:
+    def set_sandbox_warning(self, warning: str) -> None:
+        """Pin a sandbox-downgrade warning (e.g. weak isolation backend)."""
+        self._sandbox_warning = warning
+
+    def update_status(
+        self,
+        state: ChatState,
+        usage: TokenUsage,
+        sandbox_warning: str | None = None,
+    ) -> None:
+        if sandbox_warning is not None:
+            self._sandbox_warning = sandbox_warning
         if self._busy or self._streaming:
-            self._saved_status = self._render_status_line(state, usage)
+            self._saved_status = self._render_status_line(
+                state, usage, self._sandbox_warning
+            )
             return
         self._saved_status = ""
-        self.update(self._render_status_line(state, usage))
+        self.update(self._render_status_line(state, usage, self._sandbox_warning))
 
     def set_busy(self, text: str) -> None:
         """Show a busy/loading indicator (e.g. tool execution, API call)."""
@@ -76,11 +90,15 @@ class StatusBarWidget(Static):
         self.update(f"[bold #89dceb]{bar} Receiving…[/bold #89dceb]")
 
     @staticmethod
-    def _render_status_line(state: ChatState, usage: TokenUsage) -> str:
+    def _render_status_line(
+        state: ChatState, usage: TokenUsage, sandbox_warning: str = ""
+    ) -> str:
         profile = state.profile or "auto"
-        rag = "rag" if state.rag else "no-rag"
         skills = f"+{len(state.active_skills)} skill" if state.active_skills else "plain"
         ctx_line = f"ctx={usage.used_tokens}/{usage.context_tokens} ({usage.percent:.1f}%)"
-        return (
-            f"r105 {profile}/{rag}/{skills}  │  {ctx_line}  │  Type / for commands, /exit to quit"
+        line = (
+            f"r105 {profile}/{skills}  │  {ctx_line}  │  Type / for commands, /exit to quit"
         )
+        if sandbox_warning:
+            line += f"  │  ⚠ {sandbox_warning}"
+        return line

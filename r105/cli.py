@@ -12,12 +12,11 @@ import httpx
 
 from r105 import __version__
 from r105.client import BaseClient, create_client
-from r105.commands import _format_ingest, _format_search, _split_paths_and_urls
 from r105.config import ensure_config, load_state_overrides
 from r105.mcp_client import load_mcp_servers
 from r105.model_catalog import resolve_context_tokens
 from r105.plugins import init_registry
-from r105.sandbox import detect_backend, set_posture
+from r105.sandbox import detect_backend, get_fallback_reason, set_posture
 from r105.sessions import load_session
 from r105.state import (
     DEFAULT_MODEL,
@@ -57,7 +56,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile", choices=sorted(VALID_PROFILES), help="Force a router task profile"
     )
-    parser.add_argument("--rag", action="store_true", help="Enable RAG for chat requests")
     parser.add_argument(
         "--quality", choices=sorted(VALID_QUALITIES), help="Set quality hint metadata"
     )
@@ -75,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--backend", default=None, choices=["direct", "router"],
-        help="Backend type (router for profiles+RAG, direct for any OpenAI API)",
+        help="Backend type (router for profiles, direct for any OpenAI API)",
     )
     parser.add_argument(
         "--version", action="version", version=f"r105 {__version__}"
@@ -93,11 +91,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("health", help="Check router health")
     profiles_parser = subparsers.add_parser("profiles", help="Show router profiles")
     profiles_parser.add_argument("--raw", action="store_true", help="Print raw JSON")
-    ingest_parser = subparsers.add_parser("ingest", help="Ingest paths or URLs for RAG")
-    ingest_parser.add_argument("items", nargs="+")
-    search_parser = subparsers.add_parser("search", help="Search the active RAG index")
-    search_parser.add_argument("query", nargs="+")
-    search_parser.add_argument("--top-k", type=int, default=5)
     parser.set_defaults(command="chat")
     return parser
 
@@ -131,6 +124,14 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         # Fall back to auto-detection if the posture cannot be applied
         detect_backend()
+    # Surface sandbox downgrades: a silent fallback to rlimit/none means
+    # tool code runs without filesystem/network isolation.
+    try:
+        fallback_reason = get_fallback_reason()
+    except Exception:
+        fallback_reason = None
+    if fallback_reason:
+        print(f"warning: {fallback_reason}", file=sys.stderr)
 
     # Initialize plugin registry
     plugins_str = (
@@ -177,7 +178,6 @@ def main(argv: list[str] | None = None) -> int:
 
     state = ChatState(
         profile=args.profile or state_overrides.get("profile"),
-        rag=True if args.rag else None,
         quality=args.quality or state_overrides.get("quality"),
         max_tokens=args.max_tokens,
         json_mode=args.json_mode,
@@ -224,24 +224,8 @@ def main(argv: list[str] | None = None) -> int:
                 ):
                     print(
                         f"{name}: max_tokens={profile.get('max_tokens')} "
-                        f"rag={profile.get('rag')} "
                         f"reasoning={profile.get('reasoning')}"
                     )
-            return 0
-        if args.command == "ingest":
-            if not hasattr(client, "ingest"):
-                print("RAG commands are only available with llama-router backend (--backend router)", file=sys.stderr)
-                return 1
-            paths, urls = _split_paths_and_urls(args.items)
-            payload = client.ingest(paths=paths, urls=urls)
-            print(_format_ingest(payload))
-            return 0
-        if args.command == "search":
-            if not hasattr(client, "search"):
-                print("RAG commands are only available with llama-router backend (--backend router)", file=sys.stderr)
-                return 1
-            payload = client.search(" ".join(args.query), top_k=args.top_k)
-            print(_format_search(payload))
             return 0
         return _run_tui(client, state, workspace_dir)
     except (httpx.HTTPError, OSError, ValueError, json.JSONDecodeError) as exc:

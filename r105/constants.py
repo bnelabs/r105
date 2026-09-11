@@ -92,5 +92,6 @@ _TOOL_PROFILES.update({
     "write_file": ToolProfile(name="write_file", timeout=TOOL_TIMEOUT_FILE_OPS, needs_filesystem=True),
     "read_file": ToolProfile(name="read_file", timeout=TOOL_TIMEOUT_FILE_OPS, needs_filesystem=True),
     "list_files": ToolProfile(name="list_files", timeout=TOOL_TIMEOUT_FILE_OPS, needs_filesystem=True),
+    "convert": ToolProfile(name="convert", timeout=TOOL_TIMEOUT_DEFAULT),
     "default": ToolProfile(name="default", timeout=TOOL_TIMEOUT_DEFAULT),
 })

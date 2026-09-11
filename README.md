@@ -29,7 +29,6 @@ r105 is a rich terminal AI assistant built on [Textual](https://textual.textuali
 - [Plugins](#plugins)
 - [MCP — Model Context Protocol](#mcp--model-context-protocol)
 - [Sessions & Export](#sessions--export)
-- [RAG — Retrieval-Augmented Generation](#rag--retrieval-augmented-generation)
 - [Themes](#themes)
 - [Auto-Compaction](#auto-compaction)
 - [Configuration](#configuration)
@@ -132,12 +131,6 @@ r105 health
 # List available task profiles
 r105 profiles
 
-# Ingest documents for RAG
-r105 ingest /path/to/docs https://example.com/page
-
-# Search the RAG index
-r105 search "query terms"
-
 # Load a saved session on startup
 r105 --session my-session chat
 
@@ -156,10 +149,9 @@ r105 --version
 | `--profile` | auto | Force a router task profile |
 | `--model` | auto | Override model selection |
 | `--quality` | auto | Quality hint: `fast`, `balanced`, or `best` |
-| `--rag` | off | Enable RAG for chat requests |
 | `--max-tokens` | auto | Override max output tokens |
 | `--json` | off | Request JSON-object responses |
-| `--backend` | auto | `router` (profiles+RAG) or `direct` (any OpenAI-compatible) |
+| `--backend` | auto | `router` (profiles) or `direct` (any OpenAI-compatible) |
 | `--session` | — | Load a saved session on startup |
 | `--version` | — | Print version and exit |
 
@@ -169,7 +161,7 @@ r105 --version
 
 r105 auto-detects the best backend:
 
-1. **`R105_URL` set → llama-router** — full profile routing, RAG, model selection
+1. **`R105_URL` set → llama-router** — full profile routing, model selection
 2. **`OPENAI_API_KEY` set → direct** — any OpenAI-compatible API (OpenAI, Ollama, vLLM, Groq)
 3. **Otherwise** — checks local Ollama, falls back to direct
 
@@ -180,7 +172,6 @@ Override with `--backend router` or `--backend direct`.
 | Feature | Router backend | Direct backend |
 |---------|:---:|:---:|
 | Profiles (task routing) | ✅ | — |
-| RAG (document retrieval) | ✅ | — |
 | Quality hints | ✅ | — |
 | Model listing/switching | ✅ | ✅ |
 | Tool calling | ✅ | ✅ |
@@ -236,7 +227,7 @@ Press `/` to open the interactive command palette with:
 - **Fuzzy filtering** — type any part of a command name to narrow
 - **Arrow-key navigation** — ↑/↓ to browse, Enter to select
 - **Tab autocomplete** — fills in the matching command
-- **Category grouping** — Chat, RAG, Skills, Sessions, Plugins, MCP, Workspace, System
+- **Category grouping** — Chat, Skills, Sessions, Plugins, MCP, Workspace, System
 - **Escape to dismiss**
 
 ### Slash Commands
@@ -245,7 +236,7 @@ Press `/` to open the interactive command palette with:
 
 | Command | Description |
 |---------|-------------|
-| `/state` | Show active settings (profile, RAG, quality, tokens, model) |
+| `/state` | Show active settings (profile, quality, tokens, model) |
 | `/tokens` | Show estimated context token usage and capacity |
 | `/model [name]` | Show current model, list available, or switch models (persistent) |
 | `/history` | Show compact transcript preview of last messages |
@@ -257,17 +248,6 @@ Press `/` to open the interactive command palette with:
 | `/max <tokens>` | Override max output tokens |
 | `/autocompact [on\|off]` | Toggle auto-compaction at 80% context threshold |
 | `/copy` | Copy last assistant message to system clipboard |
-
-#### RAG (Retrieval-Augmented Generation)
-
-| Command | Description |
-|---------|-------------|
-| `/rag [on\|off]` | Toggle RAG metadata for chat requests |
-| `/rag ingest <path-or-url>...` | Ingest local files/directories or URLs into the index |
-| `/rag search <query>` | Search the active RAG index |
-| `/rag list` | List all indexed documents |
-| `/rag delete <id>` | Remove a document from the RAG index |
-| `/rag update <path>` | Re-index specific paths |
 
 #### Skills
 
@@ -284,7 +264,7 @@ Press `/` to open the interactive command palette with:
 | Command | Description |
 |---------|-------------|
 | `/session save <name>` | Save current conversation to `~/.config/r105/sessions/` |
-| `/session load <name>` | Load and restore a previously saved session |
+| `/session load <name>` | Load and restore a previously saved session (shows a diff of unsaved changes first) |
 | `/session list` | List all saved sessions with previews and timestamps |
 | `/session delete <name>` | Delete a saved session |
 | `/export markdown` | Export conversation as Markdown |
@@ -324,9 +304,11 @@ Press `/` to open the interactive command palette with:
 | `Tab` | Slash mode | Fuzzy-autocomplete command |
 | `Escape` | Slash mode | Dismiss command palette, clear input |
 | `Ctrl+R` | Any | Open history browser with fuzzy search |
+| `Ctrl+T` | Any | Open tool-call inspector (names, args, result previews) |
 | `Ctrl+S` | History screen | Quick-save current session |
 | `Ctrl+Y` | Any | Copy last assistant response to clipboard |
 | `t` / `Enter` / `Space` | Thinking panel focused | Expand / fold the thinking panel |
+| `t` / `Enter` / `Space` | Long tool result focused | Expand / fold the full output |
 | `Ctrl+W` | Input | Delete word backward |
 | `Ctrl+U` | Input | Clear line |
 | `Ctrl+A` | Input | Jump to line start |
@@ -339,7 +321,7 @@ Press `/` to open the interactive command palette with:
 
 ## Built-in Tools
 
-r105 provides 9 local tools the LLM can call. All tools are validated before execution with argument size caps, SSRF prevention, and path traversal hardening. `execute_python` runs in a sandboxed environment with no network or filesystem access.
+r105 provides 10 local tools the LLM can call. All tools are validated before execution with argument size caps, SSRF prevention, and path traversal hardening. `execute_python` runs in a sandboxed environment with no network or filesystem access.
 
 | Tool | Description | Sandbox Profile |
 |------|-------------|----------------|
@@ -350,7 +332,8 @@ r105 provides 9 local tools the LLM can call. All tools are validated before exe
 | `web_search` | Search via DuckDuckGo HTML (no API key) | Network access |
 | `web_fetch` | Fetch URL content (HTML stripped to text) | Network access |
 | `get_time` | Current system time in ISO 8601 | Minimal isolation |
-| `calculate` | Safe arithmetic expression evaluator | Minimal isolation |
+| `calculate` | Safe math evaluator (arithmetic, math functions, pi/e/tau) | Minimal isolation |
+| `convert` | Unit conversion (length, mass, time, data, speed, volume, temperature) | Minimal isolation |
 | `system_info` | OS, Python version, CPU count | Minimal isolation |
 
 ### Tool Execution Model
@@ -372,7 +355,9 @@ When `write_file` modifies an existing file, it generates a unified diff. The TU
 
 ## Sandbox & Security
 
-r105 implements layered security for code execution. The backend is auto-detected: `nsjail` > `bwrap` > `rlimit` > `none` (Windows fallback).
+r105 implements layered security for code execution. The backend is auto-detected: `nsjail` > `bwrap` > `docker` > `rlimit` > `none` (Windows fallback).
+
+> **Fallback transparency:** if a stronger backend is unavailable, r105 tells you why — a `warning:` line on startup, a `⚠ sandbox=<backend> (no isolation)` segment in the TUI status bar, and a structured log entry. Falling back to `rlimit`/`none` means tool code runs **without filesystem/network isolation**.
 
 ### Sandbox Backends
 
@@ -380,6 +365,7 @@ r105 implements layered security for code execution. The backend is auto-detecte
 |---------|:---:|-------------|
 | **Nsjail** (strongest) | Linux namespace isolation, seccomp-bpf syscall allowlist, no host filesystem | `nsjail` binary on PATH |
 | **Bwrap** | User namespace isolation via bubblewrap, minimal `/dev` bind, conditional network/filesystem per profile | `bwrap` on PATH |
+| **Docker** | Fresh container per execution, read-only root FS, dropped capabilities | `docker` + running daemon |
 | **RLimit** | Resource limits via `setrlimit()` (256MB RAM, 25s CPU, no child procs) | Unix (not Windows) |
 | **Noop** | No isolation — fallback for Windows or explicit config | None |
 
@@ -416,7 +402,6 @@ Skills appear as system messages in the LLM context, persisting across `/clear` 
 | `code-check` | Code review assistant — prefers executable snippets, checks syntax and imports |
 | `concise` | Forces concise, direct responses with no preamble |
 | `deep-review` | Comprehensive analysis covering deliverables, assumptions, edge cases, security |
-| `rag-answer` | RAG-aware answering with exact source tag citations |
 
 ### Creating a Skill
 
@@ -523,7 +508,7 @@ Conversations can be saved, loaded, and exported in multiple formats. r105 also 
 Sessions are stored as JSON files in `~/.config/r105/sessions/`. Each file contains:
 
 - **Conversation history** (all user, assistant, and tool messages)
-- **Session state** (profile, RAG, quality, skills, and parameters)
+- **Session state** (profile, quality, skills, and parameters)
 - **Message count and save timestamp**
 
 ### Export Formats
@@ -543,26 +528,6 @@ pip install "r105[export]"
 ```
 
 If the extra is missing, `/export` shows a helpful install hint. See [docs/EXPORT.md](docs/EXPORT.md) for details.
-
----
-
-## RAG — Retrieval-Augmented Generation
-
-r105 integrates with llama-router's RAG pipeline. When RAG is enabled, router responses include source citations from your ingested documents.
-
-### Workflow
-
-1. **Ingest**: `/rag ingest /path/to/docs https://example.com` — sends documents to llama-router for indexing
-2. **Enable**: `/rag on` — enables RAG metadata on subsequent chat requests
-3. **Chat**: The router injects relevant context into the LLM prompt
-4. **Citations**: Source attributions appear in the chat view with snippet previews
-
-### Management
-
-- `/rag list` — view all indexed documents with IDs
-- `/rag search <query>` — search the index directly without a chat
-- `/rag delete <id>` — remove a document
-- `/rag update <path>` — re-index a path after changes
 
 ---
 
@@ -797,7 +762,7 @@ r105 is a layered Python application:
 
 ### Key Design Patterns
 
-- **Backend-agnostic client** — `BaseClient` abstract class with `RouterClient` (profiles+RAG) and `DirectClient` (any OpenAI-compatible API) implementations, auto-detected based on URL and environment
+- **Backend-agnostic client** — `BaseClient` abstract class with `RouterClient` (profiles) and `DirectClient` (any OpenAI-compatible API) implementations, auto-detected based on URL and environment
 - **`@work(exclusive=True)` cancellation** — new messages cancel in-flight requests; `finally` blocks clean up UI state regardless of cancellation
 - **`asyncio.to_thread()` for tools** — synchronous tool handlers run in the default thread pool, keeping the TUI responsive
 - **Parallel tool execution** — independent tool calls run concurrently via `asyncio.gather(return_exceptions=True)`, so one failure doesn't cancel the batch
