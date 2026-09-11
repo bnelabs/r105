@@ -32,6 +32,7 @@ from typing import Any
 
 from r105.config import CONFIG_DIR
 from r105.errors import PluginError
+from r105.registry import ComponentRegistry
 
 DEFAULT_PLUGINS_DIR = CONFIG_DIR / "plugins"
 
@@ -67,18 +68,31 @@ class ToolPlugin:
         }
 
 
-class PluginRegistry:
+class PluginRegistry(ComponentRegistry["ToolPlugin"]):
     """Manages plugin loading and tool dispatch.
+
+    Subclasses :class:`r105.registry.ComponentRegistry` so plugins and
+    built-in tools share a single registration abstraction with identical
+    shadowing protection semantics.
 
     Plugins are discovered from a directory of Python files. Each file
     must expose a ``register(registry)`` function.
     """
 
-    def __init__(self, plugins_dir: Path | None = None) -> None:
+    def __init__(self, plugins_dir: Path | None = None, *, allow_overwrite: bool = False) -> None:
+        super().__init__(allow_overwrite=allow_overwrite)
         self._dir = Path(plugins_dir) if plugins_dir else DEFAULT_PLUGINS_DIR
-        self._tools: dict[str, ToolPlugin] = {}
         self._loaded_files: set[str] = set()
-        self._warnings: list[str] = []
+        # NOTE: ``_items`` (from ComponentRegistry) holds the tools; ``_tools``
+        # is kept as a backwards-compat alias via property below.
+
+    @property
+    def _tools(self) -> dict[str, ToolPlugin]:
+        return self._items
+
+    @_tools.setter
+    def _tools(self, value: dict[str, ToolPlugin]) -> None:
+        self._items = value
 
     # -- Registration --------------------------------------------------------
 
@@ -92,10 +106,32 @@ class PluginRegistry:
         handler: ToolHandler | None = None,
         needs_network: bool = False,
         source_file: str = "",
+        allow_overwrite: bool | None = None,
     ) -> None:
-        """Register a new tool. Called from plugin files' register() function."""
+        """Register a new tool. Called from plugin files' register() function.
+
+        SECURITY: silently overwriting an existing tool (built-in or another
+        plugin) would let a malicious plugin hijack core tools such as
+        ``execute_python``. By default overwrites are REJECTED with
+        ``PluginError``; pass ``allow_overwrite=True`` (or enable it on the
+        registry via ``set_allow_overwrite(True)`` / config
+        ``allow_plugin_overrides``) to opt in explicitly.
+        """
+        effective_allow = self._allow_overwrite if allow_overwrite is None else allow_overwrite
+        if name in self._protected_names and not effective_allow:
+            raise PluginError(
+                f"Plugin tool '{name}' shadows a built-in tool. "
+                "Refusing to overwrite. Rename the plugin tool or set "
+                "allow_plugin_overrides=true / R105_ALLOW_PLUGIN_OVERRIDE=1 "
+                "to allow shadowing explicitly."
+            )
+        if name in self._tools and not effective_allow:
+            raise PluginError(
+                f"Tool '{name}' already registered — refusing to overwrite. "
+                "Pass allow_overwrite=True to replace it explicitly."
+            )
         if name in self._tools:
-            self._warnings.append(f"Tool '{name}' already registered — overwriting")
+            self._warnings.append(f"Tool '{name}' already registered — overwriting (explicit opt-in)")
         self._tools[name] = ToolPlugin(
             name=name,
             description=description,
@@ -106,7 +142,17 @@ class PluginRegistry:
             source_file=source_file,
         )
 
-    # -- Discovery -----------------------------------------------------------
+    def set_protected_names(self, names: set[str] | frozenset[str]) -> None:
+        """Mark built-in tool names as protected against shadowing."""
+        self._protected_names = frozenset(names)
+
+    @property
+    def allow_overwrite(self) -> bool:
+        return self._allow_overwrite
+
+    def set_allow_overwrite(self, allowed: bool) -> None:
+        """Allow/disallow plugins overwriting existing tools (default: disallowed)."""
+        self._allow_overwrite = allowed
 
     def discover(self) -> int:
         """Scan the plugins directory and load all .py files.
@@ -210,12 +256,25 @@ def get_registry(plugins_dir: Path | None = None) -> PluginRegistry:
     global _registry
     if _registry is None:
         _registry = PluginRegistry(plugins_dir)
+        # Honor explicit opt-in for shadowing via env/config.
+        import os as _os
+        if _os.environ.get("R105_ALLOW_PLUGIN_OVERRIDE", "").lower() in {"1", "true", "yes", "on"}:
+            _registry.set_allow_overwrite(True)
+        else:
+            try:
+                from r105.config import ensure_config as _ensure_config
+                if bool(_ensure_config().get("allow_plugin_overrides", False)):
+                    _registry.set_allow_overwrite(True)
+            except Exception:
+                pass
     return _registry
 
 
-def init_registry(plugins_dir: Path | None = None) -> PluginRegistry:
+def init_registry(plugins_dir: Path | None = None, *, allow_overwrite: bool | None = None) -> PluginRegistry:
     """Initialize (or reinitialize) the shared registry with discovery."""
     global _registry
     _registry = PluginRegistry(plugins_dir)
+    if allow_overwrite is not None:
+        _registry.set_allow_overwrite(allow_overwrite)
     _registry.discover()
     return _registry

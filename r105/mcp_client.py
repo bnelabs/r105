@@ -1,8 +1,10 @@
-# mypy: ignore-errors
 """MCP (Model Context Protocol) client for connecting external tool servers.
 
 Supports two transports:
-- stdio: spawns a subprocess and communicates via stdin/stdout (JSON-RPC)
+- stdio: spawns a subprocess and communicates via stdin/stdout (JSON-RPC).
+  Sync API uses a background thread + ``subprocess.Popen`` for backwards
+  compat; async API uses ``asyncio.create_subprocess_exec`` so the event
+  loop is never blocked and cancellation propagates correctly.
 - sse: connects to an HTTP SSE endpoint (long-lived GET + POST for requests)
 
 Configuration in config.json::
@@ -27,6 +29,7 @@ Configuration in config.json::
 from __future__ import annotations
 
 import abc
+import asyncio
 import json
 import subprocess
 import threading
@@ -129,6 +132,22 @@ class MCPClientBase(abc.ABC):
         """Send a JSON-RPC request and return the result."""
         ...
 
+    async def _acall(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Async JSON-RPC request. Default runs sync ``_call`` in a thread."""
+        return await asyncio.to_thread(self._call, method, params)
+
+    async def async_connect(self) -> None:
+        """Async connect; default runs sync ``connect`` in a thread."""
+        await asyncio.to_thread(self.connect)
+
+    async def async_close(self) -> None:
+        """Async close; default runs sync ``close`` in a thread."""
+        await asyncio.to_thread(self.close)
+
+    async def async_call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Async tool execution; default runs sync ``call_tool`` in a thread."""
+        return await asyncio.to_thread(self.call_tool, tool_name, arguments)
+
     def _init_and_discover(self) -> None:
         """Perform MCP initialization handshake and discover tools."""
         init_resp = self._call("initialize", {
@@ -143,19 +162,62 @@ class MCPClientBase(abc.ABC):
 
         # Discover tools
         tools_resp = self._call("tools/list")
+        self._register_tools_payload(tools_resp)
+        self._connected = True
+
+    async def _ainit_and_discover(self) -> None:
+        """Async handshake: uses ``_acall`` so asyncio transports stay non-blocking."""
+        init_resp = await self._acall("initialize", {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "r105", "version": "0.2.1"},
+        })
+        if init_resp is None:
+            raise MCPConnectionError(
+                f"MCP server '{self._config.name}': no initialize response"
+            )
+        tools_resp = await self._acall("tools/list")
+        self._register_tools_payload(tools_resp)
+        self._connected = True
+
+    def _register_tools_payload(self, tools_resp: dict[str, Any] | None) -> None:
+        """Populate ``self._tools`` from a ``tools/list`` result payload."""
         if tools_resp and "tools" in tools_resp:
-            for tool_data in tools_resp["tools"]:
+            tools_list = tools_resp["tools"]
+            if not isinstance(tools_list, list):
+                return
+            for tool_data in tools_list:
+                if not isinstance(tool_data, dict):
+                    continue
                 schema = tool_data.get("inputSchema") or tool_data.get("parameters") or {}
+                if not isinstance(schema, dict):
+                    schema = {}
+                props = schema.get("properties", {})
+                req = schema.get("required", [])
                 tool = MCPTool(
-                    name=tool_data.get("name", "unknown"),
-                    description=tool_data.get("description", ""),
-                    parameters=schema.get("properties", {}),
-                    required=schema.get("required", []),
+                    name=str(tool_data.get("name", "unknown")),
+                    description=str(tool_data.get("description", "")),
+                    parameters=props if isinstance(props, dict) else {},
+                    required=req if isinstance(req, list) else [],
                     server_name=self._config.name,
                 )
                 self._tools[tool.name] = tool
 
-        self._connected = True
+    @staticmethod
+    def _format_tool_result(result: dict[str, Any]) -> str:
+        """Format an MCP ``tools/call`` result payload as display text."""
+        content = result.get("content") or []
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text", "")
+                    if isinstance(text, str):
+                        parts.append(text)
+            if parts:
+                return "\n".join(parts)
+            return json.dumps(result, sort_keys=True)
+        return json.dumps(result, sort_keys=True)
 
     # -- Tool execution -----------------------------------------------------
 
@@ -171,13 +233,18 @@ class MCPClientBase(abc.ABC):
 class MCPStdioClient(MCPClientBase):
     """MCP client using stdio transport (subprocess stdin/stdout).
 
-    Spawns a server process and communicates via JSON-RPC over pipes.
+    Sync API (``connect``/``_call``) spawns via ``subprocess.Popen`` for
+    backwards compatibility. Async API (``async_connect``/``_acall``) uses
+    ``asyncio.create_subprocess_exec`` so the event loop is never blocked
+    and ``asyncio`` cancellation propagates to the subprocess correctly.
     """
 
     def __init__(self, config: MCPServerConfig, timeout: float = 30.0) -> None:
         super().__init__(config, timeout)
         self._proc: subprocess.Popen[bytes] | None = None
+        self._async_proc: asyncio.subprocess.Process | None = None
         self._lock = threading.Lock()
+        self._async_lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
@@ -212,7 +279,7 @@ class MCPStdioClient(MCPClientBase):
             raise
 
     def close(self) -> None:
-        """Terminate the MCP server subprocess."""
+        """Terminate the MCP server subprocess (sync + async handles)."""
         self._connected = False
         self._tools.clear()
         if self._proc is not None:
@@ -230,6 +297,117 @@ class MCPStdioClient(MCPClientBase):
                     pass
             finally:
                 self._proc = None
+        # Best-effort cleanup of an async subprocess if one exists. The
+        # event loop may be closed here, so only terminate synchronously.
+        if self._async_proc is not None:
+            try:
+                self._async_proc.terminate()
+            except Exception:
+                pass
+            finally:
+                self._async_proc = None
+
+    async def async_connect(self) -> None:
+        """Start the server via ``asyncio.create_subprocess_exec`` (non-blocking)."""
+        if self._connected:
+            return
+        if not self._config.command:
+            raise MCPConnectionError(
+                f"MCP server '{self._config.name}': missing 'command' for stdio transport"
+            )
+        try:
+            self._async_proc = await asyncio.create_subprocess_exec(
+                self._config.command,
+                *self._config.args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._config.env,
+            )
+        except FileNotFoundError as err:
+            raise MCPConnectionError(
+                f"MCP server '{self._config.name}': command not found: {self._config.command}"
+            ) from err
+        except OSError as exc:
+            raise MCPConnectionError(f"MCP server '{self._config.name}': {exc}") from exc
+        try:
+            await self._ainit_and_discover()
+        except Exception:
+            await self.async_close()
+            raise
+
+    async def async_close(self) -> None:
+        """Terminate the asyncio subprocess without blocking the loop."""
+        self._connected = False
+        self._tools.clear()
+        # Close sync handle if present (may have been opened via connect()).
+        if self._proc is not None:
+            try:
+                await asyncio.to_thread(self.close)
+            except Exception:
+                pass
+        if self._async_proc is not None:
+            proc, self._async_proc = self._async_proc, None
+            try:
+                try:
+                    if proc.stdin is not None:
+                        proc.stdin.close()
+                except Exception:
+                    pass
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except TimeoutError:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+    async def _acall(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Send JSON-RPC over the asyncio subprocess pipes (cancellable)."""
+        proc = self._async_proc
+        if proc is None or proc.stdin is None or proc.stdout is None:
+            # Fall back to sync transport in a thread (e.g. connected via connect()).
+            return await asyncio.to_thread(self._call, method, params)
+        async with self._async_lock:
+            self._request_id += 1
+            request = {
+                "jsonrpc": "2.0",
+                "id": self._request_id,
+                "method": method,
+                "params": params or {},
+            }
+            try:
+                payload = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
+                proc.stdin.write(payload)
+                await proc.stdin.drain()
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=self._timeout)
+                if not line:
+                    return None
+                response = json.loads(line.decode("utf-8"))
+                if "error" in response:
+                    return None
+                result = response.get("result")
+                return result if isinstance(result, dict) or result is None else {"value": result}
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError, TimeoutError):
+                return None
+
+    async def async_call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Execute a tool via the async stdio transport."""
+        if not self._connected:
+            raise MCPToolError(
+                self._config.name, tool_name,
+                f"MCP server '{self._config.name}' not connected",
+            )
+        result = await self._acall("tools/call", {"name": tool_name, "arguments": arguments})
+        if result is None:
+            raise MCPToolError(
+                self._config.name, tool_name,
+                f"MCP tool '{tool_name}' returned no result",
+            )
+        return self._format_tool_result(result)
 
     def _call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Send a JSON-RPC request via stdin and read response from stdout."""
@@ -255,10 +433,11 @@ class MCPStdioClient(MCPClientBase):
                 if not line:
                     return None
 
-                response = json.loads(line.decode("utf-8"))
+                response: dict[str, object] = json.loads(line.decode("utf-8"))
                 if "error" in response:
                     return None
-                return response.get("result")
+                result = response.get("result")
+                return result if isinstance(result, dict) else None
             except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                 return None
 
@@ -281,18 +460,7 @@ class MCPStdioClient(MCPClientBase):
                 f"MCP tool '{tool_name}' returned no result",
             )
 
-        # MCP returns content as a list of content items
-        content = result.get("content") or []
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text", "")
-                    if isinstance(text, str):
-                        parts.append(text)
-            return "\n".join(parts) if parts else json.dumps(result, sort_keys=True)
-
-        return json.dumps(result, sort_keys=True)
+        return self._format_tool_result(result)
 
 
 # -- SSE transport ----------------------------------------------------------
@@ -374,12 +542,14 @@ class MCPSSEClient(MCPClientBase):
             )
             response.raise_for_status()
             data = response.json()
+            if not isinstance(data, dict):
+                return None
             if "error" in data:
                 return None
             # POST may return empty for async SSE-based servers
             result = data.get("result")
             if result is not None:
-                return result
+                return result if isinstance(result, dict) else None
 
             # If no result in POST response, the server may deliver it via
             # SSE stream later. For tool calls this is rare, but for
@@ -391,16 +561,20 @@ class MCPSSEClient(MCPClientBase):
 
     def _poll_sse_result(self, request_id: int, max_retries: int = 3) -> dict[str, Any] | None:
         """Poll the SSE stream for a response to a specific request ID."""
+        http = self._http
+        if http is None:
+            return None
         for _ in range(max_retries):
             try:
-                with self._http.stream("GET", self._events_url, timeout=self._timeout) as stream:
+                with http.stream("GET", self._events_url, timeout=self._timeout) as stream:
                     for line in stream.iter_lines():
                         if not line:
                             continue
                         if line.startswith("data: "):
                             data = json.loads(line[6:])
-                            if data.get("id") == request_id:
-                                return data.get("result")
+                            if isinstance(data, dict) and data.get("id") == request_id:
+                                res = data.get("result")
+                                return res if isinstance(res, dict) else None
                         elif line.startswith("event: "):
                             pass  # ignore event type for now
             except (httpx.HTTPError, json.JSONDecodeError, StopIteration):
@@ -426,17 +600,40 @@ class MCPSSEClient(MCPClientBase):
                 f"MCP tool '{tool_name}' returned no result",
             )
 
-        content = result.get("content") or []
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text", "")
-                    if isinstance(text, str):
-                        parts.append(text)
-            return "\n".join(parts) if parts else json.dumps(result, sort_keys=True)
+        return self._format_tool_result(result)
 
-        return json.dumps(result, sort_keys=True)
+    async def async_call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Async SSE tool call via ``httpx.AsyncClient`` (non-blocking)."""
+        if not self._connected:
+            raise MCPToolError(
+                self._config.name, tool_name,
+                f"MCP server '{self._config.name}' not connected",
+            )
+        result = await self._acall_async_http("tools/call", {"name": tool_name, "arguments": arguments})
+        if result is None:
+            raise MCPToolError(
+                self._config.name, tool_name,
+                f"MCP tool '{tool_name}' returned no result",
+            )
+        return self._format_tool_result(result)
+
+    async def _acall_async_http(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Async HTTP POST for SSE transport."""
+        self._request_id += 1
+        request = {"jsonrpc": "2.0", "id": self._request_id, "method": method, "params": params or {}}
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as http:
+                response = await http.post(self._post_url, json=request)
+                response.raise_for_status()
+                data = response.json()
+                if "error" in data:
+                    return None
+                result = data.get("result")
+                if result is not None:
+                    return result if isinstance(result, dict) else {"value": result}
+                return None
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return None
 
 
 # -- Multi-server manager -------------------------------------------------
@@ -453,6 +650,7 @@ class MCPManager:
         if config.name in self._clients:
             return f"server '{config.name}' already connected"
 
+        client: MCPClientBase
         if config.transport == "sse":
             if not config.url:
                 return f"SSE server '{config.name}': missing 'url'"
@@ -507,6 +705,72 @@ class MCPManager:
 
     def get_all_definitions(self) -> list[dict[str, Any]]:
         return [t.to_definition() for t in self.get_all_tools()]
+
+    async def async_discover_tools(self, server_name: str) -> list[MCPTool]:
+        """Dynamically re-discover tools from a connected server at runtime.
+
+        No code changes required: the server's ``tools/list`` is re-queried
+        and the local registry is refreshed, so newly installed server tools
+        appear immediately in ``get_all_definitions()``.
+        """
+        client = self._clients.get(server_name)
+        if client is None:
+            return []
+        try:
+            # Force a fresh handshake via the async path.
+            await client._acall("tools/list")
+            # _acall alone doesn't repopulate; do a full async re-discover.
+            if hasattr(client, "_ainit_and_discover"):
+                # Preserve connection but refresh tool list.
+                old_tools = list(client.tools)
+                try:
+                    await client._ainit_and_discover()
+                except Exception:
+                    return old_tools
+            return list(client.tools)
+        except Exception:
+            return list(client.tools)
+
+    async def async_connect_server(self, config: MCPServerConfig) -> str | None:
+        """Async variant of :meth:`connect_server` (non-blocking)."""
+        if config.name in self._clients:
+            return f"server '{config.name}' already connected"
+        if config.transport == "sse":
+            if not config.url:
+                return f"SSE server '{config.name}': missing 'url'"
+            client: MCPClientBase = MCPSSEClient(config)
+        else:
+            if not config.command:
+                return f"stdio server '{config.name}': missing 'command'"
+            client = MCPStdioClient(config)
+        try:
+            await client.async_connect()
+        except MCPConnectionError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"failed to connect to '{config.name}': {exc}"
+        self._clients[config.name] = client
+        return None
+
+    async def async_disconnect_all(self) -> None:
+        for client in list(self._clients.values()):
+            try:
+                await client.async_close()
+            except Exception:
+                pass
+        self._clients.clear()
+
+    async def async_execute_tool(self, full_name: str, arguments: dict[str, Any]) -> str | None:
+        """Async tool execution by full name (``mcp_<server>_<tool>``)."""
+        for client in self._clients.values():
+            for tool in client.tools:
+                fq_name = f"mcp_{tool.server_name}_{tool.name}"
+                if fq_name == full_name:
+                    try:
+                        return await client.async_call_tool(tool.name, arguments)
+                    except MCPToolError as exc:
+                        return str(exc)
+        return None
 
     def execute_tool(self, full_name: str, arguments: dict[str, Any]) -> str | None:
         """Execute an MCP tool by its full name (mcp_<server>_<tool>).

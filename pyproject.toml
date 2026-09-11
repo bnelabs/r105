@@ -33,6 +33,8 @@ dev = [
     "pytest-cov>=6",
     "build>=1",
     "twine>=6",
+    "pydantic>=2",
+    "tiktoken>=0.7",
 ]
 export = [
     "python-pptx",
@@ -59,10 +61,12 @@ testpaths = ["tests"]
 
 [tool.mypy]
 python_version = "3.12"
-warn_return_any = false
+# Strictness is being raised gradually (see engineering review):
+# - warn_return_any enabled (catches Any leaking from untyped helpers)
+# - disallow_untyped_defs still off until remaining modules are annotated
+warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
-# Disable strict flags that the codebase doesn't yet pass
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
 check_untyped_defs = true
@@ -86,3 +90,6 @@ exclude_also = [
 
 [tool.setuptools.packages.find]
 include = ["r105*"]
+
+[tool.setuptools.package-data]
+r105 = ["themes/*.tcss", "skills/*.md"]

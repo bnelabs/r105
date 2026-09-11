@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from r105.skills import skill_messages as _skill_messages  # canonical location
+from r105.skills import skill_messages
 
 DEFAULT_MODEL = "gemma-4-12b-it"
 DEFAULT_CONTEXT_TOKENS = 262144
@@ -72,7 +72,7 @@ class TokenUsage:
 
 def token_usage(state: ChatState) -> TokenUsage:
     texts: list[str] = []
-    texts.extend(message.get("content", "") for message in _skill_messages(state))
+    texts.extend(message.get("content", "") for message in skill_messages(state))
     texts.extend(str(message.get("content", "")) for message in state.history)
     return TokenUsage(
         used_tokens=sum(estimate_tokens(text) for text in texts),
@@ -80,50 +80,104 @@ def token_usage(state: ChatState) -> TokenUsage:
     )
 
 
-def estimate_tokens(text: str) -> int:
-    """Estimate token count, using tiktoken if available, heuristic otherwise."""
-    return _tiktoken_count(text) if _tiktoken_available(text) else _heuristic_token_count(text)
+def estimate_tokens(text: str, model: str | None = None) -> int:
+    """Estimate token count, using tiktoken if available, heuristic otherwise.
+
+    ``tiktoken`` (``pip install 'r105[dev]'`` or ``pip install tiktoken``) is
+    strongly recommended for accurate counts; the heuristic fallback is
+    calibrated for modern BPE/SentencePiece tokenizers (Llama 3, Gemma 2/3,
+    Qwen, Mistral) and accepts an optional *model* hint for family-specific
+    tuning.
+    """
+    if _tiktoken_available():
+        count = _tiktoken_count(text, model=model)
+        # _tiktoken_count falls back to heuristic internally on failure.
+        if count > 0 or not text:
+            return count
+    return _heuristic_token_count(text, model=model)
 
 
-def _tiktoken_available(text: str) -> bool:
-    """Check if tiktoken can be used for this text."""
+def _tiktoken_available(*_args: Any) -> bool:
+    """Check if tiktoken can be used."""
     try:
-        return bool(__import__("tiktoken", fromlist=[""]))
+        __import__("tiktoken")
+        return True
     except ImportError:
         return False
 
 
-def _tiktoken_count(text: str) -> int:
+# Backwards-compat: old helper took ``text``; keep accepting it.
+def _tiktoken_available_legacy(text: str) -> bool:  # pragma: no cover
+    del text
+    return _tiktoken_available()
+
+
+def _tiktoken_count(text: str, model: str | None = None) -> int:
     """Count tokens using tiktoken with a fallback to heuristic."""
+    if not text:
+        return 0
     try:
         import tiktoken
-        try:
-            enc = tiktoken.get_encoding("cl100k_base")
-        except Exception:
-            enc = tiktoken.get_encoding("gpt2")
+        enc = None
+        # Prefer a model-specific encoding when a hint is available.
+        if model:
+            try:
+                enc = tiktoken.encoding_for_model(model)
+            except Exception:
+                enc = None
+        if enc is None:
+            # cl100k_base covers GPT-4/3.5 + most modern BPE models; o200k_base
+            # is newer (GPT-4o). Try o200k first, fall back to cl100k, then gpt2.
+            for name in ("o200k_base", "cl100k_base", "gpt2"):
+                try:
+                    enc = tiktoken.get_encoding(name)
+                    break
+                except Exception:
+                    continue
+        if enc is None:
+            return _heuristic_token_count(text, model=model)
         return len(enc.encode(text, disallowed_special=()))
     except Exception:
-        return _heuristic_token_count(text)
+        return _heuristic_token_count(text, model=model)
 
 
-def _heuristic_token_count(text: str) -> int:
-    """Estimate token count using a heuristic calibrated for BPE tokenizers.
+def _heuristic_token_count(text: str, model: str | None = None) -> int:
+    """Estimate token count using a heuristic calibrated for modern tokenizers.
 
-    Modern LLMs (Gemma, Llama, etc.) use sub-word tokenizers where:
-    - Common English words average ~1.3 tokens each
-    - Code with indentation, operators, and punctuation can be 2-4x denser
-    - Whitespace-heavy formatting (tabs, repeated spaces) creates extra tokens
+    Covers BPE (GPT, Qwen) and SentencePiece/Unigram (Llama 3, Gemma 2/3,
+    Mistral, Phi) where:
+    - Common English averages ~1.3 tokens/word (BPE) to ~1.5 (SentencePiece
+      with byte-fallback for CJK/emoji).
+    - Code with indentation/operators is 2-4x denser.
+    - CJK characters are ~1 token/char; emoji/ZWJ sequences are 2-7 tokens.
+    - Whitespace-heavy formatting creates extra tokens.
 
-    This estimator applies a 1.3x multiplier to the word/punctuation count
-    and adds a separate allowance for whitespace-heavy code blocks.
+    *model* optionally tunes the multiplier (e.g. Gemma/Llama SentencePiece
+    models skew higher on non-ASCII). Without tiktoken this is approximate —
+    install tiktoken for exact counts.
     """
     if not text:
         return 0
-    # Count word-like tokens and individual punctuation/operators
+    # CJK Unified Ideographs, Hiragana/Katakana, Hangul: ~1 token per char.
+    cjk_chars = len(re.findall(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u3400-\u4dbf]", text))
+    # Emoji / pictographs / ZWJ sequences: expensive (2-7 tokens each).
+    emoji_chars = len(re.findall(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]", text))
+    # Word-like tokens + individual punctuation/operators.
     pieces = re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE)
-    base = len(pieces)
-    # Count leading whitespace (indentation) — each indent level costs tokens
+    # Exclude already-counted CJK/emoji from the generic piece count to avoid
+    # double counting: approximate by subtracting their char counts.
+    base = max(0, len(pieces) - cjk_chars - emoji_chars)
     indent_lines = len(re.findall(r"^\s{2,}", text, flags=re.MULTILINE))
-    # Apply BPE overhead multiplier (1.3x) plus indentation penalty
-    estimated = int(base * 1.3) + indent_lines
+    # Family-tuned multiplier: SentencePiece models (Llama/Gemma/Mistral)
+    # fragment words more aggressively than BPE.
+    multiplier = 1.3
+    if model:
+        lowered = model.lower()
+        if any(k in lowered for k in ("gemma", "llama", "mistral", "mixtral", "phi", "qwen")):
+            multiplier = 1.45
+    estimated = int(base * multiplier) + indent_lines + cjk_chars + emoji_chars * 3
     return max(1, estimated)
+
+
+# Backwards-compat alias: old private name used with underscore prefix.
+_skill_messages = skill_messages

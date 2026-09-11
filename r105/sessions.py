@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -13,17 +14,106 @@ from r105.state import ChatState
 SESSION_DIR = CONFIG_DIR / "sessions"
 
 
+class SessionManager:
+    """Thread-safe session manager (replaces the global ``_AUTO_SAVE_ENABLED`` flag).
+
+    The old module-level boolean was not thread-safe: concurrent TUI workers
+    could race on enable/disable. This class encapsulates the flag behind a
+    lock and groups all session operations so callers can share one instance.
+    Module-level ``set_auto_save``/``get_auto_save``/``auto_save`` functions
+    below delegate to a default shared instance for backwards compatibility.
+    """
+
+    def __init__(self, session_dir: Path | None = None, *, auto_save_enabled: bool = True) -> None:
+        self._dir = Path(session_dir) if session_dir else SESSION_DIR
+        self._lock = threading.RLock()
+        self._auto_save_enabled = auto_save_enabled
+
+    @property
+    def session_dir(self) -> Path:
+        return self._dir
+
+    def set_auto_save(self, enabled: bool) -> None:
+        with self._lock:
+            self._auto_save_enabled = enabled
+        # Keep deprecated module-global mirror in sync.
+        try:
+            import sys as _sys
+            _sys.modules[__name__].__dict__["_AUTO_SAVE_ENABLED"] = enabled
+        except Exception:
+            pass
+
+    def get_auto_save(self) -> bool:
+        with self._lock:
+            return self._auto_save_enabled
+
+    def auto_save(self, state: ChatState) -> str | None:
+        with self._lock:
+            enabled = self._auto_save_enabled
+        if not enabled:
+            return None
+        if not state.history:
+            return None
+        try:
+            path = self.save_session(state, "__autosave__")
+            return str(path)
+        except OSError:
+            return None
+
+    def _ensure_dir(self) -> None:
+        self._dir.mkdir(parents=True, exist_ok=True)
+
+    def _session_path(self, name: str) -> Path:
+        safe = name.replace("/", "_").replace("\\", "_").replace("..", "_")
+        if not safe:
+            safe = "unnamed"
+        return self._dir / f"{safe}.json"
+
+    def save_session(self, state: ChatState, name: str) -> Path:
+        from r105.sessions import _serializable_state as _ser  # local to avoid cycle in docs
+        self._ensure_dir()
+        path = self._session_path(name)
+        data: dict[str, Any] = {
+            "history": list(state.history),
+            "state": _ser(state),
+            "message_count": len(state.history),
+            "saved_at": datetime.datetime.now().isoformat(),
+        }
+        # Atomic write: temp file + rename to avoid torn reads.
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(path)
+        return path
+
+
+_default_manager = SessionManager()
+
+
+def get_session_manager() -> SessionManager:
+    """Return the shared default :class:`SessionManager`."""
+    return _default_manager
+
+
+# Backwards-compat global (deprecated: use SessionManager). Kept so
+# ``from r105.sessions import _AUTO_SAVE_ENABLED`` keeps working; the
+# manager is the source of truth and this mirror is updated on every write.
 _AUTO_SAVE_ENABLED: bool = True
 
 
+def __getattr__(name: str) -> Any:
+    # Only needed for type-checkers; _AUTO_SAVE_ENABLED exists above.
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def set_auto_save(enabled: bool) -> None:
-    """Enable or disable auto-save on exit."""
+    """Enable or disable auto-save on exit (thread-safe via manager)."""
     global _AUTO_SAVE_ENABLED
     _AUTO_SAVE_ENABLED = enabled
+    _default_manager.set_auto_save(enabled)
 
 
 def get_auto_save() -> bool:
-    return _AUTO_SAVE_ENABLED
+    return _default_manager.get_auto_save()
 
 
 def auto_save(state: ChatState) -> str | None:
@@ -31,15 +121,7 @@ def auto_save(state: ChatState) -> str | None:
 
     Returns the path as a string if saved, None if skipped.
     """
-    if not _AUTO_SAVE_ENABLED:
-        return None
-    if not state.history:
-        return None
-    try:
-        path = save_session(state, "__autosave__")
-        return str(path)
-    except OSError:
-        return None
+    return _default_manager.auto_save(state)
 
 
 def _ensure_dir() -> None:
