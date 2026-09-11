@@ -12,10 +12,10 @@ usable on current Ubuntu, Arch, and Fedora systems.
 | FreeBSD | `r105-VERSION-freebsd-amd64.pkg` | native PyInstaller and `pkg create` in FreeBSD 14 |
 | Alpine Linux | `r105-VERSION-r0.apk` | native musl PyInstaller and `abuild` in Alpine 3.22 |
 
-Standalone executables are distributed as `tar.gz` archives for Unix targets
-and a `zip` archive for Windows. The archive contains the executable, README,
-and license so the file type is clear and the unpacked binary is still named
-`r105` or `r105.exe`.
+Standalone executables are distributed as `tar.gz` archives for Linux x86_64
+and macOS x86_64/ARM64, plus `zip` archives for Windows x86_64/ARM64. The
+archive contains the executable, README, and license so the file type is clear
+and the unpacked binary is still named `r105` or `r105.exe`.
 
 The package recipes use `@VERSION@` placeholders. The release workflow fills
 them from the `vX.Y.Z` tag and validates that the tag, `pyproject.toml`, and
