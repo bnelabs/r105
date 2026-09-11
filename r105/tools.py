@@ -4,24 +4,22 @@ from __future__ import annotations
 
 import ast
 import datetime
-import html.parser
-import ipaddress
 import json
 import os
 import platform
 import re
-import socket
 import subprocess
 
 # -- Tool registry (decorator-based, unified via ComponentRegistry) ----------
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, cast
 
 import httpx
 
+from r105 import __version__
 from r105.constants import (
     TOOL_MAX_OUTPUT_CHARS,
     WEB_FETCH_MAX_CHARS,
@@ -31,7 +29,7 @@ from r105.constants import (
 )
 from r105.mcp_client import get_mcp_manager
 from r105.plugins import get_registry
-from r105.registry import ComponentRegistry
+from r105.registry import ComponentRegistry, call_tool_handler
 from r105.sandbox import (
     SandboxProfile,
     current_posture,
@@ -40,6 +38,9 @@ from r105.sandbox import (
     profile_for_tool,
 )
 from r105.tools_math import calculate_expression, convert_units
+from r105.tools_web import check_ssrf, parse_ddg_results, strip_html
+
+_USER_AGENT = f"r105/{__version__}"
 
 # Handler signature: (arguments: dict, workspace_dir: Path, **kwargs) -> str
 ToolHandler = Callable[..., str]
@@ -147,7 +148,8 @@ class ToolRegistry(ComponentRegistry["RegisteredTool"]):
         tool = self._tools.get(name)
         if tool is None or tool.handler is None:
             return None
-        return tool.handler(arguments, workspace_dir, **kwargs)
+        result = call_tool_handler(tool.handler, arguments, workspace_dir, **kwargs)
+        return cast("str | None", result)
 
     def get_definitions(self) -> list[dict[str, Any]]:
         return [t.to_definition() for t in self._tools.values()]
@@ -172,71 +174,8 @@ _MAX_FILE_CONTENT = 10 * 1024 * 1024 # 10 MB file write
 _MAX_FILE_READ = 50 * 1024 * 1024    # 50 MB file read
 _MAX_SEARCH_QUERY = 500              # chars
 
-# -- URL validation -----------------------------------------------------
-
-_ALLOWED_URL_SCHEMES = {"http", "https"}
-
-# Private/reserved network blocks (IPv4)
-_PRIVATE_NETS = [
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("0.0.0.0/8"),
-]
-
-
-def _check_ssrf(url_str: str) -> str | None:
-    """Return an error string if *url_str* points to a private/internal host.
-
-    Returns None when the URL is safe to fetch.
-    """
-    try:
-        parsed = urlparse(url_str)
-    except Exception:
-        return "invalid URL"
-
-    if parsed.scheme not in _ALLOWED_URL_SCHEMES:
-        return f"URL scheme '{parsed.scheme}' not allowed (use http or https)"
-
-    hostname = parsed.hostname
-    if not hostname:
-        return "URL has no hostname"
-
-    # Block localhost aliases
-    if hostname.lower() in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
-        return f"URL host '{hostname}' is not allowed"
-
-    # Block link-local / site-local IPv6
-    if hostname.lower().startswith("fe80:") or hostname.lower() == "::1":
-        return f"URL host '{hostname}' is not allowed"
-
-    # Resolve and check against private blocks
-    try:
-        ip = ipaddress.ip_address(hostname)
-    except ValueError:
-        # Not an IP literal — do a DNS resolution check
-        try:
-            resolved = socket.getaddrinfo(hostname, None, family=socket.AF_INET)
-        except socket.gaierror:
-            return f"cannot resolve hostname: {hostname}"
-        ips = {r[4][0] for r in resolved}
-    else:
-        ips = {str(ip)}
-
-    for ip_str in ips:
-        try:
-            addr = ipaddress.ip_address(ip_str)
-        except ValueError:
-            continue
-        if addr.is_loopback or addr.is_link_local or addr.is_multicast:
-            return f"IP address {ip_str} is not allowed"
-        for net in _PRIVATE_NETS:
-            if addr in net:
-                return f"IP address {ip_str} is private/internal — not allowed"
-
-    return None  # safe
+# -- Shared web helpers (SSRF checks, HTML stripping, DDG parsing) live in
+# r105/tools_web.py so the logic exists in exactly one place. ----------------
 
 
 def _validate_tool_args(name: str, arguments: dict[str, Any]) -> str | None:
@@ -273,7 +212,7 @@ def _validate_tool_args(name: str, arguments: dict[str, Any]) -> str | None:
         url = arguments.get("url", "")
         if not url:
             return "url is required"
-        err = _check_ssrf(url)
+        err = check_ssrf(url)
         if err:
             return f"web_fetch rejected: {err}"
 
@@ -389,19 +328,28 @@ def _wrap_tool_output(content: str, source: str) -> str:
 
 # -- Tool result memoization (in-memory, per-session) -----------------------
 
+# Bound the cache so long sessions cannot grow memory without limit.
+# Oldest entries are evicted first (LRU); loading a session clears it.
+_TOOL_CACHE_MAX_SIZE = 128
 
-_tool_cache: dict[tuple[str, str], str] = {}
+_tool_cache: OrderedDict[tuple[str, str], str] = OrderedDict()
 
 
 def _memoize_tool(name: str, args_str: str, result: str) -> str:
     """Cache a tool result keyed by (tool_name, args). Returns the result."""
     _tool_cache[(name, args_str)] = result
+    _tool_cache.move_to_end((name, args_str))
+    while len(_tool_cache) > _TOOL_CACHE_MAX_SIZE:
+        _tool_cache.popitem(last=False)
     return result
 
 
 def _cached_result(name: str, args_str: str) -> str | None:
     """Return cached result if available, None otherwise."""
-    return _tool_cache.get((name, args_str))
+    result = _tool_cache.get((name, args_str))
+    if result is not None:
+        _tool_cache.move_to_end((name, args_str))
+    return result
 
 
 def _cache_clear() -> None:
@@ -863,11 +811,11 @@ def web_search(arguments: dict[str, Any]) -> str:
             "https://html.duckduckgo.com/html/",
             params={"q": query},
             timeout=WEB_SEARCH_TIMEOUT,
-            headers={"User-Agent": "r105/0.2.0"},
+            headers={"User-Agent": _USER_AGENT},
             follow_redirects=True,
         )
         response.raise_for_status()
-        results = _parse_ddg_results(response.text)
+        results = parse_ddg_results(response.text, WEB_SEARCH_MAX_RESULTS)
         if not results:
             return f"no results found for: {query}"
         return json.dumps(results, indent=2, ensure_ascii=False)
@@ -901,11 +849,11 @@ def web_fetch(arguments: dict[str, Any]) -> str:
         response = httpx.get(
             url,
             timeout=WEB_FETCH_TIMEOUT,
-            headers={"User-Agent": "r105/0.2.0"},
+            headers={"User-Agent": _USER_AGENT},
             follow_redirects=True,
         )
         response.raise_for_status()
-        text = _strip_html(response.text)
+        text = strip_html(response.text)
         if len(text) > max_length:
             text = text[:max_length] + f"\n... (truncated, original: {len(text)} chars)"
         return text
@@ -913,103 +861,6 @@ def web_fetch(arguments: dict[str, Any]) -> str:
         return f"fetch error: {e}"
     except Exception as e:
         return f"fetch error: {e}"
-
-
-def _parse_ddg_results(html: str) -> list[dict[str, str]]:
-    """Extract search results from DuckDuckGo HTML response."""
-    results: list[dict[str, str]] = []
-    # DDG HTML results are in <a class="result__a"> for titles
-    # and <a class="result__snippet"> for snippets
-    title_pattern = re.compile(
-        r'<a[^>]*class="result__a"[^>]*>(.*?)</a>', re.DOTALL | re.IGNORECASE
-    )
-    snippet_pattern = re.compile(
-        r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL | re.IGNORECASE
-    )
-    url_pattern = re.compile(
-        r'<a[^>]*class="result__url"[^>]*>(.*?)</a>', re.DOTALL | re.IGNORECASE
-    )
-
-    titles = title_pattern.findall(html)
-    snippets = snippet_pattern.findall(html)
-    urls = url_pattern.findall(html)
-
-    for i, title in enumerate(titles[:WEB_SEARCH_MAX_RESULTS]):
-        results.append({
-            "title": _clean_html(title),
-            "url": _clean_html(urls[i]) if i < len(urls) else "",
-            "snippet": _clean_html(snippets[i]) if i < len(snippets) else "",
-        })
-
-    return results
-
-
-class _HTMLStripper(html.parser.HTMLParser):
-    """Structural HTML stripper that extracts readable text.
-
-    Uses stdlib HTMLParser for robust parsing. Skips <script>, <style>,
-    and <noscript> content. Emits newlines for block-level elements.
-    """
-
-    BLOCK_TAGS = {
-        "div", "p", "br", "li", "h1", "h2", "h3", "h4", "h5", "h6",
-        "tr", "article", "section", "header", "footer", "nav", "main",
-        "ul", "ol", "dl", "table", "blockquote", "pre", "hr", "form",
-        "fieldset", "figure", "figcaption", "details", "summary",
-    }
-    SKIP_TAGS = {"script", "style", "noscript", "head", "meta", "link", "title"}
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._parts: list[str] = []
-        self._skip_depth = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in self.SKIP_TAGS:
-            self._skip_depth += 1
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in self.SKIP_TAGS and self._skip_depth > 0:
-            self._skip_depth -= 1
-        if tag in self.BLOCK_TAGS:
-            self._parts.append("\n")
-
-    def handle_data(self, data: str) -> None:
-        if self._skip_depth > 0:
-            return
-        text = data.strip()
-        if text:
-            self._parts.append(text)
-            self._parts.append(" ")
-
-    def get_text(self) -> str:
-        raw = "".join(self._parts)
-        # Collapse whitespace
-        raw = re.sub(r'[ \t]+', ' ', raw)
-        raw = re.sub(r'\n\s*\n', '\n\n', raw)
-        return raw.strip()
-
-
-def _strip_html(html: str) -> str:
-    """Strip HTML tags and return plain text using a structural parser."""
-    stripper = _HTMLStripper()
-    try:
-        stripper.feed(html)
-        stripper.close()
-        return stripper.get_text()
-    except Exception:
-        # Fallback to regex for malformed input
-        text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'<[^>]+>', ' ', text)
-        text = re.sub(r'[ \t]+', ' ', text)
-        text = re.sub(r'\n\s*\n', '\n\n', text)
-        return text.strip()
-
-
-def _clean_html(text: str) -> str:
-    """Remove HTML tags from a short snippet."""
-    return _strip_html(text)
 
 
 # -- Utility tools ------------------------------------------------------

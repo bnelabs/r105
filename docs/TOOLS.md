@@ -37,7 +37,10 @@ def web_search(arguments: dict[str, Any]) -> str:
 
 ### The Handler Function
 
-A synchronous function that receives parsed arguments and a workspace path:
+A synchronous function that receives parsed arguments. Handlers may declare
+`(arguments)`, `(arguments, workspace_dir)`, or no parameters at all —
+dispatch adapts to the declared arity (`call_tool_handler()` in
+`r105/registry.py`), so pure tools omit what they don't need:
 
 ```python
 def web_search(arguments: dict[str, Any]) -> str:
@@ -51,15 +54,18 @@ def web_search(arguments: dict[str, Any]) -> str:
             "https://html.duckduckgo.com/html/",
             params={"q": query},
             timeout=15.0,
-            headers={"User-Agent": "r105"},
+            headers={"User-Agent": _USER_AGENT},  # f"r105/{__version__}"
             follow_redirects=True,
         )
         response.raise_for_status()
-        results = _parse_ddg_results(response.text)
+        results = parse_ddg_results(response.text, WEB_SEARCH_MAX_RESULTS)
         return json.dumps(results, indent=2, ensure_ascii=False)
     except Exception as e:
         return f"search error: {e}"
 ```
+
+Shared web plumbing (SSRF allow-listing, HTML stripping, DDG parsing) lives
+in `r105/tools_web.py` — import from there instead of duplicating it.
 
 ### The Dispatch Entry
 

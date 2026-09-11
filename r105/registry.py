@@ -8,6 +8,36 @@ share registration, shadowing protection, and definition export logic.
 
 from __future__ import annotations
 
+import inspect
+from typing import Any
+
+
+def call_tool_handler(handler: Any, arguments: dict[str, Any], workspace_dir: Any, **kwargs: Any) -> Any:
+    """Invoke a tool handler, tolerating handlers that omit ``workspace_dir``.
+
+    The documented contract is ``handler(arguments, workspace_dir, **kwargs)``,
+    but pure tools (``get_time()``, ``calculate(arguments)``) and simple
+    plugin handlers legitimately take fewer parameters. Calling those with the
+    full signature raises ``TypeError`` and breaks dispatch, so adapt to the
+    handler's declared positional arity instead. Handlers that cannot be
+    introspected fall back to the full contract call.
+    """
+    try:
+        parameters = inspect.signature(handler).parameters.values()
+    except (TypeError, ValueError):
+        return handler(arguments, workspace_dir, **kwargs)
+    n_positional = sum(
+        1
+        for p in parameters
+        if p.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    )
+    if n_positional == 0:
+        return handler()
+    if n_positional == 1:
+        return handler(arguments)
+    return handler(arguments, workspace_dir, **kwargs)
+
 
 class ComponentRegistry[T]:
     """Generic name -> component registry with shadowing protection.

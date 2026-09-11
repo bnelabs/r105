@@ -7,10 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Tool dispatch arity: `ToolRegistry.execute()` adapts to 0/1-arg handlers
+  via `call_tool_handler()` (`r105/registry.py`), so `get_time`,
+  `calculate`, `convert`, `web_search`, and `web_fetch` no longer raise
+  `TypeError` when the LLM calls them; same fix in `PluginRegistry`
+- SSRF hardening: DNS now resolves both A and AAAA records, IPv6
+  unique-local (`fc00::/7`) and IPv4-mapped literals are blocked, and
+  unresolvable hosts fail closed
+- Unbounded tool-result cache: LRU cap (128 entries) with recency refresh,
+  cleared on `/session load`
+- `commands.py`: replaced five `assert`-after-guard checks with explicit
+  error returns (asserts vanish under `python -O`)
+
 ### Removed
 - RAG subsystem: `/rag` commands, `r105 ingest`/`search` CLI subcommands,
   `--rag` flag, `ChatState.rag`, router `/rag/*` endpoints, and RAG docs.
   The router backend now covers profiles + metadata only
+- Dead code: duplicate SSRF/HTML/DDG helpers folded into `r105/tools_web.py`
+  (which nothing imported), `_SAFE_ENV_PREFIXES_LEGACY` alias; web tools
+  send a versioned `r105/{__version__}` User-Agent
 
 ### Added
 - SSE streaming robustness: `event:` tracking with `event: error` surfacing

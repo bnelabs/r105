@@ -13,18 +13,15 @@ from urllib.parse import urlparse
 
 _ALLOWED_URL_SCHEMES = {"http", "https"}
 
-_PRIVATE_NETS = [
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("0.0.0.0/8"),
-]
-
 
 def check_ssrf(url_str: str) -> str | None:
-    """Return an error string if *url_str* points to a private/internal host."""
+    """Return an error string if *url_str* points to a private/internal host.
+
+    Returns None when the URL is safe to fetch. Both DNS families (A and
+    AAAA) are resolved, and the checks are address-family agnostic so IPv6
+    literals such as unique-local (``fc00::/7``) addresses are blocked too.
+    Unresolvable hostnames fail closed.
+    """
     try:
         parsed = urlparse(url_str)
     except Exception:
@@ -42,7 +39,7 @@ def check_ssrf(url_str: str) -> str | None:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
         try:
-            resolved = socket.getaddrinfo(hostname, None, family=socket.AF_INET)
+            resolved = socket.getaddrinfo(hostname, None)
         except socket.gaierror:
             return f"cannot resolve hostname: {hostname}"
         ips = {r[4][0] for r in resolved}
@@ -53,11 +50,14 @@ def check_ssrf(url_str: str) -> str | None:
             addr = ipaddress.ip_address(ip_str)
         except ValueError:
             continue
+        # Unwrap IPv4-mapped IPv6 (e.g. ::ffff:10.0.0.1) so an embedded
+        # private IPv4 address cannot slip through the family checks below.
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
         if addr.is_loopback or addr.is_link_local or addr.is_multicast:
             return f"IP address {ip_str} is not allowed"
-        for net in _PRIVATE_NETS:
-            if addr in net:
-                return f"IP address {ip_str} is private/internal — not allowed"
+        if addr.is_private or addr.is_reserved or addr.is_unspecified or not addr.is_global:
+            return f"IP address {ip_str} is private/internal — not allowed"
     return None
 
 

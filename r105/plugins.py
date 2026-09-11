@@ -30,11 +30,11 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from r105.config import CONFIG_DIR
 from r105.errors import PluginError
-from r105.registry import ComponentRegistry
+from r105.registry import ComponentRegistry, call_tool_handler
 
 DEFAULT_PLUGINS_DIR = CONFIG_DIR / "plugins"
 
@@ -336,7 +336,8 @@ class PluginRegistry(ComponentRegistry["ToolPlugin"]):
         if tool is None or tool.handler is None:
             return None
         try:
-            return tool.handler(arguments, workspace_dir)
+            result = call_tool_handler(tool.handler, arguments, workspace_dir)
+            return cast("str | None", result)
         except Exception as exc:
             return f"plugin error ({name}): {exc}"
 

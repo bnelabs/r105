@@ -56,6 +56,7 @@ from r105.state import (
     ChatState,
     token_usage,
 )
+from r105.tools import _cache_clear
 
 SLASH_COMMANDS = [
     "/",
@@ -332,7 +333,8 @@ async def _cmd_profile(
     profile, error = _parse_choice(args, field="profile", valid=VALID_PROFILES)
     if error is not None:
         return error
-    assert profile is not None
+    if profile is None:  # unreachable: _parse_choice only returns None with no args
+        return "internal error: profile choice parsing failed"
     state.profile = profile
     return f"profile={profile}"
 
@@ -350,7 +352,8 @@ async def _cmd_quality(
     quality, error = _parse_choice(args, field="quality", valid=VALID_QUALITIES)
     if error is not None:
         return error
-    assert quality is not None
+    if quality is None:  # unreachable: _parse_choice only returns None with no args
+        return "internal error: quality choice parsing failed"
     state.quality = quality
     return f"quality={quality}"
 
@@ -461,7 +464,8 @@ async def _cmd_theme(
     theme, error = _parse_choice(args, field="theme", valid=VALID_THEMES)
     if error is not None:
         return error
-    assert theme is not None
+    if theme is None:  # unreachable: _parse_choice only returns None with no args
+        return "internal error: theme choice parsing failed"
     state.theme = theme
     save_config({"theme": theme})
     return f"theme={theme} (saved persistently)"
@@ -496,7 +500,8 @@ async def _cmd_reasoning(
     )
     if error is not None:
         return error
-    assert effort is not None
+    if effort is None:  # unreachable: _parse_choice only returns None with no args
+        return "internal error: reasoning effort choice parsing failed"
     state.reasoning_effort = effort
     save_config({"reasoning_effort": effort})
     return f"reasoning_effort={effort} (saved persistently)"
@@ -519,7 +524,8 @@ async def _cmd_permissions(
     )
     if error is not None:
         return error
-    assert posture is not None
+    if posture is None:  # unreachable: _parse_choice only returns None with no args
+        return "internal error: permission posture choice parsing failed"
     state.permission_posture = posture
     save_config({"permission_posture": posture})
     return f"permission_posture={posture} (saved persistently)"
@@ -785,6 +791,7 @@ def _handle_session_command(args: list[str], state: ChatState) -> str:
             return f"session load failed: {exc}"
         try:
             count = load_session(state, name)
+            _cache_clear()  # stale tool results must not leak into the new context
             return f"session loaded: {name} ({count} messages restored)\n{summary}"
         except (json.JSONDecodeError, OSError) as exc:
             return f"session load failed: {exc}"
