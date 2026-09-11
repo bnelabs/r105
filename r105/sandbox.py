@@ -163,9 +163,6 @@ _SAFE_ENV_PREFIXES = (
     "XDG_",
 )
 
-# Backwards-compat alias (deprecated: use _SAFE_ENV_VARS).
-_SAFE_ENV_PREFIXES_LEGACY = _SAFE_ENV_PREFIXES
-
 # Patterns that indicate a secret/credential-bearing variable.
 _SECRET_PATTERNS = re.compile(
     r"(?i)(SECRET|TOKEN|KEY|PASSWORD|PASSWD|CREDENTIAL|CERT|AUTH)",

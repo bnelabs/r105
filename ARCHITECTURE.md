@@ -245,15 +245,16 @@ Skills are read by `r105/skills.py::read_skill()` and converted to system messag
 
 ## Tools
 
-Tools are registered on a decorator-based `ToolRegistry` (unified with plugins via `ComponentRegistry`) in `r105/tools.py`, with helpers split into `r105/tools_fs.py`, `r105/tools_web.py`, and `r105/tools_math.py`. `TOOL_DEFINITIONS` exposes the JSON Schema list for the LLM; `execute_tool_call()` validates arguments, enforces the permission posture, and dispatches built-ins → plugins → MCP. Tool execution runs in a thread pool via `asyncio.to_thread()`. Python code runs in the auto-detected sandbox backend (`nsjail` > `bwrap` > `docker` > `rlimit` > `none`); `detect_backend_with_reason()` / `get_fallback_reason()` report downgrades to weaker backends.
+Tools are registered on a decorator-based `ToolRegistry` (unified with plugins via `ComponentRegistry`) in `r105/registry.py`, with implementations split into `r105/tools.py` (executor/dispatch), `r105/tools_fs.py`, `r105/tools_web.py` (`web_search`/`web_fetch`), and `r105/tools_math.py`. Dispatch adapts to handler arity (`call_tool_handler()`), so pure tools declare `(arguments)` or `()` instead of the full `(arguments, workspace_dir)` contract. Slash commands take a single `CommandContext` dataclass. The chat tool loop's pure mechanics (signature parsing, repeat dedup, per-tool timeouts) live in `r105/tool_loop.py`; the TUI screen keeps only orchestration. Backends live in `r105/backends/` (`base`/`direct`/`router`) with wire format in `r105/payload.py` and streaming in `r105/sse.py` (`r105/client.py` re-exports for compatibility). `TOOL_DEFINITIONS` exposes the JSON Schema list for the LLM; `execute_tool_call()` validates arguments, enforces the permission posture, and dispatches built-ins → plugins → MCP. Tool execution runs in a thread pool via `asyncio.to_thread()`. Python code runs in the auto-detected sandbox backend (`nsjail` > `bwrap` > `docker` > `rlimit` > `none`); `detect_backend_with_reason()` / `get_fallback_reason()` report downgrades to weaker backends.
 
 ## Directory Layout
 
 ```
 r105/
+├── backends/           # Backend clients: base.py (BaseClient), direct.py, router.py
 ├── cli.py              # CLI entry point (argparse)
-├── client.py           # DirectClient + RouterClient — sync + async HTTP/SSE
-├── commands.py         # Slash command handlers (COMMAND_DISPATCH)
+├── client.py           # Backwards-compat facade re-exporting backends/payload/sse
+├── commands.py         # Slash command handlers (COMMAND_DISPATCH, CommandContext)
 ├── commands_format.py  # Presentation helpers for slash commands
 ├── config.py           # Config file read/write + validation (~/.config/r105/config.json)
 ├── constants.py        # Shared constants + ToolProfile per-tool budgets
@@ -261,17 +262,20 @@ r105/
 ├── logging.py          # Structured JSON-lines logging
 ├── mcp_client.py       # MCP stdio/SSE clients + manager
 ├── model_catalog.py    # Model family/context resolution + overrides
+├── payload.py          # Chat payload building + response parsing (wire format)
 ├── plugins.py          # Plugin loading, validation, registry
 ├── providers.py        # Native Anthropic/Gemini adapters
-├── registry.py         # Shared ComponentRegistry abstraction
+├── registry.py         # ComponentRegistry + ToolRegistry + arity-adapting dispatch
 ├── sandbox.py          # Sandbox backends (nsjail/bwrap/docker/rlimit/none)
 ├── sessions.py         # Session save/load/diff + conversation export
 ├── skills.py           # Skill file loading + system-message injection
+├── sse.py              # SSE streaming core (stream_sse)
 ├── state.py            # ChatState, ChatResult, TokenUsage
-├── tools.py            # Tool registry + execution/dispatch
+├── tool_loop.py        # Tool-loop mechanics: signatures, dedup, timeouts
+├── tools.py            # Tool execution/dispatch (registry lives in registry.py)
 ├── tools_fs.py         # File/workspace tool helpers
 ├── tools_math.py       # Safe math evaluator + unit conversion
-├── tools_web.py        # Web search/fetch helpers
+├── tools_web.py        # Web search/fetch tool implementations + web helpers
 ├── themes/             # TCSS theme files (r105, dracula, solarized-dark, high-contrast)
 └── tui/
     ├── app.py          # r105App (Textual App)
