@@ -74,7 +74,7 @@ The release page includes native x86_64 packages with the standard extension
 for each package manager. Set `VERSION` to the release you downloaded:
 
 ```sh
-VERSION=0.8.1
+VERSION=0.8.2
 
 # Ubuntu / Debian
 sudo apt install "./r105_${VERSION}_amd64.deb"
