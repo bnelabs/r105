@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from r105.tui.app import R105App
 from r105.tui.screens.chat import ChatScreen, _is_exact_command
 from r105.tui.widgets.command_palette import COMMAND_DEFS, CommandPalette
 
@@ -142,3 +143,9 @@ class TestChatScreenHeader:
         # The class exists and has expected attributes.
         assert hasattr(ChatScreen, "BINDINGS")
         assert hasattr(ChatScreen, "_render_header")
+
+    def test_core_bindings_have_keymap_ids(self) -> None:
+        app_ids = {binding.id for binding in R105App.BINDINGS if hasattr(binding, "id")}
+        screen_ids = {binding.id for binding in ChatScreen.BINDINGS if hasattr(binding, "id")}
+        assert {"quit", "show_help", "show_history"} <= app_ids
+        assert {"copy_last_message", "show_tools", "cancel_request"} <= screen_ids

@@ -18,11 +18,11 @@ class R105App(App):
     CSS_PATH = "../themes/r105.tcss"
 
     BINDINGS = [
-        Binding("ctrl+q", "quit", "Quit", show=True),
+        Binding("ctrl+q", "quit", "Quit", show=True, id="quit"),
         Binding("ctrl+c", "quit", "Quit", show=False),
-        Binding("f1", "show_help", "Help", show=True),
+        Binding("f1", "show_help", "Help", show=True, id="show_help"),
         Binding("ctrl+h", "show_help", "Help", show=False),
-        Binding("ctrl+r", "show_history", "History", show=True),
+        Binding("ctrl+r", "show_history", "History", show=True, id="show_history"),
     ]
 
     _THEME_DIR = Path(__file__).resolve().parent.parent / "themes"
@@ -41,6 +41,8 @@ class R105App(App):
         workspace_dir: Path,
     ) -> None:
         super().__init__()
+        if state.keybindings:
+            self.set_keymap(state.keybindings)
         self.r105_client = client
         self.r105_state = state
         self.r105_workspace = workspace_dir

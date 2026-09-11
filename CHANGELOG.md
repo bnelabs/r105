@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Visible SSE retry status and actionable backend error messages in the TUI
 - Backend usage metadata with token-estimate source/confidence indicators
 - `/mcp reconnect <server>` with fresh tool discovery after reconnect
+- Configurable core keybindings through the `keybindings` config map
+- Dependency-free plain-text conversation export via `/export text`
 - `r105 doctor`: environment diagnostics (Python/config/sandbox/backend/
   workspace/skills/API keys) with per-check pass/fail and exit status
 - `execute_python` confirmation gate: one-time per-session approval via

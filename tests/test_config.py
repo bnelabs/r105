@@ -46,6 +46,13 @@ class TestModelFamiliesValidation:
             "default": False,
         }
 
+    def test_keybindings_validate_known_ids(self) -> None:
+        _validate_config({"keybindings": {"show_tools": "ctrl+o"}})
+        with pytest.raises(ValueError, match="Unknown keybinding ID"):
+            _validate_config({"keybindings": {"show_toolz": "ctrl+o"}})
+        with pytest.raises(ValueError, match="non-empty key string"):
+            _validate_config({"keybindings": {"show_tools": ""}})
+
 
 class TestLoadStateOverrides:
     """``model_families`` flows from config.json into ChatState."""
@@ -92,6 +99,21 @@ class TestLoadStateOverrides:
         config_path.write_text(json.dumps({"cache_prompt": True}), encoding="utf-8")
 
         assert load_state_overrides()["cache_prompt"] is True
+
+    def test_keybindings_flow_into_state(self, tmp_path, monkeypatch) -> None:
+        from r105 import config as r105_config
+
+        config_dir = tmp_path / "r105-config"
+        config_path = config_dir / "config.json"
+        monkeypatch.setattr(r105_config, "CONFIG_DIR", config_dir)
+        monkeypatch.setattr(r105_config, "CONFIG_PATH", config_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps({"keybindings": {"show_tools": "ctrl+o"}}),
+            encoding="utf-8",
+        )
+
+        assert load_state_overrides()["keybindings"] == {"show_tools": "ctrl+o"}
 
     def test_strict_mode_surfaces_invalid_config(self, tmp_path, monkeypatch) -> None:
         from r105 import config as r105_config

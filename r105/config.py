@@ -24,6 +24,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "model": None,
     "auto_compact": True,
     "cache_prompt": False,
+    "keybindings": {},
     "sandbox_backend": "auto",
     "permission_posture": "sandboxed",
     "reasoning_effort": "auto",
@@ -43,6 +44,14 @@ VALID_THEMES = {"r105", "dracula", "solarized-dark", "high-contrast"}
 VALID_SANDBOX_BACKENDS = {"auto", "nsjail", "bwrap", "docker", "rlimit", "none"}
 VALID_PERMISSION_POSTURES = {"full-access", "restricted", "sandboxed", "off"}
 VALID_REASONING_EFFORTS = {"auto", "off", "low", "medium", "high"}
+VALID_KEYBINDING_IDS = {
+    "quit",
+    "show_help",
+    "show_history",
+    "copy_last_message",
+    "show_tools",
+    "cancel_request",
+}
 
 
 def strict_config_enabled() -> bool:
@@ -87,6 +96,7 @@ if _PYDANTIC_AVAILABLE:
         model: str | None = None
         auto_compact: bool = True
         cache_prompt: bool = False
+        keybindings: dict[str, str] = {}
         sandbox_backend: str | None = "auto"
         permission_posture: str | None = "sandboxed"
         reasoning_effort: str | None = "auto"
@@ -189,6 +199,21 @@ def _validate_config_manual(raw: dict[str, Any]) -> None:
 
     if "cache_prompt" in raw and not isinstance(raw["cache_prompt"], bool):
         raise ValueError("cache_prompt must be true or false")
+
+    if "keybindings" in raw:
+        keybindings = raw["keybindings"]
+        if not isinstance(keybindings, dict):
+            raise ValueError("keybindings must be an object mapping binding IDs to keys")
+        for binding_id, key in keybindings.items():
+            if binding_id not in VALID_KEYBINDING_IDS:
+                raise ValueError(
+                    f"Unknown keybinding ID: '{binding_id}'. Valid IDs are: "
+                    f"{', '.join(sorted(VALID_KEYBINDING_IDS))}"
+                )
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError(
+                    f"keybindings['{binding_id}'] must be a non-empty key string"
+                )
 
     if (
         "permission_posture" in raw
@@ -310,6 +335,11 @@ def config_schema() -> dict[str, Any]:
             "model": {"type": ["string", "null"], "default": None},
             "auto_compact": {"type": "boolean", "default": True},
             "cache_prompt": {"type": "boolean", "default": False},
+            "keybindings": {
+                "type": "object",
+                "additionalProperties": {"type": "string", "minLength": 1},
+                "default": {},
+            },
             "sandbox_backend": {
                 "type": ["string", "null"],
                 "enum": [*sorted(VALID_SANDBOX_BACKENDS), None],
@@ -394,6 +424,8 @@ def load_state_overrides() -> dict[str, Any]:
         overrides["auto_compact"] = config["auto_compact"]
     if "cache_prompt" in config:
         overrides["cache_prompt"] = config["cache_prompt"]
+    if config.get("keybindings"):
+        overrides["keybindings"] = config["keybindings"]
     if config.get("reasoning_effort") is not None:
         overrides["reasoning_effort"] = config["reasoning_effort"]
     if config.get("permission_posture") is not None:

@@ -439,7 +439,7 @@ def _ensure_export_deps() -> None:
 def export_conversation(state: ChatState, fmt: str = "markdown") -> str:
     """Render conversation history as a string in the requested format.
 
-    Supported formats: markdown, json, html.
+    Supported formats: text, markdown, json, html.
     """
     # Guard for future binary export formats that require optional deps
     if fmt.lower() in {"pdf", "docx", "pptx"}:
@@ -451,8 +451,26 @@ def export_conversation(state: ChatState, fmt: str = "markdown") -> str:
     if fmt == "html":
         return _export_html(state)
 
+    if fmt == "text":
+        return _export_text(state)
+
     # Default: markdown
     return _export_markdown(state)
+
+
+def _export_text(state: ChatState) -> str:
+    """Render a dependency-free plain-text transcript."""
+    lines = [
+        "r105 Conversation",
+        f"Exported: {datetime.datetime.now().isoformat()}",
+        f"Messages: {len(state.history)}",
+        "",
+    ]
+    for index, msg in enumerate(state.history, 1):
+        role = str(msg.get("role", "unknown")).upper()
+        name = f" ({msg.get('name')})" if msg.get("name") else ""
+        lines.extend([f"[{index}] {role}{name}", str(msg.get("content", "")), ""])
+    return "\n".join(lines)
 
 
 def _export_markdown(state: ChatState) -> str:

@@ -206,7 +206,7 @@ result = await self.client.async_send("Tool results received. Continue.", ...)
          ├── active_skills → loaded as system messages
          └── history → conversation state (mutated by RouterClient methods)
 
-  save_config() writes persistent keys (theme, auto_compact, cache_prompt) back to config.json
+  save_config() writes persistent keys (theme, auto_compact, cache_prompt, keybindings) back to config.json
 ```
 
 ### Config File Format

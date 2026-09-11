@@ -9,6 +9,7 @@ from typing import Any, Literal
 import httpx
 from textual import work
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Static
@@ -55,9 +56,9 @@ class ChatScreen(Screen[None]):
     """The main chat screen with split layout: chat + file explorer pane."""
 
     BINDINGS = [
-        ("ctrl+y", "copy_last_message", "Copy last response"),
-        ("ctrl+t", "show_tools", "Inspect tool calls"),
-        ("escape", "cancel_request", "Cancel current request"),
+        Binding("ctrl+y", "copy_last_message", "Copy last response", id="copy_last_message"),
+        Binding("ctrl+t", "show_tools", "Inspect tool calls", id="show_tools"),
+        Binding("escape", "cancel_request", "Cancel current request", id="cancel_request"),
     ]
 
     def __init__(
