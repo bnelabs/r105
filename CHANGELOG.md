@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.8.2] — 2026-09-11
+
+### Fixed
+- Slash-command palette navigation now keeps the selected row clear of the
+  bottom border, including on Windows terminals
+- Alpine package smoke validation now checks the native musl binary without
+  requiring dependency resolution in an empty offline root
+
+### Changed
+- Release documentation now lists the published Alpine Linux x86_64 package
+  alongside the complete binary and native package compatibility matrix
+
 ## [0.8.1] — 2026-09-11
 
 ### Fixed
@@ -291,7 +303,8 @@ _No unreleased changes._
 - File explorer sidebar
 - Token usage estimation and auto-compaction at 80% context
 
-[Unreleased]: https://github.com/bnelabs/r105/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/bnelabs/r105/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/bnelabs/r105/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/bnelabs/r105/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/bnelabs/r105/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/bnelabs/r105/compare/v0.6.0...v0.7.0
