@@ -140,7 +140,6 @@ def _serializable_state(state: ChatState) -> dict[str, Any]:
     """Extract session-relevant fields from ChatState."""
     return {
         "profile": state.profile,
-        "rag": state.rag,
         "quality": state.quality,
         "max_tokens": state.max_tokens,
         "json_mode": state.json_mode,
@@ -153,7 +152,6 @@ def _restore_state(state: ChatState, data: dict[str, Any]) -> None:
     """Restore session state into a ChatState object."""
     saved = data.get("state") or {}
     state.profile = saved.get("profile")
-    state.rag = saved.get("rag")
     state.quality = saved.get("quality")
     state.max_tokens = saved.get("max_tokens")
     state.json_mode = saved.get("json_mode", False)
@@ -243,6 +241,60 @@ def delete_session(name: str) -> bool:
         return False
     path.unlink()
     return True
+
+
+def diff_session(state: ChatState, name: str) -> str:
+    """Summarize what changed between the live *state* and saved session *name*.
+
+    Reports the message-count delta, previews of unsaved messages, and any
+    state-field differences (profile, quality, max_tokens, json_mode, skills).
+
+    Raises FileNotFoundError if the session doesn't exist.
+    May raise json.JSONDecodeError or OSError if the file is unreadable.
+    """
+    path = _session_path(name)
+    if not path.is_file():
+        raise FileNotFoundError(f"session not found: {name}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    saved_history: list[dict[str, Any]] = data.get("history") or []
+    saved_state: dict[str, Any] = data.get("state") or {}
+
+    lines = [f"diff vs saved session '{name}':"]
+    saved_count = len(saved_history)
+    current_count = len(state.history)
+    delta = current_count - saved_count
+    if delta == 0:
+        lines.append("  messages: no change")
+    elif delta > 0:
+        lines.append(
+            f"  messages: +{delta} unsaved "
+            f"({saved_count} saved → {current_count} current)"
+        )
+        for msg in state.history[saved_count:saved_count + 3]:
+            role = str(msg.get("role", "?"))
+            content = " ".join(str(msg.get("content", "")).split())
+            lines.append(f"    + [{role}] {content[:120]}")
+        if delta > 3:
+            lines.append(f"    … and {delta - 3} more unsaved message(s)")
+    else:
+        lines.append(
+            f"  messages: {delta} (current is shorter — "
+            f"{saved_count} saved vs {current_count} current)"
+        )
+
+    current_state = _serializable_state(state)
+    changed: list[str] = []
+    for key in sorted(set(saved_state) | set(current_state)):
+        old = saved_state.get(key)
+        new = current_state.get(key)
+        if old != new:
+            changed.append(f"{key}: {old!r} → {new!r}")
+    if changed:
+        lines.append("  settings changed since save:")
+        lines.extend(f"    ~ {item}" for item in changed)
+    else:
+        lines.append("  settings: no change")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

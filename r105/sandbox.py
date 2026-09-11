@@ -693,18 +693,120 @@ class NoopSandbox(SandboxBackend):
 _BACKENDS: list[type[SandboxBackend]] = [NsjailSandbox, BwrapSandbox, DockerSandbox, RLimitSandbox]
 _sandbox: SandboxBackend | None = None
 
+# Why the active backend was selected instead of a stronger one (None when
+# the strongest available backend won or the backend was set explicitly).
+# Surfaced to the user via ``get_fallback_reason()``, a CLI stderr warning,
+# and the TUI status bar so a silent downgrade to rlimit/none is visible.
+_fallback_reason: str | None = None
+
+# Backends that provide NO filesystem/network isolation. Auto-selecting one
+# of these is a security-relevant downgrade that must be surfaced.
+_WEAK_BACKENDS = frozenset({"rlimit", "none"})
+
+
+def _class_backend_name(cls: type[SandboxBackend]) -> str:
+    """Backend name from the class without instantiating.
+
+    Subclasses shadow the abstract ``name`` property with a plain string
+    class attribute; fall back to the class name if missing.
+    """
+    raw: Any = getattr(cls, "name", "")
+    return raw if isinstance(raw, str) and raw else cls.__name__
+
+
+def _unavailable_reason(cls: type[SandboxBackend]) -> str:
+    """Best-effort human reason why *cls* is not usable (for fallback notices)."""
+    name = _class_backend_name(cls)
+    binary = {"nsjail": "nsjail", "bwrap": "bwrap", "docker": "docker"}.get(name, "")
+    if name in {"nsjail", "bwrap"} and sys.platform != "linux":
+        return f"{name} requires Linux (running on {sys.platform})"
+    if binary and shutil.which(binary) is None:
+        return f"{name} not installed (no `{binary}` on PATH)"
+    if name == "docker":
+        return "docker found but the daemon is unreachable (`docker info` failed)"
+    if name in {"nsjail", "bwrap"}:
+        return f"{name} installed but unusable (e.g. user namespaces disabled)"
+    if name == "rlimit":
+        return "rlimit unavailable (non-Unix platform)"
+    return f"{name} unavailable"
+
+
+def detect_backend_with_reason() -> tuple[SandboxBackend, str | None]:
+    """Return ``(backend, fallback_reason)`` for the best available backend.
+
+    Preference order: nsjail > bwrap > docker > rlimit > none.
+    RLimit is a strict last resort (no isolation) and is only selected when
+    no true isolation backend is available.
+
+    *fallback_reason* is None when the strongest backend (nsjail) wins;
+    otherwise it explains which stronger backends were skipped and why, plus
+    an explicit isolation warning when the winner is weak.
+    """
+    skipped: list[str] = []
+    for cls in _BACKENDS:
+        if cls.is_available():
+            backend: SandboxBackend = cls()
+            reason: str | None = None
+            if skipped or backend.name in _WEAK_BACKENDS:
+                detail = "; ".join(skipped) if skipped else "no stronger backend available"
+                reason = f"using {backend.name} ({detail})"
+                if backend.name in _WEAK_BACKENDS:
+                    reason += " — WARNING: no filesystem/network isolation"
+            try:
+                from r105.logging import warn as _log_warn
+                if backend.name in _WEAK_BACKENDS:
+                    _log_warn("sandbox_weak_backend", backend=backend.name, reason=reason)
+                elif reason is not None:
+                    _log_warn("sandbox_fallback", backend=backend.name, reason=reason)
+            except Exception:
+                pass
+            return backend, reason
+        skipped.append(_unavailable_reason(cls))
+    detail = "; ".join(skipped) if skipped else "no isolation backend available"
+    reason = f"using none ({detail}) — WARNING: no filesystem/network isolation"
+    try:
+        from r105.logging import warn as _log_warn
+        _log_warn("sandbox_weak_backend", backend="none", reason=reason)
+    except Exception:
+        pass
+    return NoopSandbox(), reason
+
 
 def detect_backend() -> SandboxBackend:
     """Return the best available sandbox backend.
 
     Preference order: nsjail > bwrap > docker > rlimit > none.
     RLimit is a strict last resort (no isolation) and is only selected when
-    no true isolation backend is available.
+    no true isolation backend is available. Use :func:`get_fallback_reason`
+    to find out whether (and why) a weaker backend was selected.
     """
-    for cls in _BACKENDS:
-        if cls.is_available():
-            return cls()
-    return NoopSandbox()
+    global _fallback_reason
+    backend, _fallback_reason = detect_backend_with_reason()
+    return backend
+
+
+def get_fallback_reason() -> str | None:
+    """Return why a weaker sandbox backend was auto-selected, or None."""
+    return _fallback_reason
+
+
+def current_backend_name() -> str | None:
+    """Return the selected backend name without triggering detection."""
+    if _sandbox is None:
+        return None
+    return str(getattr(_sandbox, "name", None) or type(_sandbox).__name__)
+
+
+def weak_backend_warning() -> str | None:
+    """Short user-facing warning when the selected backend lacks isolation.
+
+    Returns None for strong backends (or when no backend was selected yet)
+    so callers can surface the downgrade without triggering detection.
+    """
+    name = current_backend_name()
+    if name in _WEAK_BACKENDS:
+        return f"sandbox={name} (no isolation)"
+    return None
 
 
 def get_sandbox() -> SandboxBackend:
@@ -717,10 +819,12 @@ def get_sandbox() -> SandboxBackend:
 
 def set_sandbox(name: str) -> SandboxBackend | None:
     """Set the sandbox backend by name. Returns None if the named backend is unavailable."""
-    global _sandbox
+    global _sandbox, _fallback_reason
     backend = get_backend(name)
     if backend is not None:
         _sandbox = backend
+        # Explicit operator choice — not a fallback.
+        _fallback_reason = None
     return backend
 
 

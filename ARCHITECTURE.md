@@ -2,7 +2,7 @@
 
 ## System Overview
 
-r105 is a rich terminal AI assistant built with the [Textual](https://textual.textualize.io/) TUI framework. It connects to any OpenAI-compatible API (OpenAI, Ollama, vLLM, Groq, llama-router, etc.) and provides an interactive chat interface with streaming responses, local tool execution, slash commands, and RAG management.
+r105 is a rich terminal AI assistant built with the [Textual](https://textual.textualize.io/) TUI framework. It connects to any OpenAI-compatible API (OpenAI, Ollama, vLLM, Groq, llama-router, etc.) and provides an interactive chat interface with streaming responses, local tool execution, and slash commands.
 
 ```
 ┌──────────────┐     HTTP/SSE      ┌──────────────┐     HTTP      ┌──────────────┐
@@ -28,7 +28,7 @@ r105 is a rich terminal AI assistant built with the [Textual](https://textual.te
 | **r105 TUI** | Textual app: chat screen, command palette, file explorer, streaming display |
 | **RouterClient** | HTTP client: sends chat requests, receives SSE streams, manages history |
 | **Tool Runner** | Executes LLM-requested tools (Python, file I/O, web search, etc.) in sandboxed subprocesses |
-| **llama-router** | FastAPI middleware: request classification, profile selection, RAG, response critique |
+| **llama-router** | FastAPI middleware: request classification, profile selection, response critique |
 | **llama-server** | llama.cpp inference server: model execution, token generation |
 
 ## Data Flow

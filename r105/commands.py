@@ -21,18 +21,6 @@ from r105.commands_format import (
     format_history as _fmt_history,
 )
 from r105.commands_format import (
-    format_ingest as _fmt_ingest,
-)
-from r105.commands_format import (
-    format_rag_delete as _fmt_rag_delete,
-)
-from r105.commands_format import (
-    format_rag_list as _fmt_rag_list,
-)
-from r105.commands_format import (
-    format_search as _fmt_search,
-)
-from r105.commands_format import (
     format_skills as _fmt_skills,
 )
 from r105.commands_format import (
@@ -45,9 +33,6 @@ from r105.commands_format import (
     human_size as _fmt_human_size,
 )
 from r105.commands_format import (
-    split_paths_and_urls as _fmt_split,
-)
-from r105.commands_format import (
     status_line as _fmt_status,
 )
 from r105.config import ensure_config, save_config
@@ -56,6 +41,7 @@ from r105.model_catalog import resolve_context_tokens
 from r105.plugins import get_registry
 from r105.sessions import (
     delete_session,
+    diff_session,
     export_conversation,
     list_sessions,
     load_session,
@@ -81,7 +67,6 @@ SLASH_COMMANDS = [
     "/clear",
     "/compact",
     "/profile",
-    "/rag",
     "/quality",
     "/json",
     "/max",
@@ -122,6 +107,40 @@ def _parse_bool(value: str | None) -> bool | None:
     return None
 
 
+def _apply_bool_toggle(args: list[str], current: bool) -> bool:
+    """Shared toggle semantics: no args flips, recognized bool sets.
+
+    Unrecognized values leave the current setting unchanged (callers report
+    the effective value so the user sees what stuck).
+    """
+    if not args:
+        return not current
+    parsed = _parse_bool(args[0])
+    return parsed if parsed is not None else current
+
+
+def _parse_choice(
+    args: list[str], *, field: str, valid: set[str], lower: bool = False
+) -> tuple[str | None, str | None]:
+    """Validate ``args[0]`` against *valid*.
+
+    Returns ``(value, None)`` on success, ``(None, error_message)`` on an
+    unrecognized value, and ``(None, None)`` when no args were given (the
+    caller decides between reset-to-auto and show-current).
+    """
+    if not args:
+        return None, None
+    value = args[0].lower() if lower else args[0]
+    if value not in valid:
+        suggestion = difflib.get_close_matches(value, sorted(valid), n=1, cutoff=0.5)
+        hint = f" — did you mean {suggestion[0]}?" if suggestion else ""
+        return None, (
+            f"unknown {field}: {args[0]} "
+            f"(valid: {', '.join(sorted(valid))}){hint}"
+        )
+    return value, None
+
+
 def _global_context_override() -> int | None:
     """Return the global ``context_tokens`` override from config.json, if any."""
     try:
@@ -157,11 +176,6 @@ Chat
   /autocompact [on|off]          toggle auto-compaction at 80% context
   /reasoning auto|off|low|med..  set reasoning effort (model-provided)
   /permissions <posture>         set permission posture (full-access|restricted|sandboxed|off)
-
-RAG
-  /rag on|off                    toggle RAG metadata
-  /rag ingest <path-or-url>...   ingest local files/directories or URLs
-  /rag search <query>            search active RAG index
 
 Skills
   /skills                        list local skills
@@ -315,23 +329,12 @@ async def _cmd_profile(
     if not args:
         state.profile = None
         return "profile=auto"
-    profile = args[0]
-    if profile not in VALID_PROFILES:
-        suggestion = difflib.get_close_matches(profile, sorted(VALID_PROFILES), n=1, cutoff=0.5)
-        hint = f" — did you mean {suggestion[0]}?" if suggestion else ""
-        return f"unknown profile: {profile} (valid: {', '.join(sorted(VALID_PROFILES))}){hint}"
+    profile, error = _parse_choice(args, field="profile", valid=VALID_PROFILES)
+    if error is not None:
+        return error
+    assert profile is not None
     state.profile = profile
     return f"profile={profile}"
-
-
-async def _cmd_rag(
-    args: list[str],
-    state: ChatState,
-    client: Any | None = None,
-    workspace_dir: Path | None = None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    return await _handle_rag_command(args, state, client, http_client=http_client)
 
 
 async def _cmd_quality(
@@ -344,11 +347,10 @@ async def _cmd_quality(
     if not args:
         state.quality = None
         return "quality=auto"
-    quality = args[0]
-    if quality not in VALID_QUALITIES:
-        suggestion = difflib.get_close_matches(quality, sorted(VALID_QUALITIES), n=1, cutoff=0.5)
-        hint = f" — did you mean {suggestion[0]}?" if suggestion else ""
-        return f"unknown quality: {quality} (valid: {', '.join(sorted(VALID_QUALITIES))}){hint}"
+    quality, error = _parse_choice(args, field="quality", valid=VALID_QUALITIES)
+    if error is not None:
+        return error
+    assert quality is not None
     state.quality = quality
     return f"quality={quality}"
 
@@ -360,11 +362,7 @@ async def _cmd_json(
     workspace_dir: Path | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> str:
-    if not args:
-        state.json_mode = not state.json_mode
-    else:
-        parsed = _parse_bool(args[0])
-        state.json_mode = parsed if parsed is not None else state.json_mode
+    state.json_mode = _apply_bool_toggle(args, state.json_mode)
     return f"json={state.json_mode}"
 
 
@@ -460,11 +458,10 @@ async def _cmd_theme(
 ) -> str:
     if not args:
         return f"theme={state.theme} (valid: {', '.join(sorted(VALID_THEMES))})"
-    theme = args[0]
-    if theme not in VALID_THEMES:
-        suggestion = _suggest_command(f"/theme {theme}") or _suggest_command(theme)
-        hint = f" — did you mean {suggestion}?" if suggestion else ""
-        return f"unknown theme: {theme} (valid: {', '.join(sorted(VALID_THEMES))}){hint}"
+    theme, error = _parse_choice(args, field="theme", valid=VALID_THEMES)
+    if error is not None:
+        return error
+    assert theme is not None
     state.theme = theme
     save_config({"theme": theme})
     return f"theme={theme} (saved persistently)"
@@ -477,11 +474,7 @@ async def _cmd_autocompact(
     workspace_dir: Path | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> str:
-    if not args:
-        state.auto_compact = not state.auto_compact
-    else:
-        parsed = _parse_bool(args[0])
-        state.auto_compact = parsed if parsed is not None else state.auto_compact
+    state.auto_compact = _apply_bool_toggle(args, state.auto_compact)
     save_config({"auto_compact": state.auto_compact})
     return f"auto_compact={state.auto_compact} (saved persistently)"
 
@@ -498,12 +491,12 @@ async def _cmd_reasoning(
             f"reasoning_effort={state.reasoning_effort} "
             f"(valid: {', '.join(sorted(VALID_REASONING_EFFORTS))})"
         )
-    effort = args[0].lower()
-    if effort not in VALID_REASONING_EFFORTS:
-        return (
-            f"unknown reasoning effort: {effort} "
-            f"(valid: {', '.join(sorted(VALID_REASONING_EFFORTS))})"
-        )
+    effort, error = _parse_choice(
+        args, field="reasoning effort", valid=VALID_REASONING_EFFORTS, lower=True
+    )
+    if error is not None:
+        return error
+    assert effort is not None
     state.reasoning_effort = effort
     save_config({"reasoning_effort": effort})
     return f"reasoning_effort={effort} (saved persistently)"
@@ -521,12 +514,12 @@ async def _cmd_permissions(
             f"permission_posture={state.permission_posture} "
             f"(valid: {', '.join(sorted(VALID_PERMISSION_POSTURES))})"
         )
-    posture = args[0].lower()
-    if posture not in VALID_PERMISSION_POSTURES:
-        return (
-            f"unknown permission posture: {posture} "
-            f"(valid: {', '.join(sorted(VALID_PERMISSION_POSTURES))})"
-        )
+    posture, error = _parse_choice(
+        args, field="permission posture", valid=VALID_PERMISSION_POSTURES, lower=True
+    )
+    if error is not None:
+        return error
+    assert posture is not None
     state.permission_posture = posture
     save_config({"permission_posture": posture})
     return f"permission_posture={posture} (saved persistently)"
@@ -661,7 +654,6 @@ COMMAND_DISPATCH: dict[str, CommandHandler] = {
     "/clear": _cmd_clear,
     "/compact": _cmd_compact,
     "/profile": _cmd_profile,
-    "/rag": _cmd_rag,
     "/quality": _cmd_quality,
     "/json": _cmd_json,
     "/max": _cmd_max,
@@ -713,81 +705,6 @@ async def handle_slash_command(
         return f"unknown command: {command}"
 
     return await handler(args, state, client, workspace_dir, http_client)
-
-
-async def _handle_rag_command(
-    args: list[str], state: ChatState, client: Any | None,
-    http_client: httpx.AsyncClient | None = None,
-) -> str:
-    if not args:
-        state.rag = not bool(state.rag)
-        return f"rag={state.rag}"
-
-    # Check if the backend supports RAG
-    if not hasattr(client, "async_ingest") and args and args[0] in ("ingest", "search", "list", "delete", "update"):
-        return "RAG is only available with llama-router backend (--backend router)"
-
-    action = args[0]
-    if action in {"on", "true", "1", "yes"}:
-        state.rag = True
-        return "rag=True"
-    if action in {"off", "false", "0", "no"}:
-        state.rag = False
-        return "rag=False"
-    if action == "ingest":
-        if client is None:
-            return "client unavailable"
-        if len(args) < 2:
-            return "usage: /rag ingest <path-or-url> [more...]"
-        paths, urls = _split_paths_and_urls(args[1:])
-        try:
-            return _format_ingest(
-                await client.async_ingest(paths=paths, urls=urls, client=http_client)
-            )
-        except httpx.HTTPError as exc:
-            return f"rag ingest failed: {exc}"
-    if action == "search":
-        if client is None:
-            return "client unavailable"
-        if len(args) < 2:
-            return "usage: /rag search <query>"
-        try:
-            return _format_search(
-                await client.async_search(" ".join(args[1:]), top_k=5, client=http_client)
-            )
-        except httpx.HTTPError as exc:
-            return f"rag search failed: {exc}"
-    if action == "list":
-        if client is None:
-            return "client unavailable"
-        try:
-            payload = await client.async_list_rag_documents(client=http_client)
-            return _format_rag_list(payload)
-        except Exception as exc:
-            return f"rag list failed: {exc}"
-    if action == "delete":
-        if client is None:
-            return "client unavailable"
-        if len(args) < 2:
-            return "usage: /rag delete <id>"
-        try:
-            payload = await client.async_delete_rag_document(args[1], client=http_client)
-            return _format_rag_delete(payload)
-        except Exception as exc:
-            return f"rag delete failed: {exc}"
-    if action == "update":
-        if client is None:
-            return "client unavailable"
-        if len(args) < 2:
-            return "usage: /rag update <path>"
-        paths, _urls = _split_paths_and_urls(args[1:])
-        try:
-            return _format_ingest(
-                await client.async_ingest(paths=paths, client=http_client)
-            )
-        except httpx.HTTPError as exc:
-            return f"rag update failed: {exc}"
-    return "usage: /rag on|off|ingest|search|list|delete|update"
 
 
 def _handle_skill_command(args: list[str], state: ChatState) -> str:
@@ -861,10 +778,14 @@ def _handle_session_command(args: list[str], state: ChatState) -> str:
             return "usage: /session load <name>"
         name = args[1]
         try:
-            count = load_session(state, name)
-            return f"session loaded: {name} ({count} messages restored)"
+            summary = diff_session(state, name)
         except FileNotFoundError:
             return f"session not found: {name}"
+        except (json.JSONDecodeError, OSError) as exc:
+            return f"session load failed: {exc}"
+        try:
+            count = load_session(state, name)
+            return f"session loaded: {name} ({count} messages restored)\n{summary}"
         except (json.JSONDecodeError, OSError) as exc:
             return f"session load failed: {exc}"
 
@@ -983,19 +904,6 @@ def _handle_mcp_command(args: list[str]) -> str:
     return "usage: /mcp list|tools"
 
 
-def _split_paths_and_urls(items: list[str]) -> tuple[list[str], list[str]]:
-    # Canonical implementation lives in r105/commands_format.py (split module).
-    return _fmt_split(items)
-
-
-def _format_ingest(payload: dict[str, Any]) -> str:
-    return _fmt_ingest(payload)
-
-
-def _format_search(payload: dict[str, Any]) -> str:
-    return _fmt_search(payload)
-
-
 def _format_state(state: ChatState) -> str:
     return _fmt_state(state)
 
@@ -1010,14 +918,6 @@ def _format_history(state: ChatState) -> str:
 
 def _format_skills(names: list[str]) -> str:
     return _fmt_skills(names)
-
-
-def _format_rag_list(payload: dict[str, Any]) -> str:
-    return _fmt_rag_list(payload)
-
-
-def _format_rag_delete(payload: dict[str, Any]) -> str:
-    return _fmt_rag_delete(payload)
 
 
 def _format_workspace(workspace_dir: Path) -> str:

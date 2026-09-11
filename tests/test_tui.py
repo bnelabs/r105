@@ -46,7 +46,7 @@ class TestCommandPaletteStructure:
 
     def test_categories_consistent(self) -> None:
         """All entries use known categories."""
-        valid = {"Chat", "RAG", "Skills", "Sessions", "Plugins", "MCP", "Workspace", "System"}
+        valid = {"Chat", "Skills", "Sessions", "Plugins", "MCP", "Workspace", "System"}
         for category, _cmd, _usage, _desc in COMMAND_DEFS:
             assert category in valid, f"Unknown category: {category}"
 

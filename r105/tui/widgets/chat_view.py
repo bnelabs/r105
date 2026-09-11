@@ -38,6 +38,79 @@ _STRAY_TOKENS_RE = re.compile(r"<\|?(?:channel|tool_call|tool_result)\|?>")
 _DIM = Style(dim=True, color="#6c7086")
 _DIM_WARM = Style(dim=True, color="#f9e2af")
 
+# Long tool results fold to a preview; click/t/enter/space expands in place.
+_LONG_RESULT_CHARS = 2000
+_RESULT_PREVIEW_CHARS = 500
+
+
+def _looks_like_diff(text: str) -> bool:
+    """Heuristic: unified-diff shape (headers/hunks/added/removed lines)."""
+    markers = 0
+    has_hunk = False
+    for line in text.splitlines():
+        if line.startswith(("+++", "---")):
+            markers += 1
+        elif line.startswith("@@"):
+            markers += 1
+            has_hunk = True
+        elif line.startswith(("+", "-")) and len(line) > 1:
+            markers += 1
+        if markers >= 3 and has_hunk:
+            return True
+    return False
+
+
+def _diff_text(text: str) -> Text:
+    """Render unified-diff text with green/red/hunk styling."""
+    content = Text()
+    for i, line in enumerate(text.splitlines()):
+        if i:
+            content.append("\n")
+        if line.startswith("@@"):
+            content.append(line, style=_DIM)
+        elif line.startswith("+") and not line.startswith("+++"):
+            content.append(line, style="bold #a6e3a1")
+        elif line.startswith("-") and not line.startswith("---"):
+            content.append(line, style="bold #f38ba8")
+        else:
+            content.append(line)
+    return content
+
+
+def _highlight_result(text: str) -> Any:
+    """Best renderable for a tool result: diff colors, markdown fences, plain."""
+    if _looks_like_diff(text):
+        return _diff_text(text)
+    if "```" in text and len(text) <= 8000:
+        # Fenced code blocks get syntax highlighting via Markdown.
+        return Markdown(text, code_theme="monokai")
+    return Text(text)
+
+
+def _result_renderable(text: str, expanded: bool) -> Panel:
+    """Render a tool result — folded preview or full highlighted output."""
+    if not expanded and len(text) > _LONG_RESULT_CHARS:
+        preview = text[:_RESULT_PREVIEW_CHARS]
+        content = Text()
+        content.append(preview)
+        content.append(
+            f"\n… {len(text) - _RESULT_PREVIEW_CHARS} more chars "
+            "(click or press t to expand)",
+            style=_DIM,
+        )
+        return Panel(
+            content,
+            title="TOOL RESULT",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    return Panel(
+        _highlight_result(text),
+        title="TOOL RESULT",
+        border_style="cyan",
+        padding=(0, 1),
+    )
+
 
 def _thinking_renderable(text: str, expanded: bool) -> Panel:
     """Render a thinking block as an interactive collapsible panel."""
@@ -81,13 +154,13 @@ def _renderable_height(renderable: Any, width: int) -> int:
 class _Message:
     """One transcript entry — pure data until materialized as a widget."""
 
-    kind: str  # user | assistant | thinking | system | error | tool_call | tool_result | tool_status | canceled | source
+    kind: str  # user | assistant | thinking | system | error | tool_call | tool_result | tool_status | canceled
     text: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
     height: int | None = None  # cached measured height (at self.width)
     width: int | None = None  # width the height was measured at
     widget: Static | None = None  # materialized widget while in the viewport window
-    expanded: bool | None = None  # thinking panels only
+    expanded: bool | None = None  # thinking panels + long tool results
 
 
 class ThinkingPanel(Static):
@@ -136,6 +209,54 @@ class ThinkingPanel(Static):
         """Expand if folded, fold if expanded; re-render and notify owner."""
         self.expanded = not self.expanded
         self.update(_thinking_renderable(self.thinking_text, self.expanded))
+        self.post_message(self.Toggled(self))
+        self.refresh()
+
+    def on_click(self, event: Any) -> None:
+        self.toggle()
+
+
+class ExpandableResult(Static):
+    """A collapsible long tool-result panel.
+
+    Mirrors :class:`ThinkingPanel`: clicking (or ``t`` / ``enter`` / ``space``
+    while focused) toggles between a short preview and the full highlighted
+    output. A ``Toggled`` message is posted on every change so the owner can
+    re-layout.
+    """
+
+    class Toggled(Message):
+        """Posted when the result is expanded or folded."""
+
+        def __init__(self, panel: ExpandableResult) -> None:
+            self.panel = panel
+            super().__init__()
+
+    BINDINGS = [
+        Binding("t", "toggle_result", "Toggle result panel", show=False),
+        Binding("enter", "toggle_result", "Toggle result panel", show=False),
+        Binding("space", "toggle_result", "Toggle result panel", show=False),
+    ]
+
+    def __init__(
+        self,
+        text: str,
+        expanded: bool = False,
+        *,
+        name: str | None = None,
+        id: str | None = None,
+    ) -> None:
+        super().__init__(content=_result_renderable(text, expanded), name=name, id=id)
+        self.result_text = text
+        self.expanded = expanded
+
+    def action_toggle_result(self) -> None:
+        self.toggle()
+
+    def toggle(self) -> None:
+        """Expand if folded, fold if expanded; re-render and notify owner."""
+        self.expanded = not self.expanded
+        self.update(_result_renderable(self.result_text, self.expanded))
         self.post_message(self.Toggled(self))
         self.refresh()
 
@@ -303,14 +424,13 @@ class ChatView(VerticalScroll):
         """
         self._append("canceled", reason)
 
-    def add_source_attribution(self, source_tag: str, snippet: str = "") -> None:
-        """Render a RAG source citation with optional snippet preview."""
-        self._append("source", source_tag, {"snippet": snippet})
-
     def _append(self, kind: str, text: str, meta: dict[str, Any] | None = None) -> None:
         msg = _Message(kind=kind, text=text, meta=meta or {})
         if kind == "thinking":
             msg.expanded = self.thinking_default_expanded
+        elif kind == "tool_result" and len(text) > _LONG_RESULT_CHARS:
+            # Long outputs start folded; ExpandableResult toggles in place.
+            msg.expanded = False
         self._messages.append(msg)
         self._scroll_to_end_if_at_bottom()
         self._schedule_sync()
@@ -452,13 +572,8 @@ class ChatView(VerticalScroll):
             content.append(msg.meta.get("args", ""), style="dim")
             return Panel(content, title="TOOL CALL", border_style="yellow", padding=(0, 1))
         if kind == "tool_result":
-            preview = msg.text[:500] + ("…" if len(msg.text) > 500 else "")
-            return Panel(
-                Text(preview),
-                title="TOOL RESULT",
-                border_style="cyan",
-                padding=(0, 1),
-            )
+            expanded = msg.expanded if msg.expanded is not None else True
+            return _result_renderable(msg.text, expanded)
         if kind == "tool_status":
             content = Text()
             content.append(f"🔧 {msg.text}", style=_DIM_WARM)
@@ -469,22 +584,13 @@ class ChatView(VerticalScroll):
             content.append(msg.text or "Request canceled", style="bold red")
             content.append(" — output stopped by user", style="dim")
             return Panel(content, title="CANCELED", border_style="red", padding=(0, 1))
-        if kind == "source":
-            snippet = msg.meta.get("snippet", "")
-            if snippet:
-                content = Text()
-                content.append(msg.text, style="bold cyan")
-                content.append("\n")
-                content.append(snippet[:300], style="dim")
-                return Panel(content, title="SOURCE", border_style="cyan", padding=(0, 1))
-            content = Text()
-            content.append(f"📎 {msg.text}", style="bold cyan")
-            return content
         return Panel(Text(str(msg.text)), title=kind, border_style="white", padding=(0, 1))
 
     def _build_widget(self, msg: _Message) -> Static:
         if msg.kind == "thinking":
             return ThinkingPanel(msg.text, bool(msg.expanded))
+        if msg.kind == "tool_result" and len(msg.text) > _LONG_RESULT_CHARS:
+            return ExpandableResult(msg.text, bool(msg.expanded))
         return Static(self._renderable(msg))
 
     # -- Virtualization ------------------------------------------------------
@@ -652,6 +758,16 @@ class ChatView(VerticalScroll):
 
     def on_thinking_panel_toggled(self, event: ThinkingPanel.Toggled) -> None:
         """A thinking panel was expanded/folded — re-measure and re-layout."""
+        panel = event.panel
+        for msg in self._messages:
+            if msg.widget is panel:
+                msg.expanded = panel.expanded
+                msg.height = None
+                break
+        self._schedule_sync()
+
+    def on_expandable_result_toggled(self, event: ExpandableResult.Toggled) -> None:
+        """A long tool result was expanded/folded — re-measure and re-layout."""
         panel = event.panel
         for msg in self._messages:
             if msg.widget is panel:
