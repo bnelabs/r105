@@ -48,7 +48,7 @@ def validate(tag: str | None = None) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", help="tag to validate, for example v0.8.2")
+    parser.add_argument("--tag", help="tag to validate, for example v0.8.3")
     args = parser.parse_args()
     version = validate(args.tag)
     print(f"release metadata is consistent for {version}")
