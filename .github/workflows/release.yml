@@ -383,6 +383,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
+          gh auth setup-git
           tap_dir="$RUNNER_TEMP/homebrew-tap"
           gh repo clone bnelabs/homebrew-tap "$tap_dir"
           cp docs/homebrew.rb "$tap_dir/Formula/r105.rb"
