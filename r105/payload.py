@@ -116,6 +116,7 @@ def _build_payload(message: str, state: ChatState, tools: list[dict[str, Any]] |
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
     _inject_reasoning_effort(payload, state)
+    _inject_prompt_cache(payload, state)
     return payload
 
 
@@ -128,6 +129,12 @@ def _inject_reasoning_effort(payload: dict[str, Any], state: ChatState) -> None:
     effort = getattr(state, "reasoning_effort", "auto")
     if effort in {"low", "medium", "high"}:
         payload["reasoning_effort"] = effort
+
+
+def _inject_prompt_cache(payload: dict[str, Any], state: ChatState) -> None:
+    """Opt into llama.cpp prompt-prefix caching when explicitly enabled."""
+    if getattr(state, "cache_prompt", False):
+        payload["cache_prompt"] = True
 
 
 def _parse_response(raw: dict[str, Any], started: float) -> ChatResult:

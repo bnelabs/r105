@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Prompt-prefix caching toggle for llama.cpp-compatible backends via
+  `cache_prompt` in config and `/cache-prompt`; disabled by default for
+  compatibility with other OpenAI-compatible APIs
+- `r105 config-schema` command and `R105_STRICT_CONFIG=1` validation mode
+- Plugin host-version/dependency declarations and reload draining for active
+  plugin calls
+- Versioned session files with legacy migration, full-text `/session search`,
+  and model/context prompt settings preserved across session loads
+- Visible SSE retry status and actionable backend error messages in the TUI
 - `r105 doctor`: environment diagnostics (Python/config/sandbox/backend/
   workspace/skills/API keys) with per-check pass/fail and exit status
 - `execute_python` confirmation gate: one-time per-session approval via

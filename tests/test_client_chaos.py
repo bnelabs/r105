@@ -136,6 +136,7 @@ class TestMalformedSSE:
 
         async def _run() -> None:
             state = ChatState()
+            statuses: list[str] = []
             httpx_mock.add_response(
                 url="http://testserver:8010/v1/chat/completions",
                 status_code=503,
@@ -146,8 +147,14 @@ class TestMalformedSSE:
                 text='data: {"choices": [{"delta": {"content": "Hi"}}]}\n\ndata: [DONE]\n\n',
                 headers={"Content-Type": "text/event-stream"},
             )
-            result = await client.async_send_streaming("hi", state, on_chunk=lambda _: None)
+            result = await client.async_send_streaming(
+                "hi",
+                state,
+                on_chunk=lambda _: None,
+                on_status=statuses.append,
+            )
             assert "Hi" in result.content
+            assert statuses and "Retrying backend" in statuses[0]
 
         import asyncio
         asyncio.run(_run())

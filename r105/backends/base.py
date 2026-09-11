@@ -223,6 +223,7 @@ class BaseClient(abc.ABC):
         tools: list[dict[str, Any]] | None = None,
         client: httpx.AsyncClient | None = None,
         on_chunk: Callable[[str], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
     ) -> ChatResult:
         """Continue conversation after tool results."""
         ...
@@ -235,6 +236,7 @@ class BaseClient(abc.ABC):
         tools: list[dict[str, Any]] | None = None,
         client: httpx.AsyncClient | None = None,
         on_chunk: Callable[[str], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
     ) -> ChatResult:
         """Send a message with SSE streaming."""
         ...
@@ -289,6 +291,7 @@ class BaseClient(abc.ABC):
         payload: dict[str, Any],
         client: httpx.AsyncClient | None,
         on_chunk: Callable[[str], None],
+        on_status: Callable[[str], None] | None = None,
         config_families: dict[str, str | None] | None = None,
     ) -> ChatResult:
         """Shared SSE streaming core used by DirectClient and RouterClient."""
@@ -299,5 +302,6 @@ class BaseClient(abc.ABC):
             timeout=self.timeout,
             client=client,
             on_chunk=on_chunk,
+            on_status=on_status,
             config_families=config_families,
         )

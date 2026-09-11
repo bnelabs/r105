@@ -13,6 +13,12 @@ from r105.state import ChatState
 
 SESSION_DIR = CONFIG_DIR / "sessions"
 
+#: Current on-disk session format version. Bumped whenever the shape
+#: written by :func:`save_session` changes; :func:`load_session` migrates
+#: older files forward via :func:`migrate_session_data` and rejects files
+#: stamped with a *newer* version than this code understands.
+SESSION_FORMAT_VERSION = 1
+
 
 class SessionManager:
     """Thread-safe session manager (replaces the global ``_AUTO_SAVE_ENABLED`` flag).
@@ -74,6 +80,7 @@ class SessionManager:
         self._ensure_dir()
         path = self._session_path(name)
         data: dict[str, Any] = {
+            "version": SESSION_FORMAT_VERSION,
             "history": list(state.history),
             "state": _ser(state),
             "message_count": len(state.history),
@@ -143,6 +150,9 @@ def _serializable_state(state: ChatState) -> dict[str, Any]:
         "quality": state.quality,
         "max_tokens": state.max_tokens,
         "json_mode": state.json_mode,
+        "cache_prompt": state.cache_prompt,
+        "model": state.model,
+        "context_tokens": state.context_tokens,
         "active_skills": state.active_skills,
         "skill_params": state.skill_params,
     }
@@ -155,6 +165,11 @@ def _restore_state(state: ChatState, data: dict[str, Any]) -> None:
     state.quality = saved.get("quality")
     state.max_tokens = saved.get("max_tokens")
     state.json_mode = saved.get("json_mode", False)
+    state.cache_prompt = saved.get("cache_prompt", False)
+    if isinstance(saved.get("model"), str) and saved["model"].strip():
+        state.model = saved["model"]
+    if isinstance(saved.get("context_tokens"), int) and saved["context_tokens"] > 0:
+        state.context_tokens = saved["context_tokens"]
     state.active_skills = saved.get("active_skills") or []
     state.skill_params = saved.get("skill_params") or {}
 
@@ -168,6 +183,7 @@ def save_session(state: ChatState, name: str) -> Path:
     path = _session_path(name)
 
     data: dict[str, Any] = {
+        "version": SESSION_FORMAT_VERSION,
         "history": state.history,
         "state": _serializable_state(state),
         "message_count": len(state.history),
@@ -178,6 +194,53 @@ def save_session(state: ChatState, name: str) -> Path:
     return path
 
 
+def migrate_session_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate a parsed session file dict forward to the current format.
+
+    Files written before versioning carry no ``"version"`` key and are
+    treated as version 0. Each step is applied in order so future format
+    changes only need a new branch here.
+
+    Raises ValueError if the file was written by a *newer* r105 than this
+    code understands (downgrade protection — loading it could corrupt
+    state the old code doesn't know about).
+    """
+    if not isinstance(data, dict):
+        raise ValueError("session file must contain a JSON object")
+    version = data.get("version", 0)
+    if type(version) is not int or version < 0:  # bool is not a valid version stamp
+        raise ValueError(f"session has an invalid version stamp: {version!r}")
+    if version > SESSION_FORMAT_VERSION:
+        raise ValueError(
+            f"session was saved by a newer r105 (format v{version}, "
+            f"this build reads up to v{SESSION_FORMAT_VERSION}) — "
+            "upgrade r105 to open it"
+        )
+    migrated = dict(data)
+    if version == 0:
+        # v0 → v1: identical shape (history/state/message_count/saved_at);
+        # stamp the version so the next load skips migration.
+        migrated["version"] = SESSION_FORMAT_VERSION
+    return migrated
+
+
+def _read_session_data(path: Path) -> dict[str, Any]:
+    """Read and migrate one session file.
+
+    Keeping this boundary shared by load/list/search/diff means a malformed
+    or future-format file is handled consistently across all session views.
+    """
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return migrate_session_data(raw)
+
+
+def _history_from_session(data: dict[str, Any]) -> list[dict[str, Any]]:
+    history = data.get("history")
+    if not isinstance(history, list):
+        return []
+    return [message for message in history if isinstance(message, dict)]
+
+
 def load_session(state: ChatState, name: str) -> int:
     """Load a saved session, replacing the current conversation history.
 
@@ -185,13 +248,14 @@ def load_session(state: ChatState, name: str) -> int:
 
     Raises FileNotFoundError if the session doesn't exist.
     Raises json.JSONDecodeError if the file is corrupted.
+    Raises ValueError if the file uses a newer session format.
     """
     path = _session_path(name)
     if not path.is_file():
         raise FileNotFoundError(f"session not found: {name}")
 
-    data = json.loads(path.read_text(encoding="utf-8"))
-    history = data.get("history") or []
+    data = _read_session_data(path)
+    history = _history_from_session(data)
 
     state.history.clear()
     state.history.extend(history)
@@ -211,11 +275,11 @@ def list_sessions() -> list[dict[str, Any]]:
 
     for path in sorted(SESSION_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            data = _read_session_data(path)
+        except (json.JSONDecodeError, OSError, ValueError):
             continue
 
-        history = data.get("history") or []
+        history = _history_from_session(data)
         preview = ""
         for msg in history:
             if msg.get("role") == "user":
@@ -232,6 +296,59 @@ def list_sessions() -> list[dict[str, Any]]:
         })
 
     return sessions
+
+
+def search_sessions(
+    query: str, *, limit: int = 20, snippets_per_session: int = 3
+) -> list[dict[str, Any]]:
+    """Full-text search across saved sessions (case-insensitive substring).
+
+    Scans every message in every session file and returns at most *limit*
+    sessions that contain *query*, most recently saved first. Each entry is
+    a dict with: name, saved_at, message_count, and matches — a list of up
+    to *snippets_per_session* ``{"role": ..., "snippet": ...}`` dicts with
+    ~60 characters of context around the hit. Corrupt files are skipped.
+    """
+    normalized_query = query.strip()
+    needle = normalized_query.lower()
+    if not needle or limit <= 0 or snippets_per_session <= 0:
+        return []
+    _ensure_dir()
+    hits: list[dict[str, Any]] = []
+
+    for path in sorted(SESSION_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        if len(hits) >= limit:
+            break
+        try:
+            data = _read_session_data(path)
+        except (json.JSONDecodeError, OSError, ValueError):
+            continue
+        history = _history_from_session(data)
+        matches: list[dict[str, str]] = []
+        for msg in history:
+            if len(matches) >= snippets_per_session:
+                break
+            content = str(msg.get("content", ""))
+            idx = content.lower().find(needle)
+            if idx == -1:
+                continue
+            start = max(0, idx - 60)
+            end = min(len(content), idx + len(normalized_query) + 60)
+            snippet = " ".join(content[start:end].split())
+            if start > 0:
+                snippet = "…" + snippet
+            if end < len(content):
+                snippet += "…"
+            matches.append({"role": str(msg.get("role", "?")), "snippet": snippet})
+        if matches:
+            hits.append({
+                "name": path.stem,
+                "saved_at": data.get("saved_at", "unknown"),
+                "message_count": len(history),
+                "matches": matches,
+            })
+
+    return hits
 
 
 def delete_session(name: str) -> bool:
@@ -255,8 +372,8 @@ def diff_session(state: ChatState, name: str) -> str:
     path = _session_path(name)
     if not path.is_file():
         raise FileNotFoundError(f"session not found: {name}")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    saved_history: list[dict[str, Any]] = data.get("history") or []
+    data = _read_session_data(path)
+    saved_history = _history_from_session(data)
     saved_state: dict[str, Any] = data.get("state") or {}
 
     lines = [f"diff vs saved session '{name}':"]

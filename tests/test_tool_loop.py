@@ -1,6 +1,8 @@
 """Tool-loop mechanics tests (pure logic extracted to r105.tool_loop)."""
 
+import asyncio
 import json
+import time
 
 from r105.constants import (
     MAX_REPEATED_TOOL_CALLS,
@@ -14,6 +16,7 @@ from r105.tool_loop import (
     LoopDedupTracker,
     exception_result,
     parse_tool_signatures,
+    run_tools_parallel,
     timeout_result,
     tool_timeout,
 )
@@ -100,3 +103,43 @@ class TestTimeouts:
         result = exception_result(tc, "calculate", ValueError("boom"))
         assert result["content"] == "error: boom"
         assert result["name"] == "calculate"
+
+
+class TestParallelExecution:
+    def test_preserves_order_and_isolates_failures(self):
+        calls = [
+            _tc("first", "{}"),
+            _tc("fails", "{}"),
+            _tc("last", "{}"),
+        ]
+        signatures = parse_tool_signatures(calls)
+
+        def execute(call):
+            name = call["function"]["name"]
+            if name == "fails":
+                raise ValueError("broken tool")
+            return {"role": "tool", "name": name, "content": name}
+
+        outcomes = asyncio.run(
+            run_tools_parallel(signatures, execute, timeout_fn=lambda _name: 1.0)
+        )
+
+        assert [result["name"] for result, _error in outcomes] == ["first", "fails", "last"]
+        assert outcomes[0][1] is None
+        assert isinstance(outcomes[1][1], ValueError)
+        assert outcomes[1][0]["content"] == "error: broken tool"
+        assert outcomes[2][1] is None
+
+    def test_timeout_becomes_a_tool_result(self):
+        signatures = parse_tool_signatures([_tc("slow", "{}")])
+
+        def execute(_call):
+            time.sleep(0.05)
+            return {"role": "tool", "name": "slow", "content": "late"}
+
+        outcomes = asyncio.run(
+            run_tools_parallel(signatures, execute, timeout_fn=lambda _name: 0.001)
+        )
+
+        assert outcomes[0][1] is None
+        assert "timed out" in outcomes[0][0]["content"]

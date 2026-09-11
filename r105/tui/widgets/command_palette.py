@@ -17,6 +17,7 @@ COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     ("Chat", "/quality", "fast|balanced|best", "Set quality hint metadata"),
     ("Chat", "/json", "[on|off]", "Toggle JSON object response mode"),
     ("Chat", "/max", "<tokens>", "Override max_tokens, or omit for auto"),
+    ("Chat", "/cache-prompt", "[on|off]", "Enable llama.cpp prompt-prefix caching"),
     ("Chat", "/autocompact", "[on|off]", "Toggle auto-compaction at 80% context"),
     ("Chat", "/reasoning", "auto|off|low|medium|high", "Set reasoning effort (sent to model-capable backends)"),
     ("Chat", "/permissions", "full-access|restricted|sandboxed|off", "Set permission posture for tool execution"),

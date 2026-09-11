@@ -36,12 +36,15 @@ python -m pytest tests/ --cov=r105 --cov-report=term-missing
 |------|---------------|
 | `tests/test_client.py` | RouterClient helpers: `_build_payload`, `_parse_response`, `_extract_tool_calls` |
 | `tests/test_client_chaos.py` | Error handling, malformed SSE, streaming retries |
+| `tests/test_errors.py` | Actionable backend error messages |
 | `tests/test_integration.py` | Full async flows with mocked HTTP responses (`pytest-httpx`) |
 | `tests/test_commands.py` | Slash command handlers and state mutations |
 | `tests/test_tools.py` | Tool execution, sandbox, safe math evaluator, unit conversion |
 | `tests/test_state.py` | ChatState, TokenUsage, token estimation |
 | `tests/test_skills.py` | Skill file listing, reading, parameter substitution |
 | `tests/test_config.py` | Config validation (manual + pydantic schema) |
+| `tests/test_plugin_compat.py` | Plugin host/dependency compatibility and reload draining |
+| `tests/test_session_version_search.py` | Session migration, search, and state round-trips |
 | `tests/test_model_catalog.py` | Model family/context resolution and overrides |
 | `tests/test_reasoning_permissions.py` | Reasoning effort and permission posture handling |
 | `tests/test_sessions_export_guard.py` | Optional export-dependency guard |

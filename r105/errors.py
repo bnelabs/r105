@@ -6,6 +6,8 @@ can handle specific error categories without parsing strings.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class R105Error(Exception):
     """Base for all r105-specific exceptions.
@@ -33,6 +35,32 @@ class RouterAPIError(R105Error):
         super().__init__(message)
         self.status_code = status_code
         self.response_body = response_body
+
+
+def format_request_error(exc: BaseException, *, action: str = "Request") -> str:
+    """Turn common backend failures into actionable TUI/CLI text."""
+    status: int | None = None
+    if isinstance(exc, RouterAPIError):
+        status = exc.status_code
+    else:
+        response: Any = getattr(exc, "response", None)
+        candidate = getattr(response, "status_code", None)
+        if isinstance(candidate, int):
+            status = candidate
+
+    if status in {401, 403}:
+        return f"{action} failed: authentication was rejected (check the API key or backend auth)"
+    if status == 404:
+        return f"{action} failed: endpoint was not found (check the backend URL)"
+    if status == 429:
+        return f"{action} failed: backend rate limited the request (wait and retry)"
+    if status is not None and 500 <= status <= 599:
+        return f"{action} failed: backend server error {status} (check llama-router or wait and retry)"
+
+    name = type(exc).__name__
+    if name in {"ConnectError", "ConnectTimeout", "PoolTimeout", "ReadTimeout", "WriteTimeout"}:
+        return f"{action} failed: backend is unreachable or timed out (check the URL and service)"
+    return f"{action} failed: {exc}"
 
 
 # -- Tools ---------------------------------------------------------------

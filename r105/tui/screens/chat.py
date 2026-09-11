@@ -19,16 +19,15 @@ from r105.constants import (
     AUTO_COMPACT_THRESHOLD_PCT,
     MAX_TOOL_LOOP_ITERATIONS,
 )
+from r105.errors import format_request_error
 from r105.model_catalog import uses_gemma4_channel_syntax
 from r105.sandbox import weak_backend_warning
 from r105.sessions import auto_save
 from r105.state import ChatState, token_usage
 from r105.tool_loop import (
     LoopDedupTracker,
-    exception_result,
     parse_tool_signatures,
-    timeout_result,
-    tool_timeout,
+    run_tools_parallel,
 )
 from r105.tools import execute_tool_call, get_tool_definitions
 from r105.tui.widgets.chat_view import ChatView
@@ -306,6 +305,7 @@ class ChatScreen(Screen[None]):
             result = await self.client.async_send_streaming(
                 message, self.state, tools, self._http,
                 on_chunk=lambda token: chat_view.stream_chunk(token),
+                on_status=lambda status: status_bar.set_busy(status),
             )
         except asyncio.CancelledError:
             # User pressed Esc: leave a distinct marker so the transcript
@@ -318,7 +318,7 @@ class ChatScreen(Screen[None]):
             self._refresh_all()
             return
         except Exception as exc:
-            chat_view.add_error(f"Send failed: {exc}")
+            chat_view.add_error(format_request_error(exc, action="Send"))
             self._refresh_all()
             return
         finally:
@@ -350,6 +350,7 @@ class ChatScreen(Screen[None]):
                 call_keys.append((name, args_str))
                 is_stuck, is_repeat = tracker.check(name, args_str)
                 if is_stuck:
+                    stuck = True
                     count = tracker.count_for(name, args_str)
                     chat_view.add_system(
                         f"[bold red]🛑 Repeated call to {name} ({count}x) — "
@@ -370,28 +371,15 @@ class ChatScreen(Screen[None]):
                 break
 
             # Phase 2: Execute all tools in parallel via thread pool with timeouts
-            async def _exec_one(tc: dict[str, Any]) -> dict[str, Any]:
-                func = tc.get("function", {})
-                tool_name = func.get("name", "unknown")
-                timeout = tool_timeout(tool_name)
-                try:
-                    return await asyncio.wait_for(
-                        asyncio.to_thread(execute_tool_call, tc, self.workspace),
-                        timeout=timeout,
-                    )
-                except TimeoutError:
-                    return timeout_result(tc, tool_name, timeout)
-
-            tool_results = await asyncio.gather(
-                *[_exec_one(tc) for tc, _name, _args_str in signatures],
-                return_exceptions=True,
+            outcomes = await run_tools_parallel(
+                signatures,
+                lambda tc: execute_tool_call(tc, self.workspace),
             )
 
             # Phase 3: Process results and update history
-            for (tc, name, args_str), tool_result_msg in zip(signatures, tool_results, strict=True):
-                if isinstance(tool_result_msg, BaseException):
-                    chat_view.add_error(f"Tool {name} failed: {tool_result_msg}")
-                    tool_result_msg = exception_result(tc, name, tool_result_msg)
+            for (_tc, name, args_str), (tool_result_msg, tool_error) in zip(signatures, outcomes, strict=True):
+                if tool_error is not None:
+                    chat_view.add_error(f"Tool {name} failed: {tool_error}")
                 # If this is a duplicate, append a warning to the tool result
                 if tracker.is_duplicate_result(name, args_str):
                     original = tool_result_msg.get("content", "")
@@ -411,6 +399,7 @@ class ChatScreen(Screen[None]):
                     tools,
                     self._http,
                     on_chunk=lambda token: chat_view.stream_chunk(token),
+                    on_status=lambda status: status_bar.set_busy(status),
                 )
             except asyncio.CancelledError:
                 try:
@@ -421,7 +410,7 @@ class ChatScreen(Screen[None]):
                 self._refresh_all()
                 return
             except Exception as exc:
-                chat_view.add_error(f"Tool loop error: {exc}")
+                chat_view.add_error(format_request_error(exc, action="Tool loop"))
                 self._refresh_all()
                 return
             finally:

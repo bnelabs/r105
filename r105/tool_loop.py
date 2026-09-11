@@ -8,8 +8,10 @@ the synthetic result messages for timeouts, crashes, and loop breaks.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 
 from r105.constants import (
@@ -128,3 +130,41 @@ def exception_result(tc: dict[str, Any], tool_name: str, exc: BaseException) -> 
         "name": tool_name,
         "content": f"error: {exc}",
     }
+
+
+async def run_tools_parallel(
+    signatures: list[ToolSignature],
+    executor: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    timeout_fn: Callable[[str], float] = tool_timeout,
+) -> list[tuple[dict[str, Any], BaseException | None]]:
+    """Execute tool calls concurrently, isolating per-tool failures.
+
+    Each call runs in a worker thread with its own timeout. Returns
+    ``(result, error)`` pairs in input order: timeouts and successes carry
+    ``error=None`` (timeouts become :func:`timeout_result`), while a raised
+    exception becomes :func:`exception_result` with the original exception
+    attached so the caller can surface it (e.g. a "Tool X failed" toast).
+    One tool crashing never cancels or corrupts its siblings.
+    """
+    async def _one(tc: dict[str, Any], name: str) -> dict[str, Any]:
+        timeout = timeout_fn(name)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(executor, tc),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            return timeout_result(tc, name, timeout)
+
+    raw = await asyncio.gather(
+        *[_one(tc, name) for tc, name, _ in signatures],
+        return_exceptions=True,
+    )
+    outcomes: list[tuple[dict[str, Any], BaseException | None]] = []
+    for (tc, name, _), result in zip(signatures, raw, strict=True):
+        if isinstance(result, BaseException):
+            outcomes.append((exception_result(tc, name, result), result))
+        else:
+            outcomes.append((result, None))
+    return outcomes

@@ -32,6 +32,10 @@ class ChatState:
     max_tokens: int | None = None
     json_mode: bool = False
     auto_compact: bool = True
+    # llama.cpp accepts this optional request flag to reuse the stable prompt
+    # prefix. It is opt-in because other OpenAI-compatible providers may
+    # reject unknown request fields.
+    cache_prompt: bool = False
     theme: str = "r105"
     model: str = DEFAULT_MODEL
     reasoning_effort: str = "auto"
