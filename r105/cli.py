@@ -14,6 +14,7 @@ import httpx
 from r105 import __version__
 from r105.client import BaseClient, Client, create_client
 from r105.config import ensure_config, export_config_schema, load_state_overrides
+from r105.connections import get_connection_preset, resolve_api_key
 from r105.mcp_client import load_mcp_servers
 from r105.model_catalog import resolve_context_tokens
 from r105.plugins import init_registry
@@ -214,7 +215,9 @@ def main(argv: list[str] | None = None) -> int:
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # Create the API client (auto-detects router vs direct)
-    client = create_client(base_url=url, backend=backend_name)
+    configured_provider = get_connection_preset(config.get("provider"))
+    api_key = resolve_api_key(configured_provider) if configured_provider is not None else None
+    client = create_client(base_url=url, backend=backend_name, api_key=api_key)
 
     # Load state-level overrides from config, then apply CLI args on top
     state_overrides = load_state_overrides()

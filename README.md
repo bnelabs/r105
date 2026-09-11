@@ -222,13 +222,19 @@ llama-router default. Override the mode with `--backend router` or
 
 ### Connecting from the TUI
 
-Press `/` and type `/connect` to open the provider command, or type one of
-these commands directly. The optional second argument overrides the preset
-base URL. API keys are read from the environment and are never accepted as
-slash-command arguments or written to `config.json`.
+Press `/` and type `/connect` to open the guided connection screen. Select a
+predefined local or cloud provider, paste an API key when it is required, let
+r105 load the provider's model list, and select the model to use. Entered keys
+remain in memory for the current session and are never written to
+`config.json`; set the provider's environment variable when you want
+non-interactive or persistent startup authentication. The commands below are
+still available for scripted use, and the optional second argument overrides a
+preset base URL.
 
 | Command | Mode | Default base URL | Credential |
 |---------|------|------------------|------------|
+| `/connect opencode` | direct | `https://opencode.ai/zen/v1` | `OPENCODE_API_KEY` |
+| `/connect opencode-go` | direct | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` |
 | `/connect llamacpp` | direct | `http://127.0.0.1:8080/v1` | none |
 | `/connect ollama` | direct | `http://127.0.0.1:11434/v1` | none |
 | `/connect lmstudio` | direct | `http://127.0.0.1:1234/v1` | none |
@@ -249,9 +255,10 @@ r105 chat
 # In the TUI: /connect llamacpp
 ```
 
-`/provider` is an alias for `/connect`; `/connect status` shows the active
-mode and URL. The provider switch is applied to the running TUI immediately,
-and `/health` checks the newly selected backend.
+`/provider` is an alias for the guided `/connect` setup. `/connect status`
+shows the active mode and URL. The provider switch is applied to the running
+TUI only after the model list loads successfully, and `/health` checks the
+newly selected backend.
 
 ### Backend Capabilities
 
@@ -349,8 +356,8 @@ Press `/` to open the interactive command palette with:
 | `/reasoning auto\|off\|low\|medium\|high` | Set reasoning effort (sent to capable backends) |
 | `/permissions <posture>` | Set tool-execution posture (`full-access\|restricted\|sandboxed\|off`) |
 | `/approve execute_python` | One-time approval for code execution (this session) |
-| `/connect <provider> [base-url]` | Switch live to a local or cloud OpenAI-compatible provider |
-| `/provider <provider> [base-url]` | Alias for `/connect` |
+| `/connect [provider] [base-url]` | Guided provider/key/model setup, or scripted provider switch |
+| `/provider [provider] [base-url]` | Alias for `/connect` |
 | `/copy` | Copy last assistant message to system clipboard |
 
 #### Skills

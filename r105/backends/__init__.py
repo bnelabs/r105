@@ -20,6 +20,7 @@ BACKEND_DIRECT = "direct"
 def create_client(
     base_url: str | None = None,
     backend: str | None = None,
+    api_key: str | None = None,
     timeout: float = DEFAULT_HTTP_TIMEOUT,
 ) -> BaseClient:
     """Create the best available backend client.
@@ -39,7 +40,7 @@ def create_client(
         return RouterClient(base_url=base_url, timeout=timeout)
 
     if backend == "direct":
-        return DirectClient(base_url=base_url, timeout=timeout)
+        return DirectClient(base_url=base_url, api_key=api_key, timeout=timeout)
 
     # Auto-detect
     router_url = base_url or os.environ.get("R105_URL")
@@ -47,7 +48,7 @@ def create_client(
         return RouterClient(base_url=router_url, timeout=timeout)
 
     # Fallback to OpenAI-compatible
-    return DirectClient(base_url=base_url, timeout=timeout)
+    return DirectClient(base_url=base_url, api_key=api_key, timeout=timeout)
 
 
 __all__ = [

@@ -93,7 +93,11 @@ class TestConnectCommands:
         assert "provider=ollama" in result
         assert "connection switched live" in result
         saved = json.loads(config_path.read_text(encoding="utf-8"))
-        assert saved == {"backend": "direct", "url": "http://127.0.0.1:11434/v1"}
+        assert saved == {
+            "backend": "direct",
+            "url": "http://127.0.0.1:11434/v1",
+            "provider": "ollama",
+        }
 
     def test_connect_llamacpp_uses_openai_compatible_endpoint(self, state, tmp_path, monkeypatch):
         config_path = self._use_config(tmp_path, monkeypatch)
@@ -102,7 +106,11 @@ class TestConnectCommands:
 
         assert "provider=llamacpp" in result
         saved = json.loads(config_path.read_text(encoding="utf-8"))
-        assert saved == {"backend": "direct", "url": "http://127.0.0.1:8080/v1"}
+        assert saved == {
+            "backend": "direct",
+            "url": "http://127.0.0.1:8080/v1",
+            "provider": "llamacpp",
+        }
 
     def test_provider_alias_never_echoes_api_key(self, state, tmp_path, monkeypatch):
         config_path = self._use_config(tmp_path, monkeypatch)

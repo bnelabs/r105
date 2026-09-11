@@ -7,10 +7,13 @@ thinking capture-and-fold behavior.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
+import httpx
 from textual.app import App
-from textual.widgets import Static
+from textual.widgets import Select, Static
 
+from r105.tui.screens.connection_screen import ConnectionScreen
 from r105.tui.screens.help_screen import HelpScreen
 from r105.tui.widgets.chat_view import ChatView
 
@@ -191,6 +194,63 @@ class TestStartupFocus:
                 await pilot.press("h", "e", "l", "l", "o")
                 await pilot.pause()
                 assert input_widget.text == "hello"
+
+        asyncio.run(scenario())
+
+
+class TestConnectionScreen:
+    """The guided connect flow verifies a provider before applying it."""
+
+    def test_provider_selection_loads_models_before_apply(self, monkeypatch, tmp_path) -> None:
+        from r105 import config as r105_config
+        from r105.client import DirectClient
+        from r105.state import ChatState
+        from r105.tui.app import R105App
+        from r105.tui.screens.chat import ChatScreen
+        from r105.tui.widgets.chat_view import ChatView
+
+        monkeypatch.setattr(r105_config, "CONFIG_DIR", tmp_path)
+        monkeypatch.setattr(r105_config, "CONFIG_PATH", tmp_path / "config.json")
+
+        async def scenario() -> None:
+            app = R105App(
+                DirectClient(base_url="http://127.0.0.1:8090", timeout=1),
+                ChatState(model="old-model"),
+                Path("/tmp"),
+            )
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                return httpx.Response(
+                    200,
+                    json={"data": [{"id": "model-a"}, {"id": "model-b"}]},
+                    request=request,
+                )
+
+            app.chat_screen._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            async with app.run_test(size=(100, 30)) as pilot:
+                for _ in range(50):
+                    await pilot.pause()
+                    if isinstance(app.screen, ChatScreen):
+                        break
+                chat = app.screen
+                await chat._execute_slash_command(
+                    "/connect", chat.query_one("#chat-view", ChatView)
+                )
+                await pilot.pause()
+                assert isinstance(app.screen, ConnectionScreen)
+
+                screen = app.screen
+                screen.query_one("#connection-provider", Select).value = "ollama"
+                await pilot.pause()
+                screen._load_models()
+                await pilot.pause(1)
+
+                assert screen._models == ["model-a", "model-b"]
+                assert screen._candidate is not None
+                screen._apply_connection()
+                await pilot.pause()
+                assert isinstance(app.screen, ChatScreen)
+                assert app.screen.state.model == "model-a"
 
         asyncio.run(scenario())
 

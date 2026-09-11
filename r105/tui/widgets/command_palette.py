@@ -23,8 +23,8 @@ COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     ("Chat", "/autocompact", "[on|off]", "Toggle auto-compaction at 80% context"),
     ("Chat", "/reasoning", "auto|off|low|medium|high", "Set reasoning effort (sent to model-capable backends)"),
     ("Chat", "/permissions", "full-access|restricted|sandboxed|off", "Set permission posture for tool execution"),
-    ("System", "/connect", "<provider> [base-url]", "Connect to a local or cloud OpenAI-compatible provider"),
-    ("System", "/provider", "<provider> [base-url]", "Alias for /connect"),
+    ("System", "/connect", "", "Choose a provider, enter a key if needed, and load models"),
+    ("System", "/provider", "", "Alias for the guided /connect setup"),
     # Skills
     ("Skills", "/skills", "", "List available skill files"),
     ("Skills", "/skill use", "<name> [key=val...]", "Add a skill with optional params"),

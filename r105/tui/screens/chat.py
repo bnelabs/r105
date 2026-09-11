@@ -17,7 +17,8 @@ from textual.widgets import Static
 
 from r105.client import BaseClient, Client, create_client
 from r105.commands import copy_to_clipboard, handle_slash_command
-from r105.config import ensure_config
+from r105.config import ensure_config, save_config
+from r105.connections import ConnectionPreset, get_connection_preset, resolve_api_key
 from r105.constants import (
     AUTO_COMPACT_THRESHOLD_PCT,
     MAX_TOOL_LOOP_ITERATIONS,
@@ -26,7 +27,7 @@ from r105.errors import format_request_error
 from r105.model_catalog import uses_gemma4_channel_syntax
 from r105.sandbox import current_backend_name, weak_backend_warning
 from r105.sessions import auto_save
-from r105.state import ChatState, token_usage
+from r105.state import ChatState, invalidate_backend_usage, token_usage
 from r105.tool_loop import (
     LoopDedupTracker,
     parse_tool_signatures,
@@ -77,6 +78,10 @@ class ChatScreen(Screen[None]):
         self._http = httpx.AsyncClient()
         self._active_worker: Any | None = None
         self._tool_batch_task: asyncio.Task[Any] | None = None
+        configured = ensure_config()
+        self._connection_provider: str | None = configured.get("provider")
+        backend = getattr(client, "backend", client)
+        self._connection_api_key: str | None = getattr(backend, "api_key", None)
         self._backend_health = "checking"
         self._sandbox_backend = current_backend_name() or "auto"
         self._workspace_status = "ok" if os.access(self.workspace, os.W_OK) else "unwritable"
@@ -225,6 +230,9 @@ class ChatScreen(Screen[None]):
 
     async def _execute_slash_command(self, text: str, chat_view: ChatView) -> None:
         """Execute a slash command, handle theme changes, and exit requests."""
+        if text.strip().lower() in {"/connect", "/provider"}:
+            self._open_connection_screen()
+            return
         old_theme = self.state.theme
         result = await handle_slash_command(
             text, self.state, self.client, self.workspace, http_client=self._http
@@ -263,10 +271,15 @@ class ChatScreen(Screen[None]):
         """Apply the provider selected by /connect to the live TUI."""
         try:
             config = ensure_config(strict=True)
+            preset = get_connection_preset(config.get("provider"))
+            api_key = resolve_api_key(preset) if preset is not None else None
             self.client = create_client(
                 base_url=config.get("url"),
                 backend=config.get("backend"),
+                api_key=api_key,
             )
+            self._connection_provider = config.get("provider")
+            self._connection_api_key = getattr(self.client.backend, "api_key", None)
             if hasattr(self.app, "r105_client"):
                 self.app.r105_client = self.client
             self._backend_health = "checking"
@@ -274,6 +287,48 @@ class ChatScreen(Screen[None]):
             self._refresh_all()
         except (OSError, ValueError) as exc:
             self._notify(f"Provider switch failed: {exc}", severity="error")
+
+    def _open_connection_screen(self) -> None:
+        """Open the guided provider, credential, and model setup screen."""
+        from r105.tui.screens.connection_screen import ConnectionScreen
+
+        self.app.push_screen(ConnectionScreen(self))
+
+    def apply_connection(
+        self,
+        preset: ConnectionPreset,
+        base_url: str,
+        api_key: str | None,
+        model: str,
+        candidate: BaseClient | Client,
+    ) -> str:
+        """Apply a verified connection and persist only non-secret metadata."""
+        save_config(
+            {
+                "backend": preset.backend,
+                "url": base_url.rstrip("/"),
+                "provider": preset.id,
+                "model": model,
+            }
+        )
+        self.client = candidate
+        self._connection_provider = preset.id
+        self._connection_api_key = api_key
+        self.state.model = model
+        invalidate_backend_usage(self.state)
+        try:
+            chat_view = self.query_one("#chat-view", ChatView)
+            chat_view.set_gemma4_channel_syntax(
+                uses_gemma4_channel_syntax(self.state.model, self.state.model_families)
+            )
+        except Exception:
+            pass
+        if hasattr(self.app, "r105_client"):
+            self.app.r105_client = self.client
+        self._backend_health = "checking"
+        self._start_health_check()
+        self._refresh_all()
+        return f"connected to {preset.label}; model={model} (API key stays in this session)"
 
     async def on_chat_input_chat_submitted(self, event: ChatInput.ChatSubmitted) -> None:
         """Handle a normal (non-slash) message submission."""
