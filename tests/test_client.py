@@ -83,6 +83,11 @@ class TestBuildPayload:
         payload = _build_payload("hello", chat_state)
         assert payload["response_format"] == {"type": "json_object"}
 
+    def test_prompt_cache_is_opt_in(self, chat_state: ChatState) -> None:
+        assert "cache_prompt" not in _build_payload("hello", chat_state)
+        chat_state.cache_prompt = True
+        assert _build_payload("hello", chat_state)["cache_prompt"] is True
+
     def test_payload_metadata_not_injected_by_default(self, chat_state: ChatState) -> None:
         """Metadata is a RouterClient concern; _build_payload is backend-agnostic."""
         chat_state.profile = "coding"

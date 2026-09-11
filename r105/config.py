@@ -7,6 +7,7 @@ CLI arguments override config file values.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "profile": None,
     "model": None,
     "auto_compact": True,
+    "cache_prompt": False,
     "sandbox_backend": "auto",
     "permission_posture": "sandboxed",
     "reasoning_effort": "auto",
@@ -41,6 +43,16 @@ VALID_THEMES = {"r105", "dracula", "solarized-dark", "high-contrast"}
 VALID_SANDBOX_BACKENDS = {"auto", "nsjail", "bwrap", "docker", "rlimit", "none"}
 VALID_PERMISSION_POSTURES = {"full-access", "restricted", "sandboxed", "off"}
 VALID_REASONING_EFFORTS = {"auto", "off", "low", "medium", "high"}
+
+
+def strict_config_enabled() -> bool:
+    """Return whether invalid config should fail startup instead of falling back."""
+    return os.environ.get("R105_STRICT_CONFIG", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 # -- Declarative schema via pydantic (preferred) with manual fallback --------
@@ -74,6 +86,7 @@ if _PYDANTIC_AVAILABLE:
         profile: str | None = None
         model: str | None = None
         auto_compact: bool = True
+        cache_prompt: bool = False
         sandbox_backend: str | None = "auto"
         permission_posture: str | None = "sandboxed"
         reasoning_effort: str | None = "auto"
@@ -174,6 +187,9 @@ def _validate_config_manual(raw: dict[str, Any]) -> None:
     if "auto_compact" in raw and not isinstance(raw["auto_compact"], bool):
         raise ValueError("auto_compact must be true or false")
 
+    if "cache_prompt" in raw and not isinstance(raw["cache_prompt"], bool):
+        raise ValueError("cache_prompt must be true or false")
+
     if (
         "permission_posture" in raw
         and raw["permission_posture"] is not None
@@ -265,13 +281,84 @@ def ensure_config() -> dict[str, Any]:
                 _validate_config(raw)
             except ValueError:
                 # Invalid config file - ignore it and fall back to defaults
-                # Validation errors will be caught on save
+                # unless strict mode was requested explicitly.
+                if strict_config_enabled():
+                    raise
                 return config
             if isinstance(raw, dict):
                 config.update(raw)
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, OSError) as exc:
+            if strict_config_enabled():
+                raise ValueError(f"cannot read config at {CONFIG_PATH}: {exc}") from exc
     return config
+
+
+def config_schema() -> dict[str, Any]:
+    """Return the supported ``config.json`` shape as JSON Schema."""
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "r105 configuration",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "theme": {"type": ["string", "null"], "enum": [*sorted(VALID_THEMES), None], "default": "r105"},
+            "workspace": {"type": ["string", "null"], "default": DEFAULT_CONFIG["workspace"]},
+            "skills_dir": {"type": ["string", "null"], "default": DEFAULT_CONFIG["skills_dir"]},
+            "plugins_dir": {"type": ["string", "null"], "default": DEFAULT_CONFIG["plugins_dir"]},
+            "quality": {"type": ["string", "null"], "default": None},
+            "profile": {"type": ["string", "null"], "default": None},
+            "model": {"type": ["string", "null"], "default": None},
+            "auto_compact": {"type": "boolean", "default": True},
+            "cache_prompt": {"type": "boolean", "default": False},
+            "sandbox_backend": {
+                "type": ["string", "null"],
+                "enum": [*sorted(VALID_SANDBOX_BACKENDS), None],
+                "default": "auto",
+            },
+            "permission_posture": {
+                "type": ["string", "null"],
+                "enum": [*sorted(VALID_PERMISSION_POSTURES), None],
+                "default": "sandboxed",
+            },
+            "reasoning_effort": {
+                "type": ["string", "null"],
+                "enum": [*sorted(VALID_REASONING_EFFORTS), None],
+                "default": "auto",
+            },
+            "show_thinking": {"type": "boolean", "default": True},
+            "thinking_default_expanded": {"type": "boolean", "default": False},
+            "model_contexts": {
+                "type": "object",
+                "additionalProperties": {"type": "integer", "minimum": 1},
+                "default": {},
+            },
+            "context_tokens": {"type": ["integer", "null"], "minimum": 1, "default": None},
+            "model_families": {
+                "type": "object",
+                "additionalProperties": {"type": ["string", "null"]},
+                "default": {},
+            },
+            "mcp_servers": {
+                "type": "array",
+                "items": {"type": "object"},
+                "default": [],
+            },
+            "url": {"type": ["string", "null"], "default": None},
+            "allow_plugin_overrides": {"type": "boolean", "default": False},
+            "docker_image": {"type": ["string", "null"], "default": None},
+            "auto_approve_execute_python": {"type": "boolean", "default": False},
+        },
+    }
+
+
+def export_config_schema(path: Path | None = None) -> dict[str, Any]:
+    """Return the config schema and optionally write it as a JSON file."""
+    schema = config_schema()
+    if path is not None:
+        output = Path(path).expanduser()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return schema
 
 
 def save_config(overrides: dict[str, Any]) -> None:
@@ -305,6 +392,8 @@ def load_state_overrides() -> dict[str, Any]:
         overrides["model"] = config["model"]
     if "auto_compact" in config:
         overrides["auto_compact"] = config["auto_compact"]
+    if "cache_prompt" in config:
+        overrides["cache_prompt"] = config["cache_prompt"]
     if config.get("reasoning_effort") is not None:
         overrides["reasoning_effort"] = config["reasoning_effort"]
     if config.get("permission_posture") is not None:

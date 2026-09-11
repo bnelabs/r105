@@ -48,6 +48,7 @@ from r105.sessions import (
     list_sessions,
     load_session,
     save_session,
+    search_sessions,
 )
 from r105.skills import list_skills, read_skill
 from r105.state import (
@@ -73,6 +74,7 @@ SLASH_COMMANDS = [
     "/quality",
     "/json",
     "/max",
+    "/cache-prompt",
     "/skills",
     "/skill",
     "/health",
@@ -188,6 +190,7 @@ Chat
   /quality fast|balanced|best    set quality hint metadata
   /json [on|off]                 toggle JSON response mode
   /max <tokens>                  override max_tokens, or omit for auto
+  /cache-prompt [on|off]         enable llama.cpp prompt-prefix caching
   /autocompact [on|off]          toggle auto-compaction at 80% context
   /reasoning auto|off|low|med..  set reasoning effort (model-provided)
   /permissions <posture>         set permission posture (full-access|restricted|sandboxed|off)
@@ -207,6 +210,7 @@ Sessions
   /session save <name>           save conversation to a session file
   /session load <name>           load and restore a saved session
   /session list                  list saved sessions
+  /session search <query>        full-text search across saved sessions
   /session delete <name>         delete a saved session
   /export markdown|json|html     export conversation to a file
   /plugin list                   list loaded custom tool plugins
@@ -333,6 +337,15 @@ async def _cmd_max(ctx: CommandContext) -> str:
     except ValueError:
         return "usage: /max <tokens>"
     return f"max_tokens={ctx.state.max_tokens}"
+
+
+async def _cmd_cache_prompt(ctx: CommandContext) -> str:
+    ctx.state.cache_prompt = _apply_bool_toggle(ctx.args, ctx.state.cache_prompt)
+    save_config({"cache_prompt": ctx.state.cache_prompt})
+    return (
+        f"cache_prompt={ctx.state.cache_prompt} (saved persistently; "
+        "use with a llama.cpp-compatible backend)"
+    )
 
 
 async def _cmd_health(ctx: CommandContext) -> str:
@@ -523,6 +536,7 @@ COMMAND_DISPATCH: dict[str, CommandHandler] = {
     "/quality": _cmd_quality,
     "/json": _cmd_json,
     "/max": _cmd_max,
+    "/cache-prompt": _cmd_cache_prompt,
     "/health": _cmd_health,
     "/profiles": _cmd_profiles,
     "/skills": _cmd_skills,
@@ -624,9 +638,9 @@ def _handle_skill_command(args: list[str], state: ChatState) -> str:
 
 
 def _handle_session_command(args: list[str], state: ChatState) -> str:
-    """Handle /session save|load|list|delete commands."""
+    """Handle /session save|load|list|search|delete commands."""
     if not args:
-        return "usage: /session save|load|list|delete"
+        return "usage: /session save|load|list|search|delete"
 
     action = args[0]
 
@@ -656,6 +670,8 @@ def _handle_session_command(args: list[str], state: ChatState) -> str:
             return f"session loaded: {name} ({count} messages restored)\n{summary}"
         except (json.JSONDecodeError, OSError) as exc:
             return f"session load failed: {exc}"
+        except ValueError as exc:
+            return f"session load failed: {exc}"
 
     if action == "list":
         sessions = list_sessions()
@@ -672,6 +688,19 @@ def _handle_session_command(args: list[str], state: ChatState) -> str:
                 lines.append(f"    {preview}")
         return "\n".join(lines)
 
+    if action == "search":
+        if len(args) < 2:
+            return "usage: /session search <query>"
+        hits = search_sessions(" ".join(args[1:]))
+        if not hits:
+            return "no sessions match"
+        lines = [f"{len(hits)} session(s) match:"]
+        for hit in hits:
+            lines.append(f"  {hit['name']}  ({hit['message_count']} msgs)")
+            for match in hit["matches"]:
+                lines.append(f"    [{match['role']}] {match['snippet']}")
+        return "\n".join(lines)
+
     if action == "delete":
         if len(args) < 2:
             return "usage: /session delete <name>"
@@ -680,7 +709,7 @@ def _handle_session_command(args: list[str], state: ChatState) -> str:
             return f"session deleted: {name}"
         return f"session not found: {name}"
 
-    return "usage: /session save|load|list|delete"
+    return "usage: /session save|load|list|search|delete"
 
 
 def _handle_export_command(

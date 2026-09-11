@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from r105.config import _validate_config, load_state_overrides
+from r105.config import _validate_config, config_schema, ensure_config, load_state_overrides
 from r105.state import ChatState
 
 
@@ -33,6 +33,18 @@ class TestModelFamiliesValidation:
     def test_unknown_keys_still_rejected(self) -> None:
         with pytest.raises(ValueError, match="Unknown config key"):
             _validate_config({"model_familiez": {}})
+
+    def test_cache_prompt_must_be_boolean(self) -> None:
+        with pytest.raises(ValueError, match="cache_prompt must be true or false"):
+            _validate_config({"cache_prompt": "yes"})
+
+    def test_schema_is_closed_and_contains_cache_prompt(self) -> None:
+        schema = config_schema()
+        assert schema["additionalProperties"] is False
+        assert schema["properties"]["cache_prompt"] == {
+            "type": "boolean",
+            "default": False,
+        }
 
 
 class TestLoadStateOverrides:
@@ -68,3 +80,29 @@ class TestLoadStateOverrides:
         overrides = load_state_overrides()
         state = ChatState(**overrides)
         assert state.model_families == {}
+
+    def test_cache_prompt_flows_into_state(self, tmp_path, monkeypatch) -> None:
+        from r105 import config as r105_config
+
+        config_dir = tmp_path / "r105-config"
+        config_path = config_dir / "config.json"
+        monkeypatch.setattr(r105_config, "CONFIG_DIR", config_dir)
+        monkeypatch.setattr(r105_config, "CONFIG_PATH", config_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"cache_prompt": True}), encoding="utf-8")
+
+        assert load_state_overrides()["cache_prompt"] is True
+
+    def test_strict_mode_surfaces_invalid_config(self, tmp_path, monkeypatch) -> None:
+        from r105 import config as r105_config
+
+        config_dir = tmp_path / "r105-config"
+        config_path = config_dir / "config.json"
+        monkeypatch.setattr(r105_config, "CONFIG_DIR", config_dir)
+        monkeypatch.setattr(r105_config, "CONFIG_PATH", config_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"typoed_key": True}), encoding="utf-8")
+        monkeypatch.setenv("R105_STRICT_CONFIG", "1")
+
+        with pytest.raises(ValueError, match="Unknown config key"):
+            ensure_config()

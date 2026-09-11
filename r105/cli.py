@@ -12,7 +12,7 @@ import httpx
 
 from r105 import __version__
 from r105.client import BaseClient, create_client
-from r105.config import ensure_config, load_state_overrides
+from r105.config import ensure_config, export_config_schema, load_state_overrides
 from r105.mcp_client import load_mcp_servers
 from r105.model_catalog import resolve_context_tokens
 from r105.plugins import init_registry
@@ -97,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor", help="Diagnose environment: config, sandbox, backend, workspace")
     profiles_parser = subparsers.add_parser("profiles", help="Show router profiles")
     profiles_parser.add_argument("--raw", action="store_true", help="Print raw JSON")
+    schema_parser = subparsers.add_parser(
+        "config-schema", help="Print or write the config.json JSON Schema"
+    )
+    schema_parser.add_argument(
+        "--output", default=None, help="Write the schema to this path instead of stdout"
+    )
     parser.set_defaults(command="chat")
     return parser
 
@@ -107,6 +113,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
+    if args.command == "config-schema":
+        schema = export_config_schema(Path(args.output) if args.output else None)
+        if args.output:
+            print(f"wrote config schema to {Path(args.output).expanduser()}")
+        else:
+            print(json.dumps(schema, indent=2, sort_keys=True))
+        return 0
 
     # Load config file for defaults (CLI args take precedence)
     config = ensure_config()
@@ -188,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         max_tokens=args.max_tokens,
         json_mode=args.json_mode,
         auto_compact=state_overrides.get("auto_compact", True),
+        cache_prompt=state_overrides.get("cache_prompt", False),
         theme=state_overrides.get("theme", "r105"),
         model=model,
         reasoning_effort=state_overrides.get("reasoning_effort", "auto"),

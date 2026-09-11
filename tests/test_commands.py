@@ -111,6 +111,14 @@ class TestProfileCommands:
         result = _run(handle_slash_command("/max", state))
         assert state.max_tokens is None
 
+    def test_cache_prompt_toggle(self, state):
+        assert state.cache_prompt is False
+        result = _run(handle_slash_command("/cache-prompt on", state))
+        assert state.cache_prompt is True
+        assert "cache_prompt=True" in result
+        _run(handle_slash_command("/cache-prompt off", state))
+        assert state.cache_prompt is False
+
 
 class TestThemeCommand:
     """Tests for /theme command."""

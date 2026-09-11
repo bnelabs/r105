@@ -5,7 +5,7 @@ r105 is a rich terminal AI assistant built on [Textual](https://textual.textuali
 <p align="center">
   <img src="https://img.shields.io/pypi/v/r105?color=cba6f7" alt="PyPI">
   <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-321%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-440%20passed-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
 
@@ -133,6 +133,9 @@ r105 profiles
 
 # Diagnose environment: config, sandbox, backend, workspace
 r105 doctor
+
+# Print the supported config.json JSON Schema
+r105 config-schema
 
 # Load a saved session on startup
 r105 --session my-session chat
@@ -264,6 +267,7 @@ Press `/` to open the interactive command palette with:
 | `/quality fast\|balanced\|best` | Set quality hint metadata |
 | `/json [on\|off]` | Toggle JSON object response mode |
 | `/max <tokens>` | Override max output tokens |
+| `/cache-prompt [on\|off]` | Enable llama.cpp prompt-prefix caching |
 | `/autocompact [on\|off]` | Toggle auto-compaction at 80% context threshold |
 | `/reasoning auto\|off\|low\|medium\|high` | Set reasoning effort (sent to capable backends) |
 | `/permissions <posture>` | Set tool-execution posture (`full-access\|restricted\|sandboxed\|off`) |
@@ -287,6 +291,7 @@ Press `/` to open the interactive command palette with:
 | `/session save <name>` | Save current conversation to `~/.config/r105/sessions/` |
 | `/session load <name>` | Load and restore a previously saved session (shows a diff of unsaved changes first) |
 | `/session list` | List all saved sessions with previews and timestamps |
+| `/session search <query>` | Search message text across saved sessions |
 | `/session delete <name>` | Delete a saved session |
 | `/export markdown` | Export conversation as Markdown |
 | `/export json` | Export conversation as JSON |
@@ -479,7 +484,7 @@ def register(registry):
 
 Plugins are auto-discovered on startup. Use `/plugin reload` to reload without restarting.
 
-Plugin loading is validated: the file must expose `register(registry)` taking exactly one argument, and every tool needs a non-empty name/description, a parameters schema object, and a callable handler — violations are reported as specific warnings instead of silently skipping. Plugins cannot shadow built-in tools unless you opt in via the `allow_plugin_overrides` config key or `R105_ALLOW_PLUGIN_OVERRIDE=1`.
+Plugin loading is validated: the file must expose `register(registry)` taking exactly one argument, and every tool needs a non-empty name/description, a parameters schema object, and a callable handler — violations are reported as specific warnings instead of silently skipping. Plugins can declare `__r105_min_version__ = "0.6.0"` and `PLUGIN_REQUIREMENTS = ["package_name"]`; incompatible plugins are skipped with a warning. `/plugin reload` drains active plugin calls before replacing handlers. Plugins cannot shadow built-in tools unless you opt in via the `allow_plugin_overrides` config key or `R105_ALLOW_PLUGIN_OVERRIDE=1`.
 
 See [docs/TOOLS.md](docs/TOOLS.md) for the full API reference.
 
@@ -532,6 +537,7 @@ Sessions are stored as JSON files in `~/.config/r105/sessions/`. Each file conta
 
 - **Conversation history** (all user, assistant, and tool messages)
 - **Session state** (profile, quality, skills, and parameters)
+- **Model settings** (selected model, context capacity, and prompt-cache toggle)
 - **Message count and save timestamp**
 
 ### Export Formats
@@ -576,6 +582,12 @@ When conversation context approaches 80% of the model's capacity, r105 can autom
 - **`/autocompact on|off`** — toggle from within the TUI
 - **`auto_compact` field** in `config.json` — persistent default
 
+### Prompt Caching
+
+`cache_prompt` is disabled by default. Enable it with `/cache-prompt on` or in
+`config.json` when the selected backend is llama.cpp-compatible. The flag is
+omitted when disabled because other OpenAI-compatible providers may reject it.
+
 Compaction uses the `complex_reasoning` profile and keeps the most recent 30% of messages intact.
 
 ---
@@ -601,6 +613,7 @@ r105 stores configuration in `~/.config/r105/`:
   "model": "gemma-4-12b-it",
   "sandbox_backend": "bwrap",
   "auto_compact": true,
+  "cache_prompt": false,
   "theme": "r105",
   "show_thinking": true,
   "thinking_default_expanded": false,
@@ -617,6 +630,12 @@ r105 stores configuration in `~/.config/r105/`:
   ]
 }
 ```
+
+Invalid configuration falls back to defaults during normal startup. Set
+`R105_STRICT_CONFIG=1` when validating a deployment so unknown keys, invalid
+values, malformed JSON, and unreadable config files stop startup with an error.
+Run `r105 config-schema` to print the supported JSON Schema, or
+`r105 config-schema --output /path/to/config.schema.json` to write it.
 
 ### Model Families (`model_families`)
 
@@ -731,7 +750,7 @@ rm -rf ~/r105-workspace
 # Install dev dependencies
 pip install -e ".[dev]"
 
-# Run full test suite (321 tests)
+# Run full test suite (440 tests)
 python -m pytest tests/ -v
 
 # With coverage

@@ -201,10 +201,11 @@ result = await self.client.async_send("Tool results received. Continue.", ...)
           ├── model, max_tokens → top-level request fields
          ├── theme → TUI theme (applied instantly via app.apply_theme)
          ├── auto_compact → triggers compaction at >80% context
+         ├── cache_prompt → optional llama.cpp prompt-prefix reuse
          ├── active_skills → loaded as system messages
          └── history → conversation state (mutated by RouterClient methods)
 
-  save_config() writes persistent keys (theme, auto_compact) back to config.json
+  save_config() writes persistent keys (theme, auto_compact, cache_prompt) back to config.json
 ```
 
 ### Config File Format
@@ -216,6 +217,7 @@ result = await self.client.async_send("Tool results received. Continue.", ...)
   "skills_dir": "/home/user/.config/r105/skills",
   "quality": "best",
   "auto_compact": false,
+  "cache_prompt": false,
   "url": "http://127.0.0.1:8010"
 }
 ```

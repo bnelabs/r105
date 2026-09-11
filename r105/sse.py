@@ -41,6 +41,7 @@ async def stream_sse(
     timeout: httpx.Timeout,
     client: httpx.AsyncClient | None,
     on_chunk: Callable[[str], None],
+    on_status: Callable[[str], None] | None = None,
     config_families: dict[str, str | None] | None = None,
 ) -> ChatResult:
     """Stream a chat completion over SSE and return the assembled result.
@@ -188,6 +189,11 @@ async def stream_sse(
     async def _backoff(attempt: int, reason: str) -> None:
         delay = SSE_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
         log_error("sse_retry", attempt=attempt, delay_seconds=delay, reason=reason)
+        if on_status is not None:
+            on_status(
+                f"Retrying backend (attempt {attempt + 1}/{SSE_MAX_ATTEMPTS}) "
+                f"in {delay:.1f}s…"
+            )
         await asyncio.sleep(delay)
 
     for attempt in range(1, SSE_MAX_ATTEMPTS + 1):

@@ -19,6 +19,7 @@ def format_state(state: ChatState) -> str:
         f"quality={state.quality or 'auto'} "
         f"max_tokens={state.max_tokens or 'auto'} "
         f"json={state.json_mode} "
+        f"cache_prompt={state.cache_prompt} "
         f"skills={','.join(state.active_skills) if state.active_skills else 'none'} "
         f"ctx={usage.used_tokens}/{usage.context_tokens} ({usage.percent:.1f}%) "
         f"turns={len(state.history) // 2}"

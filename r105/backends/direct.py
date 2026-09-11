@@ -16,6 +16,7 @@ from r105.errors import RouterAPIError
 from r105.model_catalog import _extract_context_from_model_entry
 from r105.payload import (
     _build_payload,
+    _inject_prompt_cache,
     _inject_reasoning_effort,
     _parse_response,
 )
@@ -95,6 +96,7 @@ class DirectClient(BaseClient):
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         _inject_reasoning_effort(payload, state)
+        _inject_prompt_cache(payload, state)
         return payload
 
     @staticmethod
@@ -157,11 +159,18 @@ class DirectClient(BaseClient):
         tools: list[dict[str, Any]] | None = None,
         client: httpx.AsyncClient | None = None,
         on_chunk: Callable[[str], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
     ) -> ChatResult:
         payload = self._prepare_continue_payload(state, tools, stream=on_chunk is not None)
 
         if on_chunk is not None:
-            result = await self._stream_sse(payload, client, on_chunk, config_families=state.model_families)
+            result = await self._stream_sse(
+                payload,
+                client,
+                on_chunk,
+                on_status=on_status,
+                config_families=state.model_families,
+            )
         else:
             started = time.perf_counter()
             response = await self._async_request(
@@ -181,10 +190,17 @@ class DirectClient(BaseClient):
         tools: list[dict[str, Any]] | None = None,
         client: httpx.AsyncClient | None = None,
         on_chunk: Callable[[str], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
     ) -> ChatResult:
         payload = self._prepare_payload(message, state, tools)
         payload["stream"] = True
-        result = await self._stream_sse(payload, client, on_chunk or (lambda _: None), config_families=state.model_families)
+        result = await self._stream_sse(
+            payload,
+            client,
+            on_chunk or (lambda _: None),
+            on_status=on_status,
+            config_families=state.model_families,
+        )
         self._record_send(message, state, result)
         return result
 
