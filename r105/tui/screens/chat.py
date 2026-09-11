@@ -15,8 +15,9 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Static
 
-from r105.client import BaseClient, Client
+from r105.client import BaseClient, Client, create_client
 from r105.commands import copy_to_clipboard, handle_slash_command
+from r105.config import ensure_config
 from r105.constants import (
     AUTO_COMPACT_THRESHOLD_PCT,
     MAX_TOOL_LOOP_ITERATIONS,
@@ -228,6 +229,9 @@ class ChatScreen(Screen[None]):
         result = await handle_slash_command(
             text, self.state, self.client, self.workspace, http_client=self._http
         )
+        command = text.strip().split(maxsplit=1)[0].lower() if text.strip() else ""
+        if command in {"/connect", "/provider"} and result.startswith("provider="):
+            self._reconfigure_client()
         if text in {"/exit", "/quit"}:
             self.app.exit()
             return
@@ -254,6 +258,22 @@ class ChatScreen(Screen[None]):
                 self.app.apply_theme(self.state.theme)  # type: ignore[attr-defined]
             except Exception:
                 pass
+
+    def _reconfigure_client(self) -> None:
+        """Apply the provider selected by /connect to the live TUI."""
+        try:
+            config = ensure_config(strict=True)
+            self.client = create_client(
+                base_url=config.get("url"),
+                backend=config.get("backend"),
+            )
+            if hasattr(self.app, "r105_client"):
+                self.app.r105_client = self.client  # type: ignore[attr-defined]
+            self._backend_health = "checking"
+            self._start_health_check()
+            self._refresh_all()
+        except (OSError, ValueError) as exc:
+            self._notify(f"Provider switch failed: {exc}", severity="error")
 
     async def on_chat_input_chat_submitted(self, event: ChatInput.ChatSubmitted) -> None:
         """Handle a normal (non-slash) message submission."""

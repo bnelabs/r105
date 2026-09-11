@@ -1,6 +1,6 @@
 # r105 — Beyond the prompt.
 
-r105 is a rich terminal AI assistant built on [Textual](https://textual.textualize.io/). It connects to any OpenAI-compatible API (OpenAI, Ollama, vLLM, Groq, and others) and provides an interactive chat TUI with streaming SSE responses, a slash-command system, fuzzy command palette, local tool execution, secure sandboxing, MCP integration, plugin extensibility, session persistence, and multiple themes.
+r105 is a local-first AI harness built on [Textual](https://textual.textualize.io/). It connects to any OpenAI-compatible API (llama.cpp, Ollama, OpenAI, vLLM, Groq, and others) and provides an interactive chat TUI with streaming SSE responses, a slash-command system, fuzzy command palette, local tool execution, secure sandboxing, MCP integration, plugin extensibility, session persistence, and multiple themes.
 
 <p align="center">
   <img src="https://img.shields.io/pypi/v/r105?color=cba6f7" alt="PyPI">
@@ -43,8 +43,11 @@ r105 is a rich terminal AI assistant built on [Textual](https://textual.textuali
 
 ## Prerequisites
 
-- **Python 3.12+**
-- **llama-router** running on `http://127.0.0.1:8010` (or set `R105_URL` / `--url`)
+- **Python 3.12+** when installing with pip or pipx
+- One local or cloud OpenAI-compatible provider. llama-router remains the
+  default when no provider is selected; direct connections can use llama.cpp,
+  Ollama, LM Studio, vLLM, OpenAI, Groq, OpenRouter, DeepSeek, Together, or a
+  custom endpoint.
 
 ---
 
@@ -131,15 +134,20 @@ docker compose run r105 chat
 ## Quick Start
 
 ```sh
-# Launch the TUI (requires llama-router on http://127.0.0.1:8010)
+# Launch the TUI (uses llama-router on http://127.0.0.1:8010 by default)
 r105 chat
 
 # One-shot: ask a question and get a response without the TUI
 r105 send "explain quicksort in 3 sentences"
 
-# Connect to a different router or any OpenAI-compatible API
+# Connect to a different router or any OpenAI-compatible API at startup
 r105 --url http://my-router:8010 chat
-OPENAI_API_KEY=sk-... r105 --url https://api.openai.com/v1 chat
+OPENAI_API_KEY=sk-... r105 --backend direct --url https://api.openai.com/v1 chat
+
+# Or select a provider from the running TUI with /connect:
+# /connect llamacpp
+# /connect ollama
+# /connect openai
 ```
 
 ---
@@ -155,7 +163,7 @@ r105 chat
 # One-shot prompt
 r105 send "explain quicksort in 3 sentences"
 
-# Check router health
+# Check selected backend health
 r105 health
 
 # List available task profiles
@@ -199,13 +207,51 @@ r105 --version
 
 ## Backends
 
-r105 auto-detects the best backend:
+r105 has two connection modes:
 
-1. **`R105_URL` set → llama-router** — full profile routing, model selection
-2. **`OPENAI_API_KEY` set → direct** — any OpenAI-compatible API (OpenAI, Ollama, vLLM, Groq)
-3. **Otherwise** — checks local Ollama, falls back to direct
+1. **Router** — llama-router at `http://127.0.0.1:8010`, with profiles,
+   quality hints, and router-specific metadata.
+2. **Direct** — any OpenAI-compatible server, including llama.cpp, Ollama,
+   LM Studio, vLLM, OpenAI, Groq, OpenRouter, DeepSeek, Together, or a custom
+   endpoint.
 
-Override with `--backend router` or `--backend direct`.
+At startup, r105 uses a saved connection from `~/.config/r105/config.json`,
+then `R105_URL`, then the OpenAI environment variables, and finally the local
+llama-router default. Override the mode with `--backend router` or
+`--backend direct`.
+
+### Connecting from the TUI
+
+Press `/` and type `/connect` to open the provider command, or type one of
+these commands directly. The optional second argument overrides the preset
+base URL. API keys are read from the environment and are never accepted as
+slash-command arguments or written to `config.json`.
+
+| Command | Mode | Default base URL | Credential |
+|---------|------|------------------|------------|
+| `/connect llamacpp` | direct | `http://127.0.0.1:8080/v1` | none |
+| `/connect ollama` | direct | `http://127.0.0.1:11434/v1` | none |
+| `/connect lmstudio` | direct | `http://127.0.0.1:1234/v1` | none |
+| `/connect vllm` | direct | `http://127.0.0.1:8000/v1` | `OPENAI_API_KEY` |
+| `/connect router` | router | `http://127.0.0.1:8010` | none |
+| `/connect openai` | direct | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `/connect groq` | direct | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
+| `/connect openrouter` | direct | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| `/connect deepseek` | direct | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
+| `/connect together` | direct | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` |
+| `/connect url https://host/v1` | direct | custom | `OPENAI_API_KEY` |
+
+For llama.cpp, start its OpenAI-compatible server and then select it in r105:
+
+```sh
+llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
+r105 chat
+# In the TUI: /connect llamacpp
+```
+
+`/provider` is an alias for `/connect`; `/connect status` shows the active
+mode and URL. The provider switch is applied to the running TUI immediately,
+and `/health` checks the newly selected backend.
 
 ### Backend Capabilities
 
@@ -303,6 +349,8 @@ Press `/` to open the interactive command palette with:
 | `/reasoning auto\|off\|low\|medium\|high` | Set reasoning effort (sent to capable backends) |
 | `/permissions <posture>` | Set tool-execution posture (`full-access\|restricted\|sandboxed\|off`) |
 | `/approve execute_python` | One-time approval for code execution (this session) |
+| `/connect <provider> [base-url]` | Switch live to a local or cloud OpenAI-compatible provider |
+| `/provider <provider> [base-url]` | Alias for `/connect` |
 | `/copy` | Copy last assistant message to system clipboard |
 
 #### Skills
@@ -346,7 +394,7 @@ Press `/` to open the interactive command palette with:
 | `/workspace` | Show workspace directory and list generated files |
 | `/preview <filename>` | Preview a workspace file's contents |
 | `/theme <name>` | Switch theme: `r105`, `dracula`, `solarized-dark`, `high-contrast` |
-| `/health` | Check llama-router and upstream model health |
+| `/health` | Check the selected backend health |
 | `/profiles` | List available router task profiles |
 | `/help` | Show the full command reference |
 | `/exit` | Quit r105 |
@@ -655,7 +703,7 @@ r105 stores configuration in `~/.config/r105/`:
 
 ```
 ~/.config/r105/
-├── config.json          # theme, model, sandbox backend, defaults
+├── config.json          # theme, model, provider URL, sandbox backend, defaults
 ├── sessions/            # Saved conversation sessions (JSON)
 │   ├── __autosave__.json
 │   └── my-session.json
@@ -668,6 +716,8 @@ r105 stores configuration in `~/.config/r105/`:
 ```json
 {
   "model": "gemma-4-12b-it",
+  "backend": "direct",
+  "url": "http://127.0.0.1:8080/v1",
   "sandbox_backend": "bwrap",
   "auto_compact": true,
   "cache_prompt": false,

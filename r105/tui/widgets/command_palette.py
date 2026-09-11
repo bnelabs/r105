@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from textual.widgets import Static
+from textual.widgets import OptionList
 
 # Structured command definitions: (category, command, usage, description)
 COMMAND_DEFS: list[tuple[str, str, str, str]] = [
@@ -22,6 +22,8 @@ COMMAND_DEFS: list[tuple[str, str, str, str]] = [
     ("Chat", "/autocompact", "[on|off]", "Toggle auto-compaction at 80% context"),
     ("Chat", "/reasoning", "auto|off|low|medium|high", "Set reasoning effort (sent to model-capable backends)"),
     ("Chat", "/permissions", "full-access|restricted|sandboxed|off", "Set permission posture for tool execution"),
+    ("System", "/connect", "<provider> [base-url]", "Connect to a local or cloud OpenAI-compatible provider"),
+    ("System", "/provider", "<provider> [base-url]", "Alias for /connect"),
     # Skills
     ("Skills", "/skills", "", "List available skill files"),
     ("Skills", "/skill use", "<name> [key=val...]", "Add a skill with optional params"),
@@ -86,12 +88,16 @@ def _fuzzy_score(candidate: str, query: str) -> int:
     return longest_contig * 10 + qi * 2
 
 
-class CommandPalette(Static):
+class CommandPalette(OptionList):
     """An interactive suggestion palette for slash commands.
 
     Shows fuzzy-matched commands with category headers and selection highlighting.
     Arrow keys (handled via ChatInput) navigate the list.
     Enter selects, Escape dismisses.
+
+    ``OptionList`` is used instead of a text widget so the palette exposes its
+    full command list as virtual content. This gives Textual a real scroll
+    range when the list is taller than the docked palette.
     """
 
     def __init__(self, **kwargs) -> None:
@@ -99,6 +105,7 @@ class CommandPalette(Static):
         self._selected_index: int = 0
         self._items: list[tuple[str, str, str, str]] = []  # (category, cmd, usage, desc)
         self._filter_text: str = ""
+        self._command_option_indexes: list[int] = []
 
     # -- Public API -------------------------------------------------------
 
@@ -129,14 +136,12 @@ class CommandPalette(Static):
     def select_next(self) -> None:
         """Move selection down one item (wraps)."""
         if self._items:
-            self._selected_index = (self._selected_index + 1) % len(self._items)
-            self._refresh_content()
+            self._set_selected((self._selected_index + 1) % len(self._items))
 
     def select_prev(self) -> None:
         """Move selection up one item (wraps)."""
         if self._items:
-            self._selected_index = (self._selected_index - 1) % len(self._items)
-            self._refresh_content()
+            self._set_selected((self._selected_index - 1) % len(self._items))
 
     def get_selected(self) -> tuple[str, str, str, str] | None:
         """Return the (category, cmd, usage, desc) tuple for the highlighted item."""
@@ -156,46 +161,110 @@ class CommandPalette(Static):
     # -- Internal ---------------------------------------------------------
 
     def _refresh_content(self) -> None:
-        """Rebuild the palette content with selection highlight and category headers."""
+        """Rebuild the palette options with category headers and footer."""
         if not self._items:
+            message = ""
             if self._filter_text and self._filter_text != "/":
-                self.update(
-                    f"[dim]no commands matching '{self._filter_text}'[/dim]"
-                )
-            else:
-                self.update("")
+                message = f"[dim]no commands matching '{self._filter_text}'[/dim]"
+            self._command_option_indexes = []
+            self.set_options([message] if message else [])
+            if message:
+                self.disable_option_at_index(0)
+            self.call_after_refresh(self._scroll_to_start)
             return
 
-        lines: list[str] = []
+        options: list[str] = []
+        disabled_indexes: list[int] = []
+        command_option_indexes: list[int] = []
         last_category: str | None = None
 
         for i, (category, cmd, usage, desc) in enumerate(self._items):
             # Add category header when entering a new category
             if category != last_category:
-                if lines:
-                    lines.append("")  # blank line between categories
-                lines.append(f"[bold #89b4fa]── {category} ──[/bold #89b4fa]")
+                if options:
+                    options.append("")  # blank line between categories
+                    disabled_indexes.append(len(options) - 1)
+                options.append(f"[bold #89b4fa]── {category} ──[/bold #89b4fa]")
+                disabled_indexes.append(len(options) - 1)
                 last_category = category
 
-            usage_str = f" {usage}" if usage else ""
-            if i == self._selected_index:
-                # Highlighted: mauve arrow + bold command
-                lines.append(
-                    f"[bold #cba6f7]▶ {cmd}{usage_str}[/bold #cba6f7]  "
-                    f"[dim #6c7086]{desc}[/dim #6c7086]"
+            command_option_indexes.append(len(options))
+            options.append(
+                self._render_command(
+                    cmd,
+                    usage,
+                    desc,
+                    selected=i == self._selected_index,
                 )
-            else:
-                lines.append(
-                    f"  [bold]{cmd}{usage_str}[/bold]  [dim]{desc}[/dim]"
-                )
+            )
 
         # Add hint footer
-        lines.append("")
-        lines.append(
+        options.append("")
+        disabled_indexes.append(len(options) - 1)
+        options.append(
             "[dim #585b70]↑↓ navigate  ↵ select  esc dismiss  tab autocomplete[/dim #585b70]"
         )
+        disabled_indexes.append(len(options) - 1)
 
-        self.update("\n".join(lines))
+        self._command_option_indexes = command_option_indexes
+        self.set_options(options)
+        for option_index in disabled_indexes:
+            self.disable_option_at_index(option_index)
+        self.highlighted = self._command_option_indexes[self._selected_index]
+        self.call_after_refresh(self.scroll_to_highlight)
+
+    @staticmethod
+    def _render_command(
+        cmd: str, usage: str, desc: str, *, selected: bool
+    ) -> str:
+        """Render one selectable command option."""
+        usage_str = f" {usage}" if usage else ""
+        if selected:
+            return (
+                f"[bold #cba6f7]▶ {cmd}{usage_str}[/bold #cba6f7]  "
+                f"[dim #6c7086]{desc}[/dim #6c7086]"
+            )
+        return f"  [bold]{cmd}{usage_str}[/bold]  [dim]{desc}[/dim]"
+
+    def _set_selected(self, selected_index: int) -> None:
+        """Update the selected command and reveal it in the viewport."""
+        if not self._items:
+            return
+        previous_index = self._selected_index
+        self._selected_index = selected_index
+
+        if self._command_option_indexes:
+            previous_option = self._command_option_indexes[previous_index]
+            selected_option = self._command_option_indexes[selected_index]
+            previous = self._items[previous_index]
+            current = self._items[selected_index]
+            self.replace_option_prompt_at_index(
+                previous_option,
+                self._render_command(*previous[1:], selected=False),
+            )
+            self.replace_option_prompt_at_index(
+                selected_option,
+                self._render_command(*current[1:], selected=True),
+            )
+            self.highlighted = selected_option
+            self.call_after_refresh(self.scroll_to_highlight)
+
+    def _selected_line_index(self) -> int:
+        """Return the rendered line containing the selected command."""
+        if not self._items or not self._command_option_indexes:
+            return 0
+        option_index = self._command_option_indexes[self._selected_index]
+        try:
+            return self._index_to_line.get(option_index, option_index)
+        except (AttributeError, RuntimeError):
+            return option_index
+
+    def _scroll_to_start(self) -> None:
+        """Reset stale scroll when filtering leaves no visible commands."""
+        try:
+            self.scroll_home(animate=False, immediate=True, x_axis=False)
+        except (AttributeError, RuntimeError):
+            return
 
     def _filter_commands(
         self, filter_text: str

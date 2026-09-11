@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,56 @@ class TestChatCommands:
     def test_exit(self, state):
         result = _run(handle_slash_command("/exit", state))
         assert result == ""
+
+
+class TestConnectCommands:
+    """Provider presets persist connection metadata without storing secrets."""
+
+    @staticmethod
+    def _use_config(tmp_path, monkeypatch):
+        from r105 import config as r105_config
+
+        config_path = tmp_path / "config.json"
+        monkeypatch.setattr(r105_config, "CONFIG_PATH", config_path)
+        monkeypatch.setattr(r105_config, "CONFIG_DIR", tmp_path)
+        return config_path
+
+    def test_connect_ollama_persists_direct_backend(self, state, tmp_path, monkeypatch):
+        config_path = self._use_config(tmp_path, monkeypatch)
+
+        result = _run(handle_slash_command("/connect ollama", state))
+
+        assert "provider=ollama" in result
+        assert "connection switched live" in result
+        saved = json.loads(config_path.read_text(encoding="utf-8"))
+        assert saved == {"backend": "direct", "url": "http://127.0.0.1:11434/v1"}
+
+    def test_connect_llamacpp_uses_openai_compatible_endpoint(self, state, tmp_path, monkeypatch):
+        config_path = self._use_config(tmp_path, monkeypatch)
+
+        result = _run(handle_slash_command("/connect llamacpp", state))
+
+        assert "provider=llamacpp" in result
+        saved = json.loads(config_path.read_text(encoding="utf-8"))
+        assert saved == {"backend": "direct", "url": "http://127.0.0.1:8080/v1"}
+
+    def test_provider_alias_never_echoes_api_key(self, state, tmp_path, monkeypatch):
+        config_path = self._use_config(tmp_path, monkeypatch)
+        monkeypatch.setenv("OPENAI_API_KEY", "secret-test-key")
+
+        result = _run(handle_slash_command("/provider openai", state))
+
+        assert "provider=openai" in result
+        assert "OPENAI_API_KEY=set" in result
+        assert "secret-test-key" not in result
+        assert "secret-test-key" not in config_path.read_text(encoding="utf-8")
+
+    def test_connect_rejects_credentials_in_url(self, state, tmp_path, monkeypatch):
+        self._use_config(tmp_path, monkeypatch)
+
+        result = _run(handle_slash_command("/connect url https://user:pass@example.com/v1", state))
+
+        assert "without credentials" in result
 
 
 class TestProfileCommands:

@@ -7,6 +7,7 @@ import os
 import time
 from collections.abc import Callable
 from typing import Any, cast
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -31,7 +32,8 @@ from r105.state import (
 class DirectClient(BaseClient):
     """Client for any OpenAI-compatible API.
 
-    Supports: OpenAI, vLLM, Ollama (OpenAI mode), Groq, Together, etc.
+    Supports: OpenAI, llama.cpp, vLLM, Ollama (OpenAI mode), Groq, Together,
+    and other OpenAI-compatible APIs.
     Does NOT support profiles or metadata — those are RouterClient-only.
 
     Environment variables:
@@ -54,6 +56,26 @@ class DirectClient(BaseClient):
     @property
     def capabilities(self) -> BackendCapabilities:
         return BackendCapabilities()
+
+    def _url(self, path: str) -> str:
+        """Join an OpenAI-compatible base URL to an API path.
+
+        Providers commonly document their base URL with a trailing ``/v1``
+        (including llama.cpp). The shared backend helper appends ``/v1`` for
+        API operations, so handle both ``https://host`` and
+        ``https://host/v1`` without producing a duplicated ``/v1/v1`` path.
+        The llama.cpp ``/props`` endpoint lives at the server root, so probe
+        that endpoint from the URL origin when the configured base includes
+        ``/v1``.
+        """
+        if self.base_url.endswith("/v1"):
+            if path.startswith("/v1/"):
+                return f"{self.base_url}{path[3:]}"
+            if path == "/props":
+                parsed = urlsplit(self.base_url)
+                origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+                return f"{origin}/props"
+        return super()._url(path)
 
     # -- Payload hooks (Template Method) ------------------------------------
 

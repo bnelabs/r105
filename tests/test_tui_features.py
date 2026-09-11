@@ -173,6 +173,7 @@ class TestStartupFocus:
 
         asyncio.run(scenario())
 
+
     def test_typing_lands_in_input(self) -> None:
         from r105.tui.screens.chat import ChatScreen
         from r105.tui.widgets.input_area import ChatInput
@@ -190,6 +191,47 @@ class TestStartupFocus:
                 await pilot.press("h", "e", "l", "l", "o")
                 await pilot.pause()
                 assert input_widget.text == "hello"
+
+        asyncio.run(scenario())
+
+
+class TestCommandPaletteScrolling:
+    """The highlighted slash command stays visible while navigating down."""
+
+    @staticmethod
+    def _make_app():
+        from pathlib import Path
+
+        from r105.client import DirectClient
+        from r105.state import ChatState
+        from r105.tui.app import R105App
+
+        client = DirectClient(base_url="http://127.0.0.1:8090", timeout=5.0)
+        return R105App(client, ChatState(model="test-model"), Path("/tmp"))
+
+    def test_down_scrolls_selected_command_into_view(self) -> None:
+        async def scenario() -> None:
+            from r105.tui.screens.chat import ChatScreen
+            from r105.tui.widgets.command_palette import CommandPalette
+
+            app = self._make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                for _ in range(50):
+                    await pilot.pause()
+                    if isinstance(app.screen, ChatScreen):
+                        break
+                await pilot.press("/")
+                await pilot.pause()
+                palette = app.screen.query_one("#command-palette", CommandPalette)
+                assert palette.is_visible
+                for _ in range(15):
+                    await pilot.press("down")
+                await pilot.pause()
+
+                assert palette.selected_index == 15
+                assert palette.scroll_y > 0
+                selected_line = palette._selected_line_index()
+                assert palette.scroll_y <= selected_line < palette.scroll_y + palette.content_region.height
 
         asyncio.run(scenario())
 

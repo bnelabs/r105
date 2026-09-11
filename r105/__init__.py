@@ -1,4 +1,4 @@
-"""r105 — Beyond the prompt. Rich terminal AI assistant for any OpenAI-compatible backend."""
+"""r105 — Beyond the prompt. Local-first AI harness for OpenAI-compatible backends."""
 
 __version__ = "0.7.0"
 

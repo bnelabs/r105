@@ -199,6 +199,13 @@ class TestMalformedSSE:
 class TestDirectClient:
     """Verify DirectClient works for its stated purpose."""
 
+    def test_direct_v1_base_url_does_not_duplicate_api_prefix(self) -> None:
+        dc = DirectClient(base_url="http://testserver:8080/v1")
+
+        assert dc._url("/v1/models") == "http://testserver:8080/v1/models"
+        assert dc._url("/v1/chat/completions") == "http://testserver:8080/v1/chat/completions"
+        assert dc._url("/props") == "http://testserver:8080/props"
+
     def test_direct_capabilities(self) -> None:
         dc = DirectClient(base_url="http://testserver:8080")
         caps = dc.capabilities
