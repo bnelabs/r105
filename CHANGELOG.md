@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- Guided `/connect` setup in the TUI with predefined local and cloud providers,
+  session-only API-key entry, live model discovery, and model selection
+- OpenCode Zen and OpenCode Go connection presets
+
+### Changed
+- Provider metadata is saved without credentials so the selected connection can
+  be restored on the next launch when its environment key is available
 
 ## [0.8.2] — 2026-09-11
 

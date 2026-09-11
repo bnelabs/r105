@@ -16,7 +16,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 
@@ -40,6 +39,11 @@ from r105.commands_format import (
     status_line as _fmt_status,
 )
 from r105.config import apply_config_to_state, ensure_config, save_config
+from r105.connections import (
+    CONNECTION_ALIASES,
+    CONNECTION_PRESETS,
+    valid_connection_url,
+)
 from r105.model_catalog import resolve_context_tokens
 from r105.plugins import get_registry
 from r105.sessions import (
@@ -103,48 +107,30 @@ VALID_THEMES = {"r105", "dracula", "solarized-dark", "high-contrast"}
 
 # Provider presets intentionally use environment variables for credentials.
 # Keys are never accepted as command arguments or written to config.json.
+# Keep this mapping public for integrations that used the old tuple shape.
 PROVIDER_PRESETS: dict[str, tuple[str, str, str | None]] = {
-    "router": ("router", "http://127.0.0.1:8010", None),
-    "llamacpp": ("direct", "http://127.0.0.1:8080/v1", None),
-    "ollama": ("direct", "http://127.0.0.1:11434/v1", None),
-    "lmstudio": ("direct", "http://127.0.0.1:1234/v1", None),
-    "vllm": ("direct", "http://127.0.0.1:8000/v1", "OPENAI_API_KEY"),
-    "openai": ("direct", "https://api.openai.com/v1", "OPENAI_API_KEY"),
-    "groq": ("direct", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
-    "openrouter": ("direct", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
-    "deepseek": ("direct", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
-    "together": ("direct", "https://api.together.xyz/v1", "TOGETHER_API_KEY"),
+    preset.id: (preset.backend, preset.base_url, preset.api_key_env)
+    for preset in CONNECTION_PRESETS
+    if preset.base_url is not None
 }
 
-PROVIDER_ALIASES = {
-    "local": "ollama",
-    "llama-router": "router",
-    "lm-studio": "lmstudio",
-    "llama.cpp": "llamacpp",
-    "llama-cpp": "llamacpp",
-}
+PROVIDER_ALIASES = dict(CONNECTION_ALIASES)
 
 
 def _connect_usage() -> str:
-    providers = " | ".join(PROVIDER_PRESETS)
+    providers = " | ".join(preset.id for preset in CONNECTION_PRESETS)
     return (
-        "usage: /connect <provider> [base-url]\n"
+        "usage: /connect [provider] [base-url]\n"
         f"providers: {providers}\n"
         "custom OpenAI-compatible API: /connect url <https://host/v1>\n"
-        "credentials come from the provider's environment variable; use /model after connecting"
+        "in the TUI, use /connect without arguments for guided provider, API-key, and model setup\n"
+        "credentials come from the provider's environment variable for non-interactive use"
     )
 
 
 def _valid_provider_url(value: str) -> bool:
     """Accept HTTP(S) API URLs without allowing credentials in the URL."""
-    parsed = urlsplit(value)
-    return (
-        parsed.scheme in {"http", "https"}
-        and bool(parsed.hostname)
-        and parsed.username is None
-        and parsed.password is None
-        and not any(char.isspace() for char in value)
-    )
+    return valid_connection_url(value)
 
 # Signature for command handler functions.
 # All handlers are async functions taking a CommandContext, returning str.
@@ -252,8 +238,9 @@ Chat
   /reasoning auto|off|low|med..  set reasoning effort (model-provided)
   /permissions <posture>         set permission posture (full-access|restricted|sandboxed|off)
   /approve execute_python        one-time approval for code execution
-  /connect <provider>            connect to a local or cloud OpenAI-compatible provider
-  /provider <provider>           alias for /connect
+  /connect                       choose a provider, key, and model in the guided setup
+  /connect <provider>            use a provider preset non-interactively
+  /provider                     alias for the guided /connect setup
 
 Skills
   /skills                        list local skills
@@ -591,7 +578,13 @@ async def _cmd_connect(ctx: CommandContext) -> str:
         return f"invalid provider URL: {base_url!r} (use http:// or https:// without credentials)"
 
     try:
-        save_config({"backend": backend, "url": base_url.rstrip("/")})
+        save_config(
+            {
+                "backend": backend,
+                "url": base_url.rstrip("/"),
+                "provider": display_name,
+            }
+        )
     except (OSError, ValueError) as exc:
         return f"provider configuration failed: {exc}"
 

@@ -70,11 +70,13 @@ class Client:
         *,
         base_url: str | None = None,
         backend_name: str | None = None,
+        api_key: str | None = None,
         timeout: float = DEFAULT_HTTP_TIMEOUT,
     ) -> None:
         self.backend = backend or _create_backend_client(
             base_url=base_url,
             backend=backend_name,
+            api_key=api_key,
             timeout=timeout,
         )
 
@@ -199,6 +201,7 @@ class Client:
 def create_client(
     base_url: str | None = None,
     backend: str | None = None,
+    api_key: str | None = None,
     timeout: float = DEFAULT_HTTP_TIMEOUT,
 ) -> Client:
     """Create the high-level client facade with automatic backend selection."""
@@ -206,6 +209,7 @@ def create_client(
         backend=_create_backend_client(
             base_url=base_url,
             backend=backend,
+            api_key=api_key,
             timeout=timeout,
         )
     )

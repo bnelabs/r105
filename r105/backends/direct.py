@@ -50,7 +50,10 @@ class DirectClient(BaseClient):
         timeout: float = DEFAULT_HTTP_TIMEOUT,
     ) -> None:
         resolved_base = base_url or os.environ.get("OPENAI_BASE_URL", self._DEFAULT_BASE)
-        resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
+        # ``None`` means use the legacy OPENAI_API_KEY fallback. An explicit
+        # empty string intentionally disables auth for a named provider that
+        # has no key, so it cannot borrow a different provider's key.
+        resolved_key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY")
         super().__init__(resolved_base, resolved_key, timeout)
 
     @property

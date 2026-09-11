@@ -36,6 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mcp_servers": [],
     "backend": None,
     "url": None,
+    "provider": None,
     "allow_plugin_overrides": False,
     "docker_image": None,
     "auto_approve_execute_python": False,
@@ -111,6 +112,7 @@ if _PYDANTIC_AVAILABLE:
         mcp_servers: list[dict[str, Any]] = []
         backend: str | None = None
         url: str | None = None
+        provider: str | None = None
         allow_plugin_overrides: bool = False
         docker_image: str | None = None
         auto_approve_execute_python: bool = False
@@ -208,6 +210,13 @@ def _validate_config_manual(raw: dict[str, Any]) -> None:
         raise ValueError(
             f"Invalid backend '{raw['backend']}'. Valid: {', '.join(sorted(VALID_BACKENDS))}"
         )
+
+    if (
+        "provider" in raw
+        and raw["provider"] is not None
+        and (not isinstance(raw["provider"], str) or not raw["provider"].strip())
+    ):
+        raise ValueError("provider must be a non-empty string or null")
 
     if "keybindings" in raw:
         keybindings = raw["keybindings"]
@@ -435,6 +444,7 @@ def config_schema() -> dict[str, Any]:
                 "default": None,
             },
             "url": {"type": ["string", "null"], "default": None},
+            "provider": {"type": ["string", "null"], "minLength": 1, "default": None},
             "allow_plugin_overrides": {"type": "boolean", "default": False},
             "docker_image": {"type": ["string", "null"], "default": None},
             "auto_approve_execute_python": {"type": "boolean", "default": False},

@@ -159,6 +159,55 @@ TextArea > .text-area--selection {
     width: 20;
 }
 
+/* Guided provider connection modal */
+ConnectionScreen {
+    align: center middle;
+    background: rgba(17, 17, 27, 0.88);
+}
+
+#connection-dialog {
+    width: 82;
+    max-width: 95%;
+    max-height: 90%;
+    padding: 1 2;
+    background: #11111b;
+    border: solid #cba6f7;
+    overflow-y: auto;
+}
+
+#connection-title {
+    color: #cba6f7;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#connection-intro,
+#connection-description,
+#connection-status {
+    margin-bottom: 1;
+}
+
+#connection-provider,
+#connection-api-key,
+#connection-url,
+#connection-model {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#connection-buttons {
+    height: auto;
+    margin-top: 1;
+}
+
+#connection-buttons Button {
+    margin-right: 1;
+}
+
+.connection-hidden {
+    display: none;
+}
+
 /* RichLog styling */
 RichLog {
     background: #11111b;
