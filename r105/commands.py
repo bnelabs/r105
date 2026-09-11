@@ -37,7 +37,7 @@ from r105.commands_format import (
 from r105.commands_format import (
     status_line as _fmt_status,
 )
-from r105.config import ensure_config, save_config
+from r105.config import apply_config_to_state, ensure_config, save_config
 from r105.mcp_client import get_mcp_manager
 from r105.model_catalog import resolve_context_tokens
 from r105.plugins import get_registry
@@ -76,6 +76,7 @@ SLASH_COMMANDS = [
     "/json",
     "/max",
     "/cache-prompt",
+    "/config",
     "/skills",
     "/skill",
     "/health",
@@ -192,6 +193,7 @@ Chat
   /json [on|off]                 toggle JSON response mode
   /max <tokens>                  override max_tokens, or omit for auto
   /cache-prompt [on|off]         enable llama.cpp prompt-prefix caching
+  /config reload                 reload config.json into the current session
   /autocompact [on|off]          toggle auto-compaction at 80% context
   /reasoning auto|off|low|med..  set reasoning effort (model-provided)
   /permissions <posture>         set permission posture (full-access|restricted|sandboxed|off)
@@ -213,7 +215,7 @@ Sessions
   /session list                  list saved sessions
   /session search <query>        full-text search across saved sessions
   /session delete <name>         delete a saved session
-  /export markdown|json|html     export conversation to a file
+  /export text|markdown|json|html export conversation to a file
   /plugin list                   list loaded custom tool plugins
   /plugin reload                 reload plugins from disk
   /mcp list                      list connected MCP servers
@@ -351,6 +353,49 @@ async def _cmd_cache_prompt(ctx: CommandContext) -> str:
         f"cache_prompt={ctx.state.cache_prompt} (saved persistently; "
         "use with a llama.cpp-compatible backend)"
     )
+
+
+async def _cmd_config(ctx: CommandContext) -> str:
+    """Reload or inspect the effective config file."""
+    action = ctx.args[0] if ctx.args else "reload"
+    if action == "show":
+        try:
+            return json.dumps(ensure_config(strict=True), indent=2, sort_keys=True)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return f"config read failed: {exc}"
+    if action != "reload":
+        return "usage: /config reload|show"
+
+    try:
+        config = ensure_config(strict=True)
+        changed = apply_config_to_state(ctx.state, config)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return f"config reload failed: {exc}"
+
+    if "model" in changed:
+        invalidate_backend_usage(ctx.state)
+    backend_ctx: int | None = None
+    if ctx.client is not None:
+        try:
+            backend_ctx = await ctx.client.async_probe_context(
+                ctx.state.model, client=ctx.http_client
+            )
+        except Exception:
+            backend_ctx = None
+    resolved_context = resolve_context_tokens(
+        ctx.state.model,
+        config_contexts=ctx.state.model_contexts,
+        global_override=_global_context_override(),
+        backend_context=backend_ctx,
+    )
+    if resolved_context != ctx.state.context_tokens:
+        ctx.state.context_tokens = resolved_context
+        changed.add("context_tokens")
+
+    if not changed:
+        return "config reloaded: no session settings changed"
+    fields = ", ".join(sorted(changed))
+    return f"config reloaded: {fields}"
 
 
 async def _cmd_health(ctx: CommandContext) -> str:
@@ -542,6 +587,7 @@ COMMAND_DISPATCH: dict[str, CommandHandler] = {
     "/json": _cmd_json,
     "/max": _cmd_max,
     "/cache-prompt": _cmd_cache_prompt,
+    "/config": _cmd_config,
     "/health": _cmd_health,
     "/profiles": _cmd_profiles,
     "/skills": _cmd_skills,
