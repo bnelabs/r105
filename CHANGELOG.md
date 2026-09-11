@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.8.3] — 2026-09-11
+
 ### Added
 - Guided `/connect` setup in the TUI with predefined local and cloud providers,
   session-only API-key entry, live model discovery, and model selection
@@ -310,7 +314,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File explorer sidebar
 - Token usage estimation and auto-compaction at 80% context
 
-[Unreleased]: https://github.com/bnelabs/r105/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/bnelabs/r105/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/bnelabs/r105/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/bnelabs/r105/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/bnelabs/r105/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/bnelabs/r105/compare/v0.7.0...v0.8.0
