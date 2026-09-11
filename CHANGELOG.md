@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.8.1] — 2026-09-11
+
+### Fixed
+- CI type checking for provider switching and live client reconfiguration
+- Alpine package signing during temporary repository index generation
+- Release workflow reliability for versioned release notes and authenticated
+  Homebrew formula synchronization
+
 ## [0.8.0] — 2026-09-11
 
 ### Added
@@ -283,7 +291,8 @@ _No unreleased changes._
 - File explorer sidebar
 - Token usage estimation and auto-compaction at 80% context
 
-[Unreleased]: https://github.com/bnelabs/r105/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/bnelabs/r105/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/bnelabs/r105/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/bnelabs/r105/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/bnelabs/r105/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/bnelabs/r105/compare/v0.5.0...v0.6.0

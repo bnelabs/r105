@@ -74,7 +74,7 @@ The release page includes native x86_64 packages with the standard extension
 for each package manager. Set `VERSION` to the release you downloaded:
 
 ```sh
-VERSION=0.8.0
+VERSION=0.8.1
 
 # Ubuntu / Debian
 sudo apt install "./r105_${VERSION}_amd64.deb"
@@ -579,7 +579,7 @@ def register(registry):
 
 Plugins are auto-discovered on startup. Use `/plugin reload` to reload without restarting.
 
-Plugin loading is validated: the file must expose `register(registry)` taking exactly one argument, and every tool needs a non-empty name/description, a parameters schema object, and a callable handler — violations are reported as specific warnings instead of silently skipping. Plugins can declare `__r105_min_version__ = "0.8.0"` and `PLUGIN_REQUIREMENTS = ["package_name"]`; incompatible plugins are skipped with a warning. `/plugin reload` drains active plugin calls before replacing handlers. Plugins cannot shadow built-in tools unless you opt in via the `allow_plugin_overrides` config key or `R105_ALLOW_PLUGIN_OVERRIDE=1`.
+Plugin loading is validated: the file must expose `register(registry)` taking exactly one argument, and every tool needs a non-empty name/description, a parameters schema object, and a callable handler — violations are reported as specific warnings instead of silently skipping. Plugins can declare `__r105_min_version__ = "0.8.1"` and `PLUGIN_REQUIREMENTS = ["package_name"]`; incompatible plugins are skipped with a warning. `/plugin reload` drains active plugin calls before replacing handlers. Plugins cannot shadow built-in tools unless you opt in via the `allow_plugin_overrides` config key or `R105_ALLOW_PLUGIN_OVERRIDE=1`.
 
 See [docs/TOOLS.md](docs/TOOLS.md) for the full API reference.
 
