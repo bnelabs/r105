@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- `/connect` and `/provider` commands for switching between llama.cpp,
+  llama-router, Ollama, LM Studio, vLLM, and supported cloud or custom
+  OpenAI-compatible providers from the live TUI
+- llama.cpp direct-provider preset at `http://127.0.0.1:8080/v1`, including
+  support for base URLs that already contain the `/v1` API prefix
+
+### Fixed
+- Slash-command palette navigation now scrolls the selected command into view
+  when the command list extends below the docked palette
 
 ## [0.7.0] — 2026-09-11
 

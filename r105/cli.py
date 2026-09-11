@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -30,10 +31,47 @@ DEFAULT_WORKSPACE = Path.home() / "r105-workspace"
 DEFAULT_SKILLS_DIR = Path("skills")
 
 
+def _resolve_connection(config: dict[str, Any], args: argparse.Namespace) -> tuple[str | None, str | None]:
+    """Resolve the provider URL and backend without masking environment defaults.
+
+    The parser uses the router URL as its display default, so passing that
+    value straight to ``create_client`` would accidentally force the router
+    even when a direct cloud or local provider is configured through the
+    environment.  Keep the distinction between an explicit URL and the
+    parser default here.
+    """
+    configured_backend = config.get("backend")
+    backend = args.backend or configured_backend
+    configured_url = config.get("url")
+    explicit_url = args.url != DEFAULT_URL
+
+    if explicit_url:
+        return args.url, backend
+
+    # A saved URL belongs to the saved backend. If a caller explicitly
+    # overrides the backend, do not accidentally reuse a URL for the other
+    # backend type.
+    if configured_url and (args.backend is None or configured_backend in {None, args.backend}):
+        return configured_url, backend
+
+    if backend == "router":
+        return os.environ.get("R105_URL") or DEFAULT_URL, backend
+    if backend == "direct":
+        return None, backend
+
+    if os.environ.get("R105_URL"):
+        return os.environ["R105_URL"], None
+    if os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL"):
+        return None, None
+
+    # Preserve r105's local-router default when no provider has been selected.
+    return DEFAULT_URL, None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="r105",
-        description="r105 — Beyond the prompt. Rich terminal AI assistant for any OpenAI-compatible backend.",
+        description="r105 — Beyond the prompt. Local-first AI harness for OpenAI-compatible backends.",
     )
     parser.add_argument(
         "--url", default=DEFAULT_URL, help="API base URL, default: %(default)s"
@@ -93,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     send_parser = subparsers.add_parser("send", help="Send one prompt and exit")
     send_parser.add_argument("message", nargs="+")
     subparsers.add_parser("chat", help="Start interactive chat (default)")
-    subparsers.add_parser("health", help="Check router health")
+    subparsers.add_parser("health", help="Check selected backend health")
     subparsers.add_parser("doctor", help="Diagnose environment: config, sandbox, backend, workspace")
     profiles_parser = subparsers.add_parser("profiles", help="Show router profiles")
     profiles_parser.add_argument("--raw", action="store_true", help="Print raw JSON")
@@ -124,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Load config file for defaults (CLI args take precedence)
     config = ensure_config()
-    url = args.url if args.url != DEFAULT_URL else config.get("url") or args.url
+    url, backend_name = _resolve_connection(config, args)
     workspace_str = (
         args.workspace
         if args.workspace != str(DEFAULT_WORKSPACE)
@@ -176,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # Create the API client (auto-detects router vs direct)
-    client = create_client(base_url=url, backend=args.backend)
+    client = create_client(base_url=url, backend=backend_name)
 
     # Load state-level overrides from config, then apply CLI args on top
     state_overrides = load_state_overrides()

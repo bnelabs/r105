@@ -1,4 +1,4 @@
-"""Backend-agnostic HTTP client — OpenAI-compatible, Router, and Ollama.
+"""Backend-agnostic HTTP client — OpenAI-compatible, llama.cpp, and Router.
 
 r105 can connect to any OpenAI-compatible API (OpenAI, Ollama, vLLM, etc.),
 to a llama-router backend (with profiles), or to Ollama's native API.

@@ -34,6 +34,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "context_tokens": None,
     "model_families": {},
     "mcp_servers": [],
+    "backend": None,
     "url": None,
     "allow_plugin_overrides": False,
     "docker_image": None,
@@ -44,6 +45,7 @@ VALID_THEMES = {"r105", "dracula", "solarized-dark", "high-contrast"}
 VALID_SANDBOX_BACKENDS = {"auto", "nsjail", "bwrap", "docker", "rlimit", "none"}
 VALID_PERMISSION_POSTURES = {"full-access", "restricted", "sandboxed", "off"}
 VALID_REASONING_EFFORTS = {"auto", "off", "low", "medium", "high"}
+VALID_BACKENDS = {"direct", "router"}
 VALID_KEYBINDING_IDS = {
     "quit",
     "show_help",
@@ -107,6 +109,7 @@ if _PYDANTIC_AVAILABLE:
         context_tokens: int | None = None
         model_families: dict[str, str | None] = {}
         mcp_servers: list[dict[str, Any]] = []
+        backend: str | None = None
         url: str | None = None
         allow_plugin_overrides: bool = False
         docker_image: str | None = None
@@ -200,6 +203,11 @@ def _validate_config_manual(raw: dict[str, Any]) -> None:
 
     if "cache_prompt" in raw and not isinstance(raw["cache_prompt"], bool):
         raise ValueError("cache_prompt must be true or false")
+
+    if "backend" in raw and raw["backend"] is not None and raw["backend"] not in VALID_BACKENDS:
+        raise ValueError(
+            f"Invalid backend '{raw['backend']}'. Valid: {', '.join(sorted(VALID_BACKENDS))}"
+        )
 
     if "keybindings" in raw:
         keybindings = raw["keybindings"]
@@ -420,6 +428,11 @@ def config_schema() -> dict[str, Any]:
                 "type": "array",
                 "items": {"type": "object"},
                 "default": [],
+            },
+            "backend": {
+                "type": ["string", "null"],
+                "enum": [*sorted(VALID_BACKENDS), None],
+                "default": None,
             },
             "url": {"type": ["string", "null"], "default": None},
             "allow_plugin_overrides": {"type": "boolean", "default": False},

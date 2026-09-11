@@ -44,6 +44,12 @@ class TestModelFamiliesValidation:
         with pytest.raises(ValueError, match="cache_prompt must be true or false"):
             _validate_config({"cache_prompt": "yes"})
 
+    def test_backend_accepts_direct_or_router(self) -> None:
+        _validate_config({"backend": "direct"})
+        _validate_config({"backend": "router"})
+        with pytest.raises(ValueError, match="Invalid backend"):
+            _validate_config({"backend": "other"})
+
     def test_schema_is_closed_and_contains_cache_prompt(self) -> None:
         schema = config_schema()
         assert schema["additionalProperties"] is False
@@ -51,6 +57,7 @@ class TestModelFamiliesValidation:
             "type": "boolean",
             "default": False,
         }
+        assert schema["properties"]["backend"]["enum"] == ["direct", "router", None]
 
     def test_keybindings_validate_known_ids(self) -> None:
         _validate_config({"keybindings": {"show_tools": "ctrl+o"}})

@@ -11,10 +11,12 @@ from __future__ import annotations
 import datetime
 import difflib
 import json
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -86,6 +88,8 @@ SLASH_COMMANDS = [
     "/reasoning",
     "/permissions",
     "/approve",
+    "/connect",
+    "/provider",
     "/preview",
     "/session",
     "/export",
@@ -96,6 +100,51 @@ SLASH_COMMANDS = [
 ]
 
 VALID_THEMES = {"r105", "dracula", "solarized-dark", "high-contrast"}
+
+# Provider presets intentionally use environment variables for credentials.
+# Keys are never accepted as command arguments or written to config.json.
+PROVIDER_PRESETS: dict[str, tuple[str, str, str | None]] = {
+    "router": ("router", "http://127.0.0.1:8010", None),
+    "llamacpp": ("direct", "http://127.0.0.1:8080/v1", None),
+    "ollama": ("direct", "http://127.0.0.1:11434/v1", None),
+    "lmstudio": ("direct", "http://127.0.0.1:1234/v1", None),
+    "vllm": ("direct", "http://127.0.0.1:8000/v1", "OPENAI_API_KEY"),
+    "openai": ("direct", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+    "groq": ("direct", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+    "openrouter": ("direct", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    "deepseek": ("direct", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
+    "together": ("direct", "https://api.together.xyz/v1", "TOGETHER_API_KEY"),
+}
+
+PROVIDER_ALIASES = {
+    "local": "ollama",
+    "llama-router": "router",
+    "lm-studio": "lmstudio",
+    "llama.cpp": "llamacpp",
+    "llama-cpp": "llamacpp",
+}
+
+
+def _connect_usage() -> str:
+    providers = " | ".join(PROVIDER_PRESETS)
+    return (
+        "usage: /connect <provider> [base-url]\n"
+        f"providers: {providers}\n"
+        "custom OpenAI-compatible API: /connect url <https://host/v1>\n"
+        "credentials come from the provider's environment variable; use /model after connecting"
+    )
+
+
+def _valid_provider_url(value: str) -> bool:
+    """Accept HTTP(S) API URLs without allowing credentials in the URL."""
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+        and not any(char.isspace() for char in value)
+    )
 
 # Signature for command handler functions.
 # All handlers are async functions taking a CommandContext, returning str.
@@ -203,6 +252,8 @@ Chat
   /reasoning auto|off|low|med..  set reasoning effort (model-provided)
   /permissions <posture>         set permission posture (full-access|restricted|sandboxed|off)
   /approve execute_python        one-time approval for code execution
+  /connect <provider>            connect to a local or cloud OpenAI-compatible provider
+  /provider <provider>           alias for /connect
 
 Skills
   /skills                        list local skills
@@ -228,7 +279,7 @@ Sessions
   /mcp reconnect <server>        reconnect an MCP server and rediscover tools
 
 System
-  /health                        show router health
+  /health                        show selected backend health
   /profiles                      list router profiles
   /exit                          quit
 """
@@ -501,6 +552,62 @@ async def _cmd_approve(ctx: CommandContext) -> str:
     return "execute_python approved for this session"
 
 
+async def _cmd_connect(ctx: CommandContext) -> str:
+    """Select and persist a local or cloud OpenAI-compatible provider."""
+    if not ctx.args or ctx.args[0].lower() in {"help", "list"}:
+        return _connect_usage()
+
+    provider = ctx.args[0].lower()
+    if provider in {"status", "show"}:
+        config = ensure_config()
+        backend = config.get("backend")
+        if backend is None and ctx.client is not None:
+            backend = type(getattr(ctx.client, "backend", ctx.client)).__name__.removesuffix("Client").lower()
+        url = config.get("url")
+        if url is None and ctx.client is not None:
+            url = getattr(ctx.client, "base_url", "")
+        return f"backend={backend or 'auto'}\nurl={url or 'auto'}"
+
+    provider = PROVIDER_ALIASES.get(provider, provider)
+    if provider in {"url", "custom"}:
+        if len(ctx.args) != 2:
+            return "usage: /connect url <https://host/v1>"
+        backend = "direct"
+        base_url = ctx.args[1]
+        credential_env = "OPENAI_API_KEY"
+        display_name = "custom"
+    else:
+        preset = PROVIDER_PRESETS.get(provider)
+        if preset is None:
+            return f"unknown provider: {ctx.args[0]}\n\n{_connect_usage()}"
+        if len(ctx.args) > 2:
+            return "usage: /connect <provider> [base-url]"
+        backend, default_url, credential_env = preset
+        base_url = ctx.args[1] if len(ctx.args) == 2 else default_url
+        display_name = provider
+
+    if not _valid_provider_url(base_url):
+        return f"invalid provider URL: {base_url!r} (use http:// or https:// without credentials)"
+
+    try:
+        save_config({"backend": backend, "url": base_url.rstrip("/")})
+    except (OSError, ValueError) as exc:
+        return f"provider configuration failed: {exc}"
+
+    if credential_env is None:
+        credential_status = "no API key required"
+    elif os.environ.get(credential_env):
+        credential_status = f"{credential_env}=set"
+    else:
+        credential_status = f"set {credential_env} before sending requests"
+
+    return (
+        f"provider={display_name} backend={backend} url={base_url.rstrip('/')}\n"
+        f"{credential_status}\n"
+        "connection switched live; use /health to verify and /model to choose a model"
+    )
+
+
 async def _cmd_preview(ctx: CommandContext) -> str:
     if ctx.workspace_dir is None:
         return "workspace not configured"
@@ -603,6 +710,8 @@ COMMAND_DISPATCH: dict[str, CommandHandler] = {
     "/reasoning": _cmd_reasoning,
     "/permissions": _cmd_permissions,
     "/approve": _cmd_approve,
+    "/connect": _cmd_connect,
+    "/provider": _cmd_connect,
     "/preview": _cmd_preview,
     "/session": _cmd_session,
     "/export": _cmd_export,
