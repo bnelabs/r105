@@ -15,27 +15,25 @@ When the LLM decides to call a tool, it emits a `tool_calls` array in its respon
 
 ### The Schema Definition
 
-Defined in `r105/tools.py` as an entry in `TOOL_DEFINITIONS`:
+Registered with the `@get_tool_registry().register(...)` decorator in `r105/tools.py` (the schema doubles as the LLM's `TOOL_DEFINITIONS` entry):
 
 ```python
-{
-    "type": "function",
-    "function": {
-        "name": "web_search",           # unique name — used in dispatch
-        "description": "Search the web and return results with titles, URLs, and snippets.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query string.",
-                },
-            },
-            "required": ["query"],       # which properties are mandatory
+@get_tool_registry().register(
+    name="web_search",
+    description="Search the web and return results with titles, URLs, and snippets.",
+    parameters={
+        "query": {
+            "type": "string",
+            "description": "Search query string.",
         },
     },
-}
-```
+    required=["query"],
+    needs_network=True,
+    needs_filesystem=False,
+    needs_output_truncation=True,
+)
+def web_search(arguments: dict[str, Any]) -> str:
+    ...
 
 ### The Handler Function
 
@@ -53,7 +51,7 @@ def web_search(arguments: dict[str, Any]) -> str:
             "https://html.duckduckgo.com/html/",
             params={"q": query},
             timeout=15.0,
-            headers={"User-Agent": "r105/0.4.0"},
+            headers={"User-Agent": "r105"},
             follow_redirects=True,
         )
         response.raise_for_status()
@@ -65,11 +63,13 @@ def web_search(arguments: dict[str, Any]) -> str:
 
 ### The Dispatch Entry
 
-In `execute_tool_call()`, add an `elif` branch:
+Dispatch is automatic: the decorator registers the handler on the shared `ToolRegistry`, and `execute_tool_call()` routes by name (built-ins → plugins → MCP). No manual dispatch table to edit. Add argument checks to `_validate_tool_args()` in `r105/tools.py` when the tool needs them:
 
 ```python
 elif name == "web_search":
-    result = web_search(arguments)
+    query = arguments.get("query", "")
+    if not query:
+        return "query is required"
 ```
 
 ## Adding a New Tool: Step by Step
@@ -95,45 +95,44 @@ def send_email(arguments: dict[str, Any]) -> str:
     return f"Would send email to {to_addr}:\nSubject: {subject}\n{len(body)} chars"
 ```
 
-### Step 2: Add the Schema
+### Step 2: Register the Schema
 
-Add to `TOOL_DEFINITIONS`:
+Decorate the handler with `@get_tool_registry().register(...)` (name, description, parameters, required, plus `needs_network` / `needs_filesystem` / `needs_output_truncation` flags). This both defines the LLM-facing JSON Schema and wires up dispatch — there is no separate `TOOL_DEFINITIONS` list or `elif` chain to edit:
 
 ```python
-{
-    "type": "function",
-    "function": {
-        "name": "send_email",
-        "description": "Send an email to a recipient.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "to": {
-                    "type": "string",
-                    "description": "Recipient email address.",
-                },
-                "subject": {
-                    "type": "string",
-                    "description": "Email subject line.",
-                },
-                "body": {
-                    "type": "string",
-                    "description": "Email body text.",
-                },
-            },
-            "required": ["to", "subject", "body"],
+@get_tool_registry().register(
+    name="send_email",
+    description="Send an email to a recipient.",
+    parameters={
+        "to": {
+            "type": "string",
+            "description": "Recipient email address.",
+        },
+        "subject": {
+            "type": "string",
+            "description": "Email subject line.",
+        },
+        "body": {
+            "type": "string",
+            "description": "Email body text.",
         },
     },
-}
+    required=["to", "subject", "body"],
+    needs_network=True,
+    needs_filesystem=False,
+)
+def send_email(arguments: dict[str, Any]) -> str:
+    ...
 ```
 
-### Step 3: Add Dispatch
+### Step 3: Validate Arguments
 
-In `execute_tool_call()`:
+If the tool needs argument checks, add a branch to `_validate_tool_args()` in `r105/tools.py`:
 
 ```python
 elif name == "send_email":
-    result = send_email(arguments)
+    if not arguments.get("to"):
+        return "to is required"
 ```
 
 ### Step 4: Add Tests
@@ -205,12 +204,11 @@ return f"error: {description}"
 
 ### Sandboxing
 
-Python execution (`execute_python`) runs in a subprocess with resource limits:
-- 256 MB memory
-- 25 seconds CPU
-- No child processes
-- No network access (stripped PATH)
-- Isolated filesystem (temp directory)
+Python execution (`execute_python`) runs in the auto-detected sandbox backend (`nsjail` > `bwrap` > `docker` > `rlimit` > `none`):
+- Strong backends (nsjail/bwrap/docker): namespace/container isolation, 256 MB memory, 25s CPU, stripped environment
+- Weak backends (rlimit/none): resource limits only or nothing — auto-selection is surfaced via a startup warning and the TUI status bar
+
+See [Sandbox & Security](../README.md#sandbox--security) in the README for details.
 
 For other tools, apply input validation:
 

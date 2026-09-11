@@ -5,7 +5,7 @@ r105 is a rich terminal AI assistant built on [Textual](https://textual.textuali
 <p align="center">
   <img src="https://img.shields.io/pypi/v/r105?color=cba6f7" alt="PyPI">
   <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-176%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-321%20passed-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
 
@@ -220,6 +220,17 @@ Override with `--backend router` or `--backend direct`.
   bottom and stops following the moment you scroll up; returning to the
   bottom re-pins it.
 
+### Tool Results & Inspector
+
+- **Collapsible long outputs** — tool results over ~2,000 characters start
+  folded to a preview. Click the panel — or press `t` / `Enter` / `Space`
+  while it is focused — to expand the full output in place.
+- **Diff coloring & code highlighting** — unified diffs render with
+  green/red/hunk styling; outputs with fenced code blocks get syntax
+  highlighting.
+- **Tool inspector (`Ctrl+T`)** — a modal screen listing every tool call in
+  the session with its arguments and result preview, plus fuzzy filtering.
+
 ### Command Palette
 
 Press `/` to open the interactive command palette with:
@@ -247,6 +258,8 @@ Press `/` to open the interactive command palette with:
 | `/json [on\|off]` | Toggle JSON object response mode |
 | `/max <tokens>` | Override max output tokens |
 | `/autocompact [on\|off]` | Toggle auto-compaction at 80% context threshold |
+| `/reasoning auto\|off\|low\|medium\|high` | Set reasoning effort (sent to capable backends) |
+| `/permissions <posture>` | Set tool-execution posture (`full-access\|restricted\|sandboxed\|off`) |
 | `/copy` | Copy last assistant message to system clipboard |
 
 #### Skills
@@ -458,6 +471,8 @@ def register(registry):
 
 Plugins are auto-discovered on startup. Use `/plugin reload` to reload without restarting.
 
+Plugin loading is validated: the file must expose `register(registry)` taking exactly one argument, and every tool needs a non-empty name/description, a parameters schema object, and a callable handler — violations are reported as specific warnings instead of silently skipping. Plugins cannot shadow built-in tools unless you opt in via the `allow_plugin_overrides` config key or `R105_ALLOW_PLUGIN_OVERRIDE=1`.
+
 See [docs/TOOLS.md](docs/TOOLS.md) for the full API reference.
 
 ---
@@ -542,7 +557,7 @@ Four themes are included. Switch at runtime with `/theme <name>`:
 | `solarized-dark` | `#268bd2` blue | Solarized Dark |
 | `high-contrast` | `#ffff00` yellow | Accessibility-focused |
 
-Themes are defined as Textual CSS files in `r105/themes/`. The selected theme persists in `~/.config/r105/state.json`.
+Themes are defined as Textual CSS files in `r105/themes/`. The selected theme persists in `~/.config/r105/config.json`.
 
 ---
 
@@ -563,8 +578,7 @@ r105 stores configuration in `~/.config/r105/`:
 
 ```
 ~/.config/r105/
-├── config.json          # MCP servers, model, sandbox backend, defaults
-├── state.json           # Persistent TUI state (theme, profile, quality)
+├── config.json          # theme, model, sandbox backend, defaults
 ├── sessions/            # Saved conversation sessions (JSON)
 │   ├── __autosave__.json
 │   └── my-session.json
@@ -709,7 +723,7 @@ rm -rf ~/r105-workspace
 # Install dev dependencies
 pip install -e ".[dev]"
 
-# Run full test suite (176 tests)
+# Run full test suite (321 tests)
 python -m pytest tests/ -v
 
 # With coverage
@@ -726,14 +740,24 @@ mypy r105/
 | File | Coverage |
 |------|----------|
 | `tests/test_client.py` | Payload building, response parsing, tool call extraction |
+| `tests/test_client_chaos.py` | Error handling, edge cases, malformed SSE, retry behavior |
 | `tests/test_integration.py` | Full async flows with mocked HTTP (`pytest-httpx`), SSE streaming |
 | `tests/test_commands.py` | Slash command handlers, state mutations, error paths |
-| `tests/test_tools.py` | Tool dispatch, sandbox, SSRF checks, safe expression evaluator |
+| `tests/test_tools.py` | Tool dispatch, sandbox, SSRF checks, safe math evaluator, unit conversion |
 | `tests/test_state.py` | ChatState defaults, TokenUsage math, token estimation |
 | `tests/test_skills.py` | Skill listing, reading, parameter substitution, path traversal |
+| `tests/test_config.py` | Config validation (manual + pydantic schema) |
+| `tests/test_model_catalog.py` | Model family/context resolution and overrides |
+| `tests/test_reasoning_permissions.py` | Reasoning effort and permission posture handling |
+| `tests/test_sessions_export_guard.py` | Optional export-dependency guard |
+| `tests/test_sandbox_fallback.py` | Sandbox fallback reasons and weak-backend warnings |
+| `tests/test_plugin_validation.py` | Plugin signature and tool-schema validation |
+| `tests/test_session_diff.py` | Session diff summaries |
+| `tests/test_tools_screen.py` | Tool-inspector collection and rendering |
 | `tests/test_tui.py` | Command detection, palette data integrity, widget structure |
 | `tests/test_command_palette.py` | Fuzzy scoring, palette filtering, navigation |
-| `tests/test_client_chaos.py` | Error handling, edge cases, malformed responses |
+| `tests/test_tui_features.py` | TUI feature coverage (streaming, panels, markers) |
+| `tests/test_tui_virtualization.py` | Virtualized transcript, collapsible panels and results |
 
 CI runs on GitHub Actions (`ci.yml`): ruff lint, mypy type-check, and pytest with coverage on Python 3.12 and 3.13. Coverage is uploaded to Codecov.
 

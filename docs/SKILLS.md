@@ -105,7 +105,7 @@ Both skills' system messages are included in each chat request. If they conflict
 ## Skill Lifecycle
 
 1. **Load:** `/skill use <name>` reads the `.md` file and adds it to `ChatState.active_skills`
-2. **Inject:** Before every chat request, `_skill_messages()` reads each active skill and builds system messages
+2. **Inject:** Before every chat request, `skill_messages()` (in `r105/skills.py`) reads each active skill and builds system messages
 3. **Parameterize:** `{key}` placeholders are substituted with values from `ChatState.skill_params`
 4. **Deactivate:** `/skill drop` removes the skill; `/skill clear` removes all
 
