@@ -785,6 +785,9 @@ python -m pytest tests/ -v
 # With coverage
 python -m pytest tests/ -v --cov=r105 --cov-report=term-missing
 
+# Compare local token estimates with a tiktoken baseline
+python benchmarks/token_estimation.py
+
 # Lint and type-check
 ruff check r105/ tests/
 ruff format r105/ tests/
@@ -803,6 +806,7 @@ mypy r105/
 | `tests/test_state.py` | ChatState defaults, TokenUsage math, token estimation |
 | `tests/test_skills.py` | Skill listing, reading, parameter substitution, path traversal |
 | `tests/test_config.py` | Config validation (manual + pydantic schema) |
+| `tests/test_architecture_layers.py` | Client facade, command registry, tool protocol, trace IDs, atomic sessions, schema checks |
 | `tests/test_model_catalog.py` | Model family/context resolution and overrides |
 | `tests/test_reasoning_permissions.py` | Reasoning effort and permission posture handling |
 | `tests/test_sessions_export_guard.py` | Optional export-dependency guard |
@@ -843,11 +847,13 @@ r105 is a layered Python application:
 ### Key Design Patterns
 
 - **Backend-agnostic client** — `BaseClient` abstract class with `RouterClient` (profiles) and `DirectClient` (any OpenAI-compatible API) implementations, auto-detected based on URL and environment
+- **Stable client facade** — `r105.client.Client` exposes `chat()`, `stream_chat()`, `list_models()`, health, and compaction without requiring callers to know which backend was selected
 - **`@work(exclusive=True)` cancellation** — new messages cancel in-flight requests; `finally` blocks clean up UI state regardless of cancellation
 - **`asyncio.to_thread()` for tools** — synchronous tool handlers run in the default thread pool, keeping the TUI responsive
 - **Parallel tool execution** — independent tool calls run concurrently via `asyncio.gather(return_exceptions=True)`, so one failure doesn't cancel the batch
 - **Shared `httpx.AsyncClient`** — a single connection pool across the session lifetime for efficient HTTP reuse
 - **Debounced streaming** — SSE tokens are buffered and rendered every ~50ms, preventing CPU thrashing from per-token Markdown re-renders
+- **Correlation and diagnostics** — each `ChatState` carries a trace ID through request headers, structured logs, and tool execution; the TUI status bar periodically checks backend health and local runtime readiness
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system design, data flow, component tree, and implementation details.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,7 +15,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Static
 
-from r105.client import BaseClient, RouterClient
+from r105.client import BaseClient, Client
 from r105.commands import copy_to_clipboard, handle_slash_command
 from r105.constants import (
     AUTO_COMPACT_THRESHOLD_PCT,
@@ -22,7 +23,7 @@ from r105.constants import (
 )
 from r105.errors import format_request_error
 from r105.model_catalog import uses_gemma4_channel_syntax
-from r105.sandbox import weak_backend_warning
+from r105.sandbox import current_backend_name, weak_backend_warning
 from r105.sessions import auto_save
 from r105.state import ChatState, token_usage
 from r105.tool_loop import (
@@ -63,7 +64,7 @@ class ChatScreen(Screen[None]):
 
     def __init__(
         self,
-        client: BaseClient | RouterClient,
+        client: BaseClient | Client,
         state: ChatState,
         workspace_dir: Path,
     ) -> None:
@@ -73,6 +74,9 @@ class ChatScreen(Screen[None]):
         self.workspace = workspace_dir
         self._http = httpx.AsyncClient()
         self._active_worker: Any | None = None
+        self._backend_health = "checking"
+        self._sandbox_backend = current_backend_name() or "auto"
+        self._workspace_status = "ok" if os.access(self.workspace, os.W_OK) else "unwritable"
         # Cheap read (no detection): warns only if a weak backend is active.
         self._sandbox_warning = weak_backend_warning() or ""
 
@@ -111,6 +115,8 @@ class ChatScreen(Screen[None]):
     def on_mount(self) -> None:
         # Periodic timer for status bar animation (sprite frames)
         self.set_interval(0.05, self._tick_status_bar)
+        self.set_interval(30.0, self._start_health_check)
+        self._start_health_check()
         self._refresh_all()
         # Textual 8 made RichLog focusable, so ChatView steals startup focus
         # from the chat input and the TUI ignores keyboard input until the
@@ -133,6 +139,26 @@ class ChatScreen(Screen[None]):
         """Advance status bar animation frames (streaming indicator)."""
         status_bar = self.query_one("#status-bar", StatusBarWidget)
         status_bar.tick()
+
+    def _start_health_check(self) -> None:
+        """Start a periodic non-blocking backend health probe."""
+        self._check_backend_health()
+
+    @work(exclusive=True)
+    async def _check_backend_health(self) -> None:
+        """Refresh backend connectivity without blocking Textual's event loop."""
+        self._backend_health = "checking"
+        self._refresh_status_bar()
+        try:
+            result = await self.client.async_health(client=self._http)
+            if result.get("ok"):
+                count = result.get("models_available")
+                self._backend_health = f"ok/{count}" if count is not None else "ok"
+            else:
+                self._backend_health = "down"
+        except Exception:
+            self._backend_health = "down"
+        self._refresh_status_bar()
 
     def action_copy_last_message(self) -> None:
         """Copy the last assistant message to the system clipboard."""
@@ -384,7 +410,9 @@ class ChatScreen(Screen[None]):
             # Phase 2: Execute all tools in parallel via thread pool with timeouts
             outcomes = await run_tools_parallel(
                 signatures,
-                lambda tc: execute_tool_call(tc, self.workspace),
+                lambda tc: execute_tool_call(
+                    tc, self.workspace, trace_id=self.state.trace_id
+                ),
             )
 
             # Phase 3: Process results and update history
@@ -492,8 +520,16 @@ class ChatScreen(Screen[None]):
     def _refresh_status_bar(self) -> None:
         try:
             usage = token_usage(self.state)
-            self.query_one("#status-bar", StatusBarWidget).update_status(
-                self.state, usage, sandbox_warning=self._sandbox_warning or None
+            status_bar = self.query_one("#status-bar", StatusBarWidget)
+            status_bar.set_environment_status(
+                health=self._backend_health,
+                sandbox_backend=self._sandbox_backend,
+                workspace=self._workspace_status,
+            )
+            status_bar.update_status(
+                self.state,
+                usage,
+                sandbox_warning=self._sandbox_warning or None,
             )
         except Exception:
             pass

@@ -137,7 +137,9 @@ class DirectClient(BaseClient):
     ) -> ChatResult:
         payload = self._prepare_payload(message, state, tools)
         started = time.perf_counter()
-        raw = self._sync_request("POST", "/v1/chat/completions", json=payload).json()
+        raw = self._sync_request(
+            "POST", "/v1/chat/completions", json=payload, trace_id=state.trace_id
+        ).json()
         result = _parse_response(raw, started)
         self._record_send(message, state, result)
         return result
@@ -154,7 +156,11 @@ class DirectClient(BaseClient):
         payload = self._prepare_payload(message, state, tools)
         started = time.perf_counter()
         response = await self._async_request(
-            "POST", "/v1/chat/completions", client=client, json=payload
+            "POST",
+            "/v1/chat/completions",
+            client=client,
+            json=payload,
+            trace_id=state.trace_id,
         )
         response.raise_for_status()
         raw = response.json()
@@ -179,11 +185,16 @@ class DirectClient(BaseClient):
                 on_chunk,
                 on_status=on_status,
                 config_families=state.model_families,
+                trace_id=state.trace_id,
             )
         else:
             started = time.perf_counter()
             response = await self._async_request(
-                "POST", "/v1/chat/completions", client=client, json=payload
+                "POST",
+                "/v1/chat/completions",
+                client=client,
+                json=payload,
+                trace_id=state.trace_id,
             )
             response.raise_for_status()
             raw = response.json()
@@ -209,34 +220,47 @@ class DirectClient(BaseClient):
             on_chunk or (lambda _: None),
             on_status=on_status,
             config_families=state.model_families,
+            trace_id=state.trace_id,
         )
         self._record_send(message, state, result)
         return result
 
     # -- Health / models ----------------------------------------------------
 
-    async def async_health(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
+    async def async_health(
+        self,
+        client: httpx.AsyncClient | None = None,
+        *,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
         """Check backend health by listing models."""
         try:
-            data = await self.async_list_models(client)
+            data = await self.async_list_models(client, trace_id=trace_id)
             return {"ok": True, "models_available": len(data.get("data", []))}
         except (httpx.HTTPError, RouterAPIError, OSError, TimeoutError) as exc:
             return {"ok": False, "error": str(exc)}
 
-    def health(self) -> dict[str, Any]:
+    def health(self, *, trace_id: str | None = None) -> dict[str, Any]:
         try:
-            data = self.list_models()
+            data = self.list_models(trace_id=trace_id)
             return {"ok": True, "models_available": len(data.get("data", []))}
         except (httpx.HTTPError, RouterAPIError, OSError, TimeoutError) as exc:
             return {"ok": False, "error": str(exc)}
 
-    def list_models(self) -> dict[str, Any]:
-        response = self._sync_request("GET", "/v1/models", timeout=10.0)
+    def list_models(self, *, trace_id: str | None = None) -> dict[str, Any]:
+        response = self._sync_request("GET", "/v1/models", timeout=10.0, trace_id=trace_id)
         response.raise_for_status()
         return cast(dict[str, Any], response.json())
 
-    async def async_list_models(self, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
-        response = await self._async_request("GET", "/v1/models", client=client, timeout=10.0)
+    async def async_list_models(
+        self,
+        client: httpx.AsyncClient | None = None,
+        *,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        response = await self._async_request(
+            "GET", "/v1/models", client=client, timeout=10.0, trace_id=trace_id
+        )
         response.raise_for_status()
         return cast(dict[str, Any], response.json())
 

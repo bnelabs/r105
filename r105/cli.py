@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from r105 import __version__
-from r105.client import BaseClient, create_client
+from r105.client import BaseClient, Client, create_client
 from r105.config import ensure_config, export_config_schema, load_state_overrides
 from r105.mcp_client import load_mcp_servers
 from r105.model_catalog import resolve_context_tokens
@@ -248,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
             print(report.render())
             return 0 if report.passed else 1
         if args.command == "health":
-            print(json.dumps(client.health(), indent=2, sort_keys=True))  # type: ignore[attr-defined]
+            print(json.dumps(client.health(), indent=2, sort_keys=True))
             return 0
         if args.command == "profiles":
             if not hasattr(client, "profiles"):
@@ -272,10 +272,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def _run_tui(client: BaseClient, state: ChatState, workspace_dir: Path) -> int:
+def _run_tui(client: BaseClient | Client, state: ChatState, workspace_dir: Path) -> int:
     from r105.tui.app import run_app
 
-    run_app(client, state, workspace_dir)  # type: ignore[arg-type]
+    run_app(client, state, workspace_dir)
     return 0
 
 

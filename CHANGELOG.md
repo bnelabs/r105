@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Typed `Client` facade with stable `chat()`, `stream_chat()`, and
+  `list_models()` methods, while preserving concrete backend compatibility
+- Correlation IDs on `ChatState`, backend request headers, structured logs, and
+  local tool executions
+- Atomic, fsynced session writes; the TUI status bar now reports backend health,
+  sandbox backend, and workspace writability
+- Independent slash-command parser/registry, formal `Tool` protocol, and
+  dedicated tool-security and sandbox-profile modules
+- Config-schema consistency validation in startup and CI, plus the
+  `benchmarks/token_estimation.py` tiktoken comparison utility
+- MCP transport code is imported lazily, so ordinary tool startup does not
+  load the stdio/SSE manager until MCP is configured or called
 - Prompt-prefix caching toggle for llama.cpp-compatible backends via
   `cache_prompt` in config and `/cache-prompt`; disabled by default for
   compatibility with other OpenAI-compatible APIs

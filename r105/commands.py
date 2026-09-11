@@ -11,7 +11,6 @@ from __future__ import annotations
 import datetime
 import difflib
 import json
-import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +18,7 @@ from typing import Any
 
 import httpx
 
+from r105.command_parser import CommandParser, CommandRegistry
 from r105.commands_format import (
     format_history as _fmt_history,
 )
@@ -38,7 +38,6 @@ from r105.commands_format import (
     status_line as _fmt_status,
 )
 from r105.config import apply_config_to_state, ensure_config, save_config
-from r105.mcp_client import get_mcp_manager
 from r105.model_catalog import resolve_context_tokens
 from r105.plugins import get_registry
 from r105.sessions import (
@@ -114,6 +113,13 @@ class CommandContext:
 CommandHandler = Callable[[CommandContext], Awaitable[str]]
 
 
+def get_mcp_manager() -> Any:
+    """Load the MCP manager lazily while preserving the old module API."""
+    from r105.mcp_client import get_mcp_manager as _get_mcp_manager
+
+    return _get_mcp_manager()
+
+
 def _parse_bool(value: str | None) -> bool | None:
     """Parse a string as a boolean; returns None if unrecognized."""
     if value is None:
@@ -174,8 +180,7 @@ def _global_context_override() -> int | None:
 
 def _suggest_command(typed: str) -> str | None:
     """Return the closest matching command for *typed*, or None."""
-    candidates = difflib.get_close_matches(typed, SLASH_COMMANDS, n=1, cutoff=0.6)
-    return candidates[0] if candidates else None
+    return COMMAND_REGISTRY.suggest(typed)
 
 
 def command_menu() -> str:
@@ -607,6 +612,11 @@ COMMAND_DISPATCH: dict[str, CommandHandler] = {
     "/exit": _cmd_exit,
 }
 
+# The mapping remains public for existing integrations; the registry is the
+# parser-facing source of truth for new callers.
+COMMAND_REGISTRY = CommandRegistry(COMMAND_DISPATCH)
+COMMAND_PARSER = CommandParser()
+
 
 # -- Main entry point -----------------------------------------------------
 
@@ -623,13 +633,13 @@ async def handle_slash_command(
     Dispatches via ``COMMAND_DISPATCH`` — each handler is an async function
     so commands that call the router API do not block the TUI.
     """
-    parts = shlex.split(line)
-    if not parts:
+    parsed = COMMAND_PARSER.parse(line)
+    if parsed is None:
         return ""
-    command = parts[0]
-    args = parts[1:]
+    command = parsed.name
+    args = parsed.args
 
-    handler = COMMAND_DISPATCH.get(command)
+    handler = COMMAND_REGISTRY.get(command)
     if handler is None:
         suggestion = _suggest_command(command)
         if suggestion and suggestion != command:

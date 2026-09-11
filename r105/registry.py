@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from r105.tool_protocol import Tool
+
 # Handler signature: (arguments: dict, workspace_dir: Path, **kwargs) -> str.
 # Handlers may declare fewer parameters (e.g. ``(arguments)`` or ``()``);
 # see :func:`call_tool_handler`.
@@ -127,17 +129,33 @@ class RegisteredTool:
     needs_external_wrapping: bool = False  # XML <tool_output> tags
     handler: ToolHandler | None = None
 
+    @property
+    def parameters_schema(self) -> dict[str, Any]:
+        """JSON-schema properties exposed by this tool."""
+        return {
+            "type": "object",
+            "properties": self.parameters,
+            "required": self.required,
+        }
+
+    def execute(
+        self,
+        arguments: dict[str, Any],
+        workspace_dir: Path,
+        **kwargs: Any,
+    ) -> str:
+        """Execute the registered handler through the shared tool contract."""
+        if self.handler is None:
+            return ""
+        return cast(str, call_tool_handler(self.handler, arguments, workspace_dir, **kwargs))
+
     def to_definition(self) -> dict[str, Any]:
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": self.parameters,
-                    "required": self.required,
-                },
+                "parameters": self.parameters_schema,
             },
         }
 
@@ -212,11 +230,14 @@ class ToolRegistry(ComponentRegistry["RegisteredTool"]):
         tool = self._tools.get(name)
         if tool is None or tool.handler is None:
             return None
-        result = call_tool_handler(tool.handler, arguments, workspace_dir, **kwargs)
-        return cast("str | None", result)
+        return tool.execute(arguments, workspace_dir, **kwargs)
 
     def get_definitions(self) -> list[dict[str, Any]]:
         return [t.to_definition() for t in self._tools.values()]
+
+    def get_tools(self) -> list[Tool]:
+        """Return registered tools through the shared protocol surface."""
+        return cast(list[Tool], self.list_tools())
 
     def list_tools(self) -> list[RegisteredTool]:
         return list(self._tools.values())

@@ -7,7 +7,7 @@ from pathlib import Path
 from textual.app import App
 from textual.binding import Binding
 
-from r105.client import BaseClient, RouterClient
+from r105.client import BaseClient, Client
 from r105.state import ChatState
 from r105.tui.screens.chat import ChatScreen
 
@@ -36,7 +36,7 @@ class R105App(App):
 
     def __init__(
         self,
-        client: BaseClient | RouterClient,
+        client: BaseClient | Client,
         state: ChatState,
         workspace_dir: Path,
     ) -> None:
@@ -81,7 +81,7 @@ class R105App(App):
         self.push_screen(HistoryScreen(self.r105_state, self.chat_screen))
 
 
-def run_app(client: RouterClient, state: ChatState, workspace_dir: Path) -> None:
+def run_app(client: BaseClient | Client, state: ChatState, workspace_dir: Path) -> None:
     """Entry point called from cli.py to start the Textual app."""
     app = R105App(client, state, workspace_dir)
     app.run()

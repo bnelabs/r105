@@ -249,7 +249,7 @@ Skills are read by `r105/skills.py::read_skill()` and converted to system messag
 
 ## Tools
 
-Tools are registered on a decorator-based `ToolRegistry` (unified with plugins via `ComponentRegistry`) in `r105/registry.py`, with implementations split into `r105/tools.py` (executor/dispatch), `r105/tools_fs.py`, `r105/tools_web.py` (`web_search`/`web_fetch`), and `r105/tools_math.py`. Dispatch adapts to handler arity (`call_tool_handler()`), so pure tools declare `(arguments)` or `()` instead of the full `(arguments, workspace_dir)` contract. Slash commands take a single `CommandContext` dataclass. The chat tool loop's pure mechanics (signature parsing, repeat dedup, per-tool timeouts) live in `r105/tool_loop.py`; the TUI screen keeps only orchestration. Backends live in `r105/backends/` (`base`/`direct`/`router`) with wire format in `r105/payload.py` and streaming in `r105/sse.py` (`r105/client.py` re-exports for compatibility). `TOOL_DEFINITIONS` exposes the JSON Schema list for the LLM; `execute_tool_call()` validates arguments, enforces the permission posture, and dispatches built-ins → plugins → MCP. Tool execution runs in a thread pool via `asyncio.to_thread()`. Python code runs in the auto-detected sandbox backend (`nsjail` > `bwrap` > `docker` > `rlimit` > `none`); `detect_backend_with_reason()` / `get_fallback_reason()` report downgrades to weaker backends.
+Tools are registered on a decorator-based `ToolRegistry` (unified with plugins via `ComponentRegistry`) in `r105/registry.py`, with implementations split into `r105/tools.py` (executor/dispatch), `r105/tools_security.py` (argument, SSRF, and workspace containment checks), `r105/tools_fs.py`, `r105/tools_web.py` (`web_search`/`web_fetch`), and `r105/tools_math.py`. `RegisteredTool` implements the shared `Tool` protocol from `r105/tool_protocol.py`, so metadata, JSON Schema export, and execution use one contract. Dispatch adapts to handler arity (`call_tool_handler()`), so pure tools declare `(arguments)` or `()` instead of the full `(arguments, workspace_dir)` contract. Slash command parsing and lookup live in `r105/command_parser.py`; handlers still receive a single `CommandContext` dataclass. The chat tool loop's pure mechanics (signature parsing, repeat dedup, per-tool timeouts) live in `r105/tool_loop.py`; the TUI screen keeps only orchestration. Backends live in `r105/backends/` (`base`/`direct`/`router`) behind the typed `r105.client.Client` facade, with wire format in `r105/payload.py` and streaming in `r105/sse.py`. `TOOL_DEFINITIONS` exposes the JSON Schema list for the LLM; `execute_tool_call()` validates arguments, enforces the permission posture, and dispatches built-ins → plugins → MCP. Tool execution runs in a thread pool via `asyncio.to_thread()`. Python code runs in the auto-detected sandbox backend (`nsjail` > `bwrap` > `docker` > `rlimit` > `none`); policy profiles live in `r105/sandbox_profiles.py`, while `detect_backend_with_reason()` / `get_fallback_reason()` report downgrades to weaker backends.
 
 ## Directory Layout
 
@@ -257,26 +257,30 @@ Tools are registered on a decorator-based `ToolRegistry` (unified with plugins v
 r105/
 ├── backends/           # Backend clients: base.py (BaseClient), direct.py, router.py
 ├── cli.py              # CLI entry point (argparse)
-├── client.py           # Backwards-compat facade re-exporting backends/payload/sse
-├── commands.py         # Slash command handlers (COMMAND_DISPATCH, CommandContext)
+├── client.py           # Typed Client facade plus backwards-compatible exports
+├── command_parser.py   # Slash command parsing, registry, and suggestions
+├── commands.py         # Slash command handlers and compatibility dispatch table
 ├── commands_format.py  # Presentation helpers for slash commands
 ├── config.py           # Config file read/write + validation (~/.config/r105/config.json)
 ├── constants.py        # Shared constants + ToolProfile per-tool budgets
 ├── errors.py           # Typed exception hierarchy (R105Error, ...)
 ├── logging.py          # Structured JSON-lines logging
-├── mcp_client.py       # MCP stdio/SSE clients + manager
+├── mcp_client.py       # MCP stdio/SSE clients + manager (loaded lazily)
 ├── model_catalog.py    # Model family/context resolution + overrides
 ├── payload.py          # Chat payload building + response parsing (wire format)
 ├── plugins.py          # Plugin loading, validation, registry
 ├── providers.py        # Native Anthropic/Gemini adapters
 ├── registry.py         # ComponentRegistry + ToolRegistry + arity-adapting dispatch
-├── sandbox.py          # Sandbox backends (nsjail/bwrap/docker/rlimit/none)
+├── sandbox.py          # Sandbox execution backends (nsjail/bwrap/docker/rlimit/none)
+├── sandbox_profiles.py  # Declarative per-tool sandbox capabilities and limits
 ├── sessions.py         # Session save/load/diff + conversation export
 ├── skills.py           # Skill file loading + system-message injection
 ├── sse.py              # SSE streaming core (stream_sse)
 ├── state.py            # ChatState, ChatResult, TokenUsage
+├── tool_protocol.py     # Shared tool metadata/execution protocol
 ├── tool_loop.py        # Tool-loop mechanics: signatures, dedup, timeouts
 ├── tools.py            # Tool execution/dispatch (registry lives in registry.py)
+├── tools_security.py    # Tool argument, SSRF, path, and plugin-shadow checks
 ├── tools_fs.py         # File/workspace tool helpers
 ├── tools_math.py       # Safe math evaluator + unit conversion
 ├── tools_web.py        # Web search/fetch tool implementations + web helpers

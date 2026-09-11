@@ -28,9 +28,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
 from typing import Any
 
+from r105 import sandbox_profiles as _profiles
 from r105.constants import (
     SANDBOX_CPU_SECONDS,
     SANDBOX_FILESIZE_MB,
@@ -39,83 +39,12 @@ from r105.constants import (
 )
 from r105.errors import SandboxUnavailableError
 
-# -- Sandbox profiles ---------------------------------------------------------
-
-
-@dataclass
-class SandboxProfile:
-    """Isolation requirements for a tool execution.
-
-    Each tool declares what it needs, and the sandbox backend enforces
-    the strictest possible isolation while granting only what's required.
-    """
-
-    # Whether the tool needs network access (web_search, web_fetch)
-    needs_network: bool = False
-
-    # Whether the tool needs to read/write host filesystem files
-    needs_filesystem: bool = False
-
-    # Whether the tool needs write access (vs. read-only)
-    needs_write: bool = False
-
-    # Whether to enable seccomp filtering (nsjail only, always on for bwrap)
-    seccomp: bool = True
-
-    # Custom seccomp policy string (nsjail --seccomp_string)
-    seccomp_policy: str = ""
-
-    # Process timeout in seconds
-    timeout: float = SANDBOX_TIMEOUT
-
-    # Memory limit in MB
-    memory_mb: int = SANDBOX_MEMORY_MB
-
-    # CPU time limit in seconds
-    cpu_seconds: int = SANDBOX_CPU_SECONDS
-
-
-# Default profiles for built-in tools
-PROFILE_EXECUTE_PYTHON = SandboxProfile(
-    needs_network=False,
-    needs_filesystem=False,
-    needs_write=False,
-    seccomp=True,
-)
-PROFILE_FILE_TOOLS = SandboxProfile(
-    needs_network=False,
-    needs_filesystem=True,
-    needs_write=True,
-    seccomp=True,
-)
-PROFILE_WEB_TOOLS = SandboxProfile(
-    needs_network=True,
-    needs_filesystem=False,
-    needs_write=False,
-    seccomp=True,
-)
-PROFILE_SYSTEM_TOOLS = SandboxProfile(
-    needs_network=False,
-    needs_filesystem=False,
-    needs_write=False,
-    seccomp=False,
-)
-
-
-def profile_for_tool(name: str) -> SandboxProfile:
-    """Return the appropriate sandbox profile for a tool name."""
-    profiles: dict[str, SandboxProfile] = {
-        "execute_python": PROFILE_EXECUTE_PYTHON,
-        "write_file": PROFILE_FILE_TOOLS,
-        "read_file": PROFILE_FILE_TOOLS,
-        "list_files": PROFILE_FILE_TOOLS,
-        "web_search": PROFILE_WEB_TOOLS,
-        "web_fetch": PROFILE_WEB_TOOLS,
-        "get_time": PROFILE_SYSTEM_TOOLS,
-        "calculate": PROFILE_SYSTEM_TOOLS,
-        "system_info": PROFILE_SYSTEM_TOOLS,
-    }
-    return profiles.get(name, PROFILE_EXECUTE_PYTHON)
+SandboxProfile = _profiles.SandboxProfile
+PROFILE_EXECUTE_PYTHON = _profiles.PROFILE_EXECUTE_PYTHON
+PROFILE_FILE_TOOLS = _profiles.PROFILE_FILE_TOOLS
+PROFILE_SYSTEM_TOOLS = _profiles.PROFILE_SYSTEM_TOOLS
+PROFILE_WEB_TOOLS = _profiles.PROFILE_WEB_TOOLS
+profile_for_tool = _profiles.profile_for_tool
 
 
 # -- Environment sanitisation -------------------------------------------

@@ -33,6 +33,12 @@ jobs:
       - name: Type-check with mypy
         run: mypy r105/
 
+      - name: Enforce typed public APIs
+        run: mypy --disallow-untyped-defs r105/client.py r105/backends/base.py r105/state.py r105/config.py
+
+      - name: Validate exported config schema
+        run: python -c "from r105.config import validate_config_schema; validate_config_schema()"
+
       - name: Run tests with coverage
         run: python -m pytest tests/ -v --cov=r105 --cov-report=term-missing --cov-report=xml
 

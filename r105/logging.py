@@ -18,6 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +29,31 @@ LOGGER_NAME = "r105"
 _LOG_DIR = Path.home() / ".local" / "state" / "r105"
 _LOG_FILE = _LOG_DIR / "log.jsonl"
 _LEVEL = os.environ.get("R105_LOG_LEVEL", "INFO").upper()
+_TRACE_ID: ContextVar[str | None] = ContextVar("r105_trace_id", default=None)
+
+
+def current_trace_id() -> str | None:
+    """Return the correlation id attached to the current task, if any."""
+    return _TRACE_ID.get()
+
+
+@contextmanager
+def trace_context(trace_id: str | None) -> Iterator[None]:
+    """Attach *trace_id* to log records emitted in this execution context."""
+    token = _TRACE_ID.set(trace_id)
+    try:
+        yield
+    finally:
+        _TRACE_ID.reset(token)
+
+
+def _with_trace_id(extra: dict[str, Any]) -> dict[str, Any]:
+    """Add the active correlation id without overwriting an explicit value."""
+    fields = dict(extra)
+    trace_id = fields.get("trace_id") or current_trace_id()
+    if trace_id:
+        fields["trace_id"] = trace_id
+    return fields
 
 
 class JSONFormatter(logging.Formatter):
@@ -78,16 +106,16 @@ def _get_logger() -> logging.Logger:
 
 
 def info(message: str, **extra: Any) -> None:
-    _get_logger().info(message, extra={"extra_fields": extra})
+    _get_logger().info(message, extra={"extra_fields": _with_trace_id(extra)})
 
 
 def warn(message: str, **extra: Any) -> None:
-    _get_logger().warning(message, extra={"extra_fields": extra})
+    _get_logger().warning(message, extra={"extra_fields": _with_trace_id(extra)})
 
 
 def error(message: str, **extra: Any) -> None:
-    _get_logger().error(message, extra={"extra_fields": extra})
+    _get_logger().error(message, extra={"extra_fields": _with_trace_id(extra)})
 
 
 def debug(message: str, **extra: Any) -> None:
-    _get_logger().debug(message, extra={"extra_fields": extra})
+    _get_logger().debug(message, extra={"extra_fields": _with_trace_id(extra)})

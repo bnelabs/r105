@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -86,10 +88,7 @@ class SessionManager:
             "message_count": len(state.history),
             "saved_at": datetime.datetime.now().isoformat(),
         }
-        # Atomic write: temp file + rename to avoid torn reads.
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(path)
+        _atomic_write_json(path, data)
         return path
 
 
@@ -153,6 +152,7 @@ def _serializable_state(state: ChatState) -> dict[str, Any]:
         "cache_prompt": state.cache_prompt,
         "model": state.model,
         "context_tokens": state.context_tokens,
+        "trace_id": state.trace_id,
         "active_skills": state.active_skills,
         "skill_params": state.skill_params,
     }
@@ -170,6 +170,8 @@ def _restore_state(state: ChatState, data: dict[str, Any]) -> None:
         state.model = saved["model"]
     if isinstance(saved.get("context_tokens"), int) and saved["context_tokens"] > 0:
         state.context_tokens = saved["context_tokens"]
+    if isinstance(saved.get("trace_id"), str) and saved["trace_id"].strip():
+        state.trace_id = saved["trace_id"]
     state.active_skills = saved.get("active_skills") or []
     state.skill_params = saved.get("skill_params") or {}
     invalidate_backend_usage(state)
@@ -191,8 +193,40 @@ def save_session(state: ChatState, name: str) -> Path:
         "saved_at": datetime.datetime.now().isoformat(),
     }
 
-    path.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    _atomic_write_json(path, data)
     return path
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """Write JSON beside *path* and atomically replace the destination.
+
+    A named temporary file in the destination directory keeps the rename on
+    one filesystem, which makes session saves safe against process crashes and
+    concurrent readers on Windows, macOS, and Linux.
+    """
+    payload = json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def migrate_session_data(data: dict[str, Any]) -> dict[str, Any]:

@@ -301,6 +301,9 @@ def ensure_config(*, strict: bool | None = None) -> dict[str, Any]:
     TUI's explicit reload command report a bad file instead of silently
     retaining the current state.
     """
+    # Catch drift between the runtime validator and the exported schema on
+    # every startup/config reload before reading user data.
+    validate_config_schema()
     strict_mode = strict_config_enabled() if strict is None else strict
     config = dict(DEFAULT_CONFIG)
     if CONFIG_PATH.is_file():
@@ -433,6 +436,22 @@ def export_config_schema(path: Path | None = None) -> dict[str, Any]:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return schema
+
+
+def validate_config_schema() -> None:
+    """Validate that the exported JSON Schema covers the runtime defaults.
+
+    This is intentionally dependency-free so CI and normal startup can run it
+    even when the optional pydantic extra is not installed.
+    """
+    schema = config_schema()
+    properties = schema.get("properties")
+    if schema.get("additionalProperties") is not False or not isinstance(properties, dict):
+        raise ValueError("config schema must be a closed object with properties")
+    missing = sorted(set(DEFAULT_CONFIG) - set(properties))
+    if missing:
+        raise ValueError(f"config schema is missing keys: {', '.join(missing)}")
+    _validate_config(dict(DEFAULT_CONFIG))
 
 
 def save_config(overrides: dict[str, Any]) -> None:
