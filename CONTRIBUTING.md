@@ -134,13 +134,21 @@ Textual workers use `@work(exclusive=True)`. The `finally` block is the right pl
 ## Release Process (Maintainers)
 
 ```sh
-# Update version in pyproject.toml
-# Move [Unreleased] entries to a new version section in CHANGELOG.md
-# Commit and tag
+# Update the version in pyproject.toml and r105/__init__.py
+# Move [Unreleased] entries to a dated version section in CHANGELOG.md
+python packaging/check_release.py
+
+# Commit and tag only after CI is green
 git tag vX.Y.Z
 git push --tags
 
-# Build and publish
+# Local Python package check
 python -m build
 twine upload dist/*
 ```
+
+The tagged GitHub Actions workflow builds and publishes the PyPI sdist/wheel,
+Linux/macOS/Windows standalone archives, Ubuntu/Debian `.deb`, Arch
+`.pkg.tar.zst`, Fedora `.rpm`, FreeBSD `.pkg`, Alpine `.apk` (best effort), and
+`SHA256SUMS`. It also updates Homebrew/Scoop metadata. Package recipe
+templates and target details live in `packaging/README.md`.

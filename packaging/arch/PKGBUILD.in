@@ -1,0 +1,16 @@
+pkgname=r105
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Rich terminal AI assistant for OpenAI-compatible backends'
+arch=('x86_64')
+url='https://github.com/bnelabs/r105'
+license=('MIT')
+depends=('glibc')
+source=('r105' 'LICENSE' 'README.md')
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/r105" "$pkgdir/usr/bin/r105"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/r105/LICENSE"
+  install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/r105/README.md"
+}

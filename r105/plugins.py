@@ -46,7 +46,7 @@ ToolHandler = Callable[[dict[str, Any], Path], str]
 # Plugin tool names: non-empty, no whitespace (LLM tool-call compatible).
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
-# ``__r105_min_version__ = "0.6.0"`` — optional per-file minimum host version.
+# ``__r105_min_version__ = "0.7.0"`` — optional per-file minimum host version.
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
 
 
@@ -127,7 +127,7 @@ def check_plugin_compatibility(module: Any, source: str) -> None:
 
     Two optional module attributes are honored:
 
-    - ``__r105_min_version__ = "0.6.0"`` — minimum r105 version. Loading
+    - ``__r105_min_version__ = "0.7.0"`` — minimum r105 version. Loading
       fails if the running host is older.
     - ``PLUGIN_REQUIREMENTS = ["yaml", "numpy"]`` — importable modules
       that must be present. Loading fails listing whatever is missing.
