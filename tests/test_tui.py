@@ -7,6 +7,7 @@ from pathlib import Path
 from r105.tui.app import R105App
 from r105.tui.screens.chat import ChatScreen, _is_exact_command
 from r105.tui.widgets.command_palette import COMMAND_DEFS, CommandPalette
+from r105.tui.widgets.status_bar import StatusBarWidget
 
 
 class TestIsExactCommand:
@@ -148,4 +149,16 @@ class TestChatScreenHeader:
         app_ids = {binding.id for binding in R105App.BINDINGS if hasattr(binding, "id")}
         screen_ids = {binding.id for binding in ChatScreen.BINDINGS if hasattr(binding, "id")}
         assert {"quit", "show_help", "show_history"} <= app_ids
-        assert {"copy_last_message", "show_tools", "cancel_request"} <= screen_ids
+        assert {"copy_last_message", "show_tools", "cancel_tools", "cancel_request"} <= screen_ids
+
+
+class TestContextStatusBar:
+    def test_status_line_contains_visual_context_usage(self) -> None:
+        from r105.state import ChatState, TokenUsage
+
+        line = StatusBarWidget._render_status_line(
+            ChatState(model="test-model"),
+            TokenUsage(used_tokens=512, context_tokens=1024, confidence=1.0),
+        )
+        assert "ctx=[█████░░░░░]" in line
+        assert "512/1024" in line

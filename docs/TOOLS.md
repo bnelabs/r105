@@ -50,13 +50,16 @@ def web_search(arguments: dict[str, Any]) -> str:
         return "error: query is required"
 
     try:
-        response = httpx.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            timeout=15.0,
-            headers={"User-Agent": _USER_AGENT},  # f"r105/{__version__}"
-            follow_redirects=True,
-        )
+        # Production web tools use _safe_http_client() and
+        # _request_with_validated_redirects() from r105.tools_web so every
+        # redirect and every post-DNS TCP destination is checked.
+        with _safe_http_client() as client:
+            response = _request_with_validated_redirects(
+                client,
+                "https://html.duckduckgo.com/html/",
+                params={"q": query},
+                timeout=15.0,
+            )
         response.raise_for_status()
         results = parse_ddg_results(response.text, WEB_SEARCH_MAX_RESULTS)
         return json.dumps(results, indent=2, ensure_ascii=False)

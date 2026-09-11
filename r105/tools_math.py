@@ -58,19 +58,55 @@ _SAFE_CONSTANTS: dict[str, float] = {
 }
 
 _MAX_EXPR_CHARS = 2000
+_MAX_AST_NODES = 256
+_MAX_AST_DEPTH = 64
+_MAX_ABS_NUMBER = 10**100
+_MAX_POWER_EXPONENT = 100
+_MAX_FACTORIAL_ARGUMENT = 10_000
 
 
-def safe_eval(node: ast.AST) -> Any:
+def _bounded_number(value: Any) -> int | float:
+    """Reject non-finite or unreasonably large numeric intermediates."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"non-numeric result: {value!r}")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("non-finite numeric result")
+    if abs(value) > _MAX_ABS_NUMBER:
+        raise ValueError("numeric result exceeds 10**100")
+    return value
+
+
+def _check_power_operands(base: Any, exponent: Any) -> None:
+    """Reject exponentiation that could create a large CPU or memory spike."""
+    if not isinstance(exponent, (int, float)) or isinstance(exponent, bool):
+        raise ValueError("power exponent must be numeric")
+    if not math.isfinite(float(exponent)):
+        raise ValueError("power exponent must be finite")
+    if abs(exponent) > _MAX_POWER_EXPONENT:
+        raise ValueError(
+            f"power exponent magnitude too large (max {_MAX_POWER_EXPONENT})"
+        )
+    if (
+        isinstance(base, (int, float))
+        and not isinstance(base, bool)
+        and not math.isfinite(float(base))
+    ):
+        raise ValueError("power base must be finite")
+
+
+def safe_eval(node: ast.AST, *, _depth: int = 0) -> Any:
     """Recursively evaluate a safe AST expression.
 
     Allowed: numeric literals, whitelisted operators, whitelisted ``math``
     functions (calls by name only), and ``pi``/``e``/``tau`` constants.
     No attribute access, subscripts, lambdas, or comprehensions.
     """
+    if _depth > _MAX_AST_DEPTH:
+        raise ValueError(f"expression nesting exceeds {_MAX_AST_DEPTH} levels")
     if isinstance(node, ast.Constant):
         if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
             raise ValueError(f"unsafe constant: {node.value!r}")
-        return node.value
+        return _bounded_number(node.value)
     if isinstance(node, ast.Name):
         if node.id in _SAFE_CONSTANTS:
             return _SAFE_CONSTANTS[node.id]
@@ -85,17 +121,35 @@ def safe_eval(node: ast.AST) -> Any:
             raise ValueError("keyword arguments are not allowed")
         if any(isinstance(a, ast.Starred) for a in node.args):
             raise ValueError("starred arguments are not allowed")
-        return func(*(safe_eval(arg) for arg in node.args))
+        values = [safe_eval(arg, _depth=_depth + 1) for arg in node.args]
+        if node.func.id == "factorial":
+            if len(values) != 1 or not isinstance(values[0], int) or isinstance(values[0], bool):
+                raise ValueError("factorial requires one integer argument")
+            if values[0] < 0:
+                raise ValueError("factorial requires a non-negative argument")
+            if values[0] > _MAX_FACTORIAL_ARGUMENT:
+                raise ValueError(
+                    f"factorial argument too large (max {_MAX_FACTORIAL_ARGUMENT})"
+                )
+        elif node.func.id == "pow":
+            if len(values) not in (2, 3):
+                raise ValueError("pow requires two or three arguments")
+            _check_power_operands(values[0], values[1])
+        return _bounded_number(func(*values))
     if isinstance(node, ast.UnaryOp):
         op = _SAFE_OPS.get(type(node.op))
         if op is None:
             raise ValueError(f"unsafe operator: {type(node.op).__name__}")
-        return op(safe_eval(node.operand))
+        return _bounded_number(op(safe_eval(node.operand, _depth=_depth + 1)))
     if isinstance(node, ast.BinOp):
         op = _SAFE_OPS.get(type(node.op))
         if op is None:
             raise ValueError(f"unsafe operator: {type(node.op).__name__}")
-        return op(safe_eval(node.left), safe_eval(node.right))
+        left = safe_eval(node.left, _depth=_depth + 1)
+        right = safe_eval(node.right, _depth=_depth + 1)
+        if op is operator.pow:
+            _check_power_operands(left, right)
+        return _bounded_number(op(left, right))
     raise ValueError(f"unsafe expression: {type(node).__name__}")
 
 
@@ -112,9 +166,19 @@ def calculate_expression(expression: str) -> str:
         return f"calculate error: expression too long (max {_MAX_EXPR_CHARS} chars)"
     try:
         tree = ast.parse(text, mode="eval")
+        if sum(1 for _ in ast.walk(tree)) > _MAX_AST_NODES:
+            return f"calculate error: expression is too complex (max {_MAX_AST_NODES} AST nodes)"
         result = safe_eval(tree.body)
         return str(result)
-    except (SyntaxError, ValueError, ZeroDivisionError, OverflowError) as exc:
+    except (
+        MemoryError,
+        RecursionError,
+        SyntaxError,
+        TypeError,
+        ValueError,
+        ZeroDivisionError,
+        OverflowError,
+    ) as exc:
         return f"calculate error: {exc}"
 
 

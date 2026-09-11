@@ -2,9 +2,16 @@
 
 import socket
 
+import httpx
 import pytest
 
-from r105.tools_web import check_ssrf
+from r105.tools_web import (
+    _request_with_validated_redirects,
+    _SSRFProtectedNetworkBackend,
+    check_ssrf,
+    strip_html,
+    web_fetch,
+)
 
 
 class TestLiteralHosts:
@@ -89,3 +96,94 @@ class TestDnsResolution:
         assert check_ssrf("https://example.com/") is None
         # family=0 (AF_UNSPEC) queries A and AAAA; must not pin AF_INET.
         assert seen["family"] in (0, socket.AF_UNSPEC)
+
+
+class TestFetchBoundary:
+    def test_html_strip_does_not_treat_void_head_tags_as_containers(self):
+        html = (
+            "<head><title>Hidden</title><meta name='description' content='x'>"
+            "<link rel='stylesheet' href='x'></head>"
+            "<body><h1>Visible</h1><p>Content</p></body>"
+        )
+        assert strip_html(html) == "Visible\nContent"
+
+    def test_transport_connects_to_the_checked_address_after_fallback(self, monkeypatch):
+        import r105.tools_web as web_tools
+
+        resolved = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 80)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.35", 80)),
+        ]
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: resolved)
+
+        sockets = []
+
+        class FakeSocket:
+            def __init__(self):
+                self.connected = None
+                self.closed = False
+                sockets.append(self)
+
+            def settimeout(self, _timeout):
+                pass
+
+            def setsockopt(self, *_args):
+                pass
+
+            def connect(self, address):
+                if address[0] == "93.184.216.34":
+                    raise OSError("first address unavailable")
+                self.connected = address
+
+            def fileno(self):
+                return -1 if self.closed else 1
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(web_tools.socket, "socket", lambda *a, **k: FakeSocket())
+        stream = _SSRFProtectedNetworkBackend().connect_tcp("public.example", 80)
+        assert len(sockets) == 2
+        assert sockets[1].connected == ("93.184.216.35", 80)
+        assert sockets[1].closed is False
+        stream.close()
+
+    def test_redirect_to_private_host_is_blocked_before_second_request(self, monkeypatch):
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *a, **k: [
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))
+            ],
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                302,
+                headers={"location": "http://127.0.0.1/admin"},
+                request=request,
+            )
+
+        with httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=False,
+        ) as client, pytest.raises(ValueError, match="redirect blocked"):
+            _request_with_validated_redirects(
+                client,
+                "http://public.example/start",
+                timeout=1.0,
+            )
+
+    def test_dns_rebinding_is_blocked_at_connection_boundary(self, monkeypatch):
+        calls = 0
+
+        def fake_getaddrinfo(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            address = "93.184.216.34" if calls == 1 else "127.0.0.1"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (address, args[1]))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        result = web_fetch({"url": "http://rebind.example/"})
+        assert calls >= 2
+        assert "not allowed" in result.lower() or "private/internal" in result.lower()

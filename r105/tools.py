@@ -366,16 +366,26 @@ def execute_tool_call(
             "content": rate_error,
         }
 
-    # Dispatch: try built-in registry → plugins → MCP.
-    # SECURITY: built-ins always win over plugins/MCP when names collide,
-    # unless the operator explicitly allows overrides. This prevents a
-    # malicious plugin/MCP server from hijacking e.g. ``execute_python``.
+    # Dispatch through the registry. Built-ins win over plugins/MCP by
+    # default; an explicit override opt-in lets a plugin replace a built-in,
+    # including execute_python. Keep the sandbox profile on the built-in
+    # registry call so a plugin never receives an unexpected keyword argument.
     result: str | None = None
     builtin_names = _builtin_tool_names()
+    builtin_kwargs: dict[str, Any] = {}
     if name == "execute_python":
-        result = execute_python(arguments, workspace_dir, profile=profile_for_tool(name))
+        builtin_kwargs["profile"] = profile_for_tool(name)
+    allow_override = _is_plugin_override_allowed()
+    plugin_attempted = False
+    if allow_override:
+        plugin_attempted = True
+        result = get_registry().execute(name, arguments, workspace_dir)
+        if result is None:
+            result = get_tool_registry().execute(
+                name, arguments, workspace_dir, **builtin_kwargs
+            )
     else:
-        result = get_tool_registry().execute(name, arguments, workspace_dir)
+        result = get_tool_registry().execute(name, arguments, workspace_dir, **builtin_kwargs)
     if result is None:
         # Sync the protected-name set so PluginRegistry can reject shadowing
         # at registration time as well (defense in depth).
@@ -383,7 +393,7 @@ def execute_tool_call(
             get_registry().set_protected_names(builtin_names)
         except Exception:
             pass
-        if name in builtin_names and not _is_plugin_override_allowed():
+        if name in builtin_names and not allow_override:
             # A plugin/MCP tool shadows a built-in: ignore the shadow and
             # report it instead of executing untrusted code.
             plugin_shadow = get_registry().get_tool(name)
@@ -401,15 +411,16 @@ def execute_tool_call(
                     mcp_result = _mcp_manager().execute_tool(name, arguments)
                     result = mcp_result if mcp_result is not None else f"unknown tool: {name}"
         else:
-            plugin_result = get_registry().execute(name, arguments, workspace_dir)
+            plugin_result = (
+                None
+                if plugin_attempted
+                else get_registry().execute(name, arguments, workspace_dir)
+            )
             if plugin_result is not None:
                 result = plugin_result
             else:
                 mcp_result = _mcp_manager().execute_tool(name, arguments)
-                if mcp_result is not None:
-                    result = mcp_result
-                else:
-                    result = f"unknown tool: {name}"
+                result = mcp_result if mcp_result is not None else f"unknown tool: {name}"
 
     # Apply truncation to large outputs (execute_python, read_file, web_search, web_fetch)
     content = result if isinstance(result, str) else json.dumps(result, sort_keys=True)
@@ -462,10 +473,28 @@ def get_tool_definitions() -> list[dict[str, Any]]:
     except Exception:
         pass
     plugin_defs = get_registry().get_definitions()
-    if not allow_override:
+    plugin_names = {
+        d.get("function", {}).get("name")
+        for d in plugin_defs
+        if isinstance(d.get("function", {}).get("name"), str)
+    }
+    if allow_override:
+        # An explicit plugin override must also replace the built-in schema;
+        # exposing two definitions with the same name leaves model behavior
+        # dependent on provider-specific duplicate handling.
+        builtin_defs = [
+            d for d in builtin_defs
+            if d.get("function", {}).get("name") not in plugin_names
+        ]
+    else:
         plugin_defs = [d for d in plugin_defs if d.get("function", {}).get("name") not in builtin_names]
     mcp_defs = _mcp_manager().get_all_definitions()
-    if not allow_override:
+    if allow_override:
+        mcp_defs = [
+            d for d in mcp_defs
+            if d.get("function", {}).get("name") not in plugin_names
+        ]
+    else:
         mcp_defs = [d for d in mcp_defs if d.get("function", {}).get("name") not in builtin_names]
     return [
         *builtin_defs,
@@ -731,16 +760,3 @@ def system_info() -> str:
         "machine": platform.machine(),
     }
     return json.dumps(info, indent=2, sort_keys=True)
-
-
-# Backward-compatible alias — TOOL_DEFINITIONS from the registry
-TOOL_DEFINITIONS: list[dict[str, Any]] = []
-
-
-def _populate_tool_definitions() -> None:
-    global TOOL_DEFINITIONS
-    TOOL_DEFINITIONS[:] = get_tool_registry().get_definitions()
-
-
-# Populate TOOL_DEFINITIONS at module load time
-_populate_tool_definitions()
