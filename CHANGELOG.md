@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [1.0.1] — 2026-09-12
+
+### Added
+- Optional external Python compatibility bridge for legacy `execute_python`
+  workflows, with an approval gate, versioned JSON protocol, and a stdlib-only
+  reference implementation kept outside the native binary.
+- Restored the legacy `/state`, `/history`, `/quality`, `/json`, `/max`,
+  `/config`, `/autocompact`, `/reasoning`, `/permissions`, `/approve`,
+  `/preview`, and `/bridge` command surface in the native TUI.
+
+### Fixed
+- The native TUI now honors `--yes` for the Python approval gate while keeping
+  the configured permission posture and sandbox boundary visible.
+
 ## [1.0.0] — 2026-09-12
 
 ### Added
@@ -354,7 +368,8 @@ _No unreleased changes._
 - File explorer sidebar
 - Token usage estimation and auto-compaction at 80% context
 
-[Unreleased]: https://github.com/bnelabs/r105/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/bnelabs/r105/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/bnelabs/r105/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/bnelabs/r105/compare/v0.8.3...v1.0.0
 [0.8.3]: https://github.com/bnelabs/r105/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/bnelabs/r105/compare/v0.8.1...v0.8.2

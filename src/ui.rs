@@ -7,9 +7,9 @@
 
 use std::{
     collections::VecDeque,
-    io::{self, stdout},
+    io::{self, Write, stdout},
     path::{Path, PathBuf},
-    process::Command as OsCommand,
+    process::{Command as OsCommand, Stdio},
     time::Duration,
 };
 
@@ -84,9 +84,10 @@ pub async fn run(
     state: ChatState,
     paths: ConfigPaths,
     plugins_dir: PathBuf,
+    python_approved: bool,
 ) -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let result = UiApp::new(backend, state, paths, plugins_dir)
+    let result = UiApp::new(backend, state, paths, plugins_dir, python_approved)
         .event_loop(&mut terminal)
         .await;
     restore_terminal(&mut terminal)?;
@@ -130,6 +131,8 @@ struct UiApp {
     cancellation: Option<CancellationToken>,
     pending_connection: Option<Connection>,
     sandbox: Sandbox,
+    python_bridge_command: Option<String>,
+    python_approved: bool,
     last_response: String,
     tx: mpsc::UnboundedSender<UiEvent>,
     rx: mpsc::UnboundedReceiver<UiEvent>,
@@ -137,7 +140,13 @@ struct UiApp {
 }
 
 impl UiApp {
-    fn new(backend: Backend, state: ChatState, paths: ConfigPaths, plugins_dir: PathBuf) -> Self {
+    fn new(
+        backend: Backend,
+        state: ChatState,
+        paths: ConfigPaths,
+        plugins_dir: PathBuf,
+        python_approved: bool,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let config = Config::load(&paths).unwrap_or_default();
         let sandbox = Sandbox::detect(
@@ -168,6 +177,8 @@ impl UiApp {
             cancellation: None,
             pending_connection: None,
             sandbox,
+            python_bridge_command: config.python_bridge_command.clone(),
+            python_approved: python_approved || config.auto_approve_execute_python,
             last_response: String::new(),
             tx,
             rx,
@@ -281,11 +292,13 @@ impl UiApp {
             let context = ToolContext {
                 workspace: self.state.workspace.clone(),
                 plugins_dir: self.plugins_dir.clone(),
+                python_bridge_command: self.python_bridge_command.clone(),
                 sandbox: self.sandbox.clone(),
                 cancellation: self.cancellation.clone().unwrap_or_default(),
                 allow_network: self.state.permission_posture != "restricted"
                     && self.state.permission_posture != "off",
                 allow_code: self.state.permission_posture != "off",
+                python_approved: self.python_approved,
             };
             let calls = result.tool_calls;
             let sender = self.tx.clone();
@@ -655,7 +668,8 @@ impl UiApp {
 
     async fn handle_command(&mut self, parsed: ParsedCommand) -> Result<()> {
         match parsed.name.as_str() {
-            "/help" => self.push_system(&command::help_text()),
+            "/" | "/help" => self.push_system(&command::help_text()),
+            "/state" => self.command_state(),
             "/connect" | "/provider" => self.command_connect(&parsed.args),
             "/models" => self.start_model_list(),
             "/model" => {
@@ -670,6 +684,8 @@ impl UiApp {
             }
             "/health" => self.start_health(),
             "/profiles" => self.start_profiles(),
+            "/profile" => self.command_profile(&parsed.args),
+            "/history" => self.command_history(),
             "/plan" => {
                 self.mode = Mode::Plan;
                 self.status = "Mode: plan".into();
@@ -695,17 +711,23 @@ impl UiApp {
                     usage.source
                 ));
             }
+            "/quality" => self.command_quality(&parsed.args),
+            "/json" => self.command_json(&parsed.args),
+            "/max" => self.command_max(&parsed.args),
             "/cache-prompt" => {
                 self.state.cache_prompt = parsed
                     .args
                     .first()
                     .map(|value| value != "off")
                     .unwrap_or(!self.state.cache_prompt);
+                let enabled = self.state.cache_prompt;
                 self.status = format!(
                     "llama.cpp prompt caching: {}",
-                    if self.state.cache_prompt { "on" } else { "off" }
+                    if enabled { "on" } else { "off" }
                 );
+                self.persist_config(|config| config.cache_prompt = enabled);
             }
+            "/config" => self.command_config(&parsed.args).await,
             "/clear" => {
                 self.state.history.clear();
                 self.streaming.clear();
@@ -717,14 +739,18 @@ impl UiApp {
             "/mcp" => self.command_mcp(&parsed.args)?,
             "/plugin" => self.push_system(&serde_json::to_string_pretty(&crate::plugin::status())?),
             "/theme" => self.command_theme(&parsed.args),
+            "/autocompact" => self.command_autocompact(&parsed.args),
+            "/reasoning" => self.command_reasoning(&parsed.args),
+            "/permissions" => self.command_permissions(&parsed.args),
+            "/approve" => self.command_approve(&parsed.args),
+            "/preview" => self.command_preview(&parsed.args),
+            "/bridge" => {
+                self.push_system(&python_bridge_status(self.python_bridge_command.as_deref()))
+            }
             "/map" => self.push_system(&self.workspace_map()),
             "/diff" => self.push_system(&self.workspace_diff()),
             "/copy" => {
-                self.status = if self.last_response.is_empty() {
-                    "There is no response to copy".into()
-                } else {
-                    "Last response is selected for copy; use your terminal clipboard command if needed".into()
-                }
+                self.command_copy();
             }
             "/tasks" => self.push_system(&format!(
                 "busy={} queued={} tool_round={}",
@@ -736,6 +762,314 @@ impl UiApp {
             _ => self.status = format!("Unknown command {}; type /help", parsed.name),
         }
         Ok(())
+    }
+
+    fn command_state(&mut self) {
+        let connection = self.backend.connection();
+        let bridge = python_bridge_status(self.python_bridge_command.as_deref());
+        self.push_system(&format!(
+            "mode={}\nprovider={}\nbackend={}\nurl={}\nmodel={}\nquality={}\nprofile={}\nreasoning={}\npermissions={}\nsandbox={}\n{}",
+            self.mode.as_str(),
+            connection.display_name(),
+            connection.backend,
+            connection.base_url,
+            self.state.model,
+            self.state.quality.as_deref().unwrap_or("auto"),
+            self.state.profile.as_deref().unwrap_or("auto"),
+            self.state.reasoning_effort,
+            self.state.permission_posture,
+            self.sandbox.selected_name(),
+            bridge,
+        ));
+    }
+
+    fn command_history(&mut self) {
+        if self.state.history.is_empty() {
+            self.push_system("Transcript is empty");
+            return;
+        }
+        let start = self.state.history.len().saturating_sub(12);
+        let mut lines = vec![format!(
+            "Last {} of {} messages:",
+            self.state.history.len() - start,
+            self.state.history.len()
+        )];
+        for message in &self.state.history[start..] {
+            let preview = message
+                .content
+                .chars()
+                .take(160)
+                .collect::<String>()
+                .replace('\n', " ");
+            lines.push(format!("[{}] {}", message.role, preview));
+        }
+        self.push_system(&lines.join("\n"));
+    }
+
+    fn command_quality(&mut self, args: &[String]) {
+        const VALID: [&str; 3] = ["fast", "balanced", "best"];
+        let Some(value) = args.first() else {
+            self.push_system(&format!(
+                "quality={}",
+                self.state.quality.as_deref().unwrap_or("auto")
+            ));
+            return;
+        };
+        let value = value.to_ascii_lowercase();
+        if !VALID.contains(&value.as_str()) {
+            self.status = format!("Unknown quality; choose {}", VALID.join(", "));
+            return;
+        }
+        self.state.quality = Some(value.clone());
+        self.persist_config(|config| config.quality = Some(value.clone()));
+        self.status = format!("Quality: {value}");
+    }
+
+    fn command_profile(&mut self, args: &[String]) {
+        const VALID: [&str; 7] = [
+            "simple",
+            "strict_json",
+            "coding",
+            "complex_reasoning",
+            "long_context_qa",
+            "tool_agent",
+            "creative",
+        ];
+        let Some(value) = args.first() else {
+            self.state.profile = None;
+            self.persist_config(|config| config.profile = None);
+            self.status = "Router profile: auto".into();
+            return;
+        };
+        let value = value.to_ascii_lowercase();
+        if value == "auto" {
+            self.state.profile = None;
+            self.persist_config(|config| config.profile = None);
+            self.status = "Router profile: auto".into();
+        } else if VALID.contains(&value.as_str()) {
+            self.state.profile = Some(value.clone());
+            self.persist_config(|config| config.profile = Some(value.clone()));
+            self.status = format!("Router profile: {value}");
+        } else {
+            self.status = format!("Unknown profile; choose auto, {}", VALID.join(", "));
+        }
+    }
+
+    fn command_json(&mut self, args: &[String]) {
+        self.state.json_mode = toggle_value(args.first(), self.state.json_mode);
+        self.status = format!(
+            "JSON response mode: {}",
+            if self.state.json_mode { "on" } else { "off" }
+        );
+    }
+
+    fn command_max(&mut self, args: &[String]) {
+        let Some(value) = args.first() else {
+            self.state.max_tokens = None;
+            self.status = "Maximum completion tokens: auto".into();
+            return;
+        };
+        match value.parse::<u32>() {
+            Ok(value) if value > 0 => {
+                self.state.max_tokens = Some(value);
+                self.status = format!("Maximum completion tokens: {value}");
+            }
+            _ => self.status = "Usage: /max <positive token count>".into(),
+        }
+    }
+
+    async fn command_config(&mut self, args: &[String]) {
+        let action = args.first().map(String::as_str).unwrap_or("reload");
+        let config = match Config::load(&self.paths) {
+            Ok(config) => config,
+            Err(error) => {
+                self.status = format!("Config read failed: {error:#}");
+                return;
+            }
+        };
+        if action == "show" {
+            match serde_json::to_string_pretty(&config) {
+                Ok(value) => self.push_system(&value),
+                Err(error) => self.status = format!("Config formatting failed: {error}"),
+            }
+            return;
+        }
+        if action != "reload" {
+            self.status = "Usage: /config show|reload".into();
+            return;
+        }
+
+        let previous = self.backend.connection().clone();
+        let mut connection_changed = false;
+        if config.backend.is_some() || config.url.is_some() || config.provider.is_some() {
+            let mut connection = provider::resolve_connection(
+                config.provider.as_deref(),
+                config.backend.as_deref(),
+                config.url.as_deref(),
+            );
+            // A key entered in the guided TUI lives only in memory. Retain it
+            // across a reload when the endpoint remains the same.
+            if connection.api_key.is_none()
+                && connection.base_url == previous.base_url
+                && connection.provider_id == previous.provider_id
+            {
+                connection.api_key = previous.api_key.clone();
+            }
+            if connection.backend != previous.backend
+                || connection.base_url != previous.base_url
+                || connection.provider_id != previous.provider_id
+            {
+                match self.backend.with_connection(connection) {
+                    Ok(candidate) => {
+                        self.backend = candidate;
+                        connection_changed = true;
+                    }
+                    Err(error) => {
+                        self.status = format!("Config connection rejected: {error}");
+                        return;
+                    }
+                }
+            }
+        }
+
+        self.state.theme = config.theme.clone();
+        self.state.quality = config.quality.clone();
+        self.state.profile = config.profile.clone();
+        if let Some(model) = config.model.clone() {
+            self.state.model = model;
+        }
+        self.state.auto_compact = config.auto_compact;
+        self.state.cache_prompt = config.cache_prompt;
+        self.state.reasoning_effort = config.reasoning_effort.clone();
+        self.state.show_thinking = config.show_thinking;
+        self.state.thinking_default_expanded = config.thinking_default_expanded;
+        self.state.permission_posture = config.permission_posture.clone();
+        self.state.keybindings = config.keybindings.clone();
+        self.state.skills_dir = config.skills_dir.clone();
+        self.state.model_contexts = config.model_contexts.clone();
+        if let Some(tokens) = config.context_tokens {
+            self.state.context_tokens = tokens;
+        }
+        self.plugins_dir = config.plugins_dir.clone();
+        self.python_bridge_command = config.python_bridge_command.clone();
+        self.python_approved |= config.auto_approve_execute_python;
+        self.sandbox = Sandbox::detect(
+            &config.sandbox_backend,
+            config.docker_image.clone(),
+            config.timeout_seconds,
+        );
+        let connection_note = if connection_changed {
+            ", connection updated"
+        } else {
+            ""
+        };
+        self.status = format!("Config reloaded{connection_note}");
+    }
+
+    fn command_autocompact(&mut self, args: &[String]) {
+        self.state.auto_compact = toggle_value(args.first(), self.state.auto_compact);
+        let enabled = self.state.auto_compact;
+        self.persist_config(|config| config.auto_compact = enabled);
+        self.status = format!(
+            "Automatic compaction: {}",
+            if enabled { "on" } else { "off" }
+        );
+    }
+
+    fn command_reasoning(&mut self, args: &[String]) {
+        const VALID: [&str; 5] = ["auto", "off", "low", "medium", "high"];
+        let Some(value) = args.first() else {
+            self.push_system(&format!("reasoning_effort={}", self.state.reasoning_effort));
+            return;
+        };
+        let value = value.to_ascii_lowercase();
+        if !VALID.contains(&value.as_str()) {
+            self.status = format!("Unknown reasoning effort; choose {}", VALID.join(", "));
+            return;
+        }
+        self.state.reasoning_effort = value.clone();
+        self.persist_config(|config| config.reasoning_effort = value.clone());
+        self.status = format!("Reasoning effort: {value}");
+    }
+
+    fn command_permissions(&mut self, args: &[String]) {
+        const VALID: [&str; 4] = ["full-access", "restricted", "sandboxed", "off"];
+        let Some(value) = args.first() else {
+            self.push_system(&format!(
+                "permission_posture={} (valid: {})",
+                self.state.permission_posture,
+                VALID.join(", ")
+            ));
+            return;
+        };
+        let value = value.to_ascii_lowercase();
+        if !VALID.contains(&value.as_str()) {
+            self.status = format!("Unknown permission posture; choose {}", VALID.join(", "));
+            return;
+        }
+        self.state.permission_posture = value.clone();
+        self.persist_config(|config| config.permission_posture = value.clone());
+        self.status = format!("Permission posture: {value}");
+    }
+
+    fn command_approve(&mut self, args: &[String]) {
+        if !matches!(
+            args.first().map(String::as_str),
+            Some("execute_python" | "python")
+        ) {
+            self.status = "Usage: /approve execute_python".into();
+            return;
+        }
+        self.python_approved = true;
+        self.status = "Python bridge approved for this session".into();
+    }
+
+    fn command_preview(&mut self, args: &[String]) {
+        let Some(requested) = args.first() else {
+            self.status = "Usage: /preview <filename>".into();
+            return;
+        };
+        let path = match safe_path(&self.state.workspace, requested) {
+            Ok(path) => path,
+            Err(error) => {
+                self.status = format!("Preview path rejected: {error}");
+                return;
+            }
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(content) => self.push_system(&format!(
+                "--- {requested} ---\n{}",
+                content.chars().take(2_000).collect::<String>()
+            )),
+            Err(error) => self.status = format!("Preview failed: {error}"),
+        }
+    }
+
+    fn command_copy(&mut self) {
+        if self.last_response.is_empty() {
+            self.status = "There is no response to copy".into();
+            return;
+        }
+        self.status = if copy_to_clipboard(&self.last_response) {
+            format!("Copied {} characters", self.last_response.chars().count())
+        } else {
+            "Clipboard unavailable (try pbcopy, wl-copy, xclip, or clip)".into()
+        };
+    }
+
+    fn persist_config<F>(&mut self, update: F)
+    where
+        F: FnOnce(&mut Config),
+    {
+        match Config::load(&self.paths) {
+            Ok(mut config) => {
+                update(&mut config);
+                if let Err(error) = config.save(&self.paths) {
+                    self.status = format!("Setting changed, but config save failed: {error}");
+                }
+            }
+            Err(error) => self.status = format!("Setting changed, but config read failed: {error}"),
+        }
     }
 
     fn command_compact(&mut self) {
@@ -1634,6 +1968,51 @@ fn provider_label(preset: &Preset) -> String {
         "{}  ·  {}  [{}]",
         preset.label, preset.description, preset.id
     )
+}
+
+fn python_bridge_status(spec: Option<&str>) -> String {
+    crate::python_bridge::status(spec)
+}
+
+fn toggle_value(value: Option<&String>, current: bool) -> bool {
+    match value.map(|value| value.to_ascii_lowercase()).as_deref() {
+        None => !current,
+        Some("on" | "true" | "yes" | "1") => true,
+        Some("off" | "false" | "no" | "0") => false,
+        Some(_) => current,
+    }
+}
+
+fn copy_to_clipboard(value: &str) -> bool {
+    let commands: &[(&str, &[&str])] = &[
+        ("pbcopy", &[]),
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("clip", &[]),
+    ];
+    for (program, args) in commands {
+        let Ok(mut child) = OsCommand::new(program)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        let Some(mut stdin) = child.stdin.take() else {
+            continue;
+        };
+        if stdin.write_all(value.as_bytes()).is_err() {
+            let _ = child.kill();
+            continue;
+        }
+        drop(stdin);
+        if child.wait().is_ok_and(|status| status.success()) {
+            return true;
+        }
+    }
+    false
 }
 
 fn skill_name(input: &str) -> Option<String> {
