@@ -155,6 +155,7 @@ pub fn load(paths: &ConfigPaths, name: &str, state: &mut ChatState) -> Result<us
             })
             .unwrap_or_default();
     }
+    state.last_usage = crate::model::Usage::default();
     Ok(state.history.len())
 }
 

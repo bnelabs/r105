@@ -101,7 +101,9 @@ pub fn is_blocked_ip(address: IpAddr) -> bool {
                 || ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1])
         }
         IpAddr::V6(ip) => {
-            ip.is_loopback()
+            ip.to_ipv4_mapped()
+                .is_some_and(|mapped| is_blocked_ip(IpAddr::V4(mapped)))
+                || ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_multicast()
                 || ip.segments()[0] & 0xfe00 == 0xfc00 // fc00::/7
@@ -168,6 +170,7 @@ mod tests {
         assert!(is_blocked_ip("127.0.0.1".parse().unwrap()));
         assert!(is_blocked_ip("10.1.2.3".parse().unwrap()));
         assert!(is_blocked_ip("::1".parse().unwrap()));
+        assert!(is_blocked_ip("::ffff:127.0.0.1".parse().unwrap()));
         assert!(!is_blocked_ip("8.8.8.8".parse().unwrap()));
     }
 

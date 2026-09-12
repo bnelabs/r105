@@ -7,6 +7,7 @@ r105 sends tool schemas in the OpenAI compatible request and executes returned c
 | Tool | Input | Behavior |
 | --- | --- | --- |
 | execute_rust | code | Compile and run a Rust program in the configured sandbox |
+| execute_python | code | Run Python through the optional external compatibility bridge |
 | write_file | path, content | Write a UTF-8 file under the workspace |
 | read_file | path | Read a UTF-8 workspace file |
 | list_files | path | List a workspace directory |
@@ -84,6 +85,25 @@ execute_rust writes source under workspace/.r105/runs, compiles with rustc, runs
 5. none only when explicitly configured.
 
 The environment is cleared before the child starts. Network access is disabled for the Rust tool unless the permission posture allows it. Under the off posture, execute_rust is refused.
+
+## Optional Python bridge
+
+The Rust executable does not embed Python. To keep existing Python workflows
+available, set `R105_PYTHON_BRIDGE` or `python_bridge_command` to a command that
+implements protocol v1. The repository includes a reference bridge at
+`bridge/r105_python_bridge.py`:
+
+```sh
+export R105_PYTHON_BRIDGE="python3 /path/to/r105/bridge/r105_python_bridge.py"
+r105 bridge
+```
+
+The tool remains approval gated. Use `/approve execute_python` in the current
+TUI session, or set the compatibility `auto_approve_execute_python` config key.
+The Rust host sends a JSON object containing `protocol`, `action`, `code`,
+`workspace`, `allow_network`, and `timeout_seconds`. The bridge returns one JSON
+object with `ok`, `exit_code`, `stdout`, and `stderr`. No shell is used to start
+the configured command, and the bridge is not part of native release packages.
 
 The rlimit fallback is a process timeout and output boundary. It is not a substitute for OS namespace isolation; r105 doctor shows which backend is active.
 

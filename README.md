@@ -49,7 +49,7 @@ brew install bnelabs/tap/r105
 Download the archive for your operating system and architecture from GitHub Releases, verify its checksum, then place the executable on your PATH.
 
 ```sh
-VERSION=1.0.0
+VERSION=1.0.1
 curl -LO https://github.com/bnelabs/r105/releases/download/v$VERSION/r105-macos-arm64.tar.gz
 curl -LO https://github.com/bnelabs/r105/releases/download/v$VERSION/SHA256SUMS
 grep 'r105-macos-arm64.tar.gz$' SHA256SUMS | shasum -a 256 -c -
@@ -62,7 +62,7 @@ install -m 755 r105 /usr/local/bin/r105
 Use the package that matches the distribution:
 
 ```sh
-VERSION=1.0.0
+VERSION=1.0.1
 
 # Ubuntu / Debian
 sudo apt install "./r105_${VERSION}_amd64.deb"
@@ -189,6 +189,7 @@ In the TUI, use /connect llamacpp. The provider supports model listing, SSE stre
 | TOGETHER_API_KEY | Together AI key |
 | R105_CONFIG_DIR | Alternate configuration directory |
 | R105_STRICT_CONFIG | Fail on unknown config keys when set to 1 |
+| R105_PYTHON_BRIDGE | Optional external Python bridge command |
 
 ## TUI workflow
 
@@ -226,12 +227,15 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | Command | Action |
 | --- | --- |
 | /help | Show commands and keybindings |
+| /state | Show active settings and connection |
 | /connect or /provider | Guided provider, credential, and model setup |
 | /models | Refresh and choose models |
 | /model [name] | Show or select the active model |
 | /health | Check backend connectivity |
 | /profiles | List llama-router profiles |
+| /profile [name|auto] | Set or clear the llama-router profile |
 | /build, /plan, /ask | Switch working mode |
+| /history | Show a transcript preview |
 | /skills | List Markdown skills |
 | /skill use <name> [key=value] | Activate a skill |
 | /skill show <name> | Display a skill |
@@ -239,7 +243,11 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /skill clear | Deactivate all active skills |
 | /compact | Summarize older conversation context |
 | /tokens | Show context usage and estimation source |
+| /quality [fast|balanced|best] | Set the router quality hint |
+| /json [on|off] | Toggle JSON response mode |
+| /max [tokens] | Set or clear the completion token limit |
 | /cache-prompt [on|off] | Toggle llama.cpp prompt prefix caching |
+| /config show|reload | Inspect or reload configuration |
 | /clear | Clear the transcript |
 | /workspace [path] | Show or change the workspace |
 | /session save|load|list|search|delete|diff | Manage local sessions |
@@ -247,6 +255,12 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /mcp list|tools|reconnect [server] | Inspect or rediscover MCP tools |
 | /plugin list|reload | Inspect native executable plugins |
 | /theme [name] | Show or switch the theme |
+| /autocompact [on|off] | Toggle automatic context compaction |
+| /reasoning [effort] | Set the reasoning effort hint |
+| /permissions [posture] | Set the local tool permission posture |
+| /approve execute_python | Approve the optional Python bridge for this session |
+| /preview <filename> | Preview a workspace file |
+| /bridge | Show optional Python bridge status |
 | /map | Show a compact workspace map |
 | /diff | Show the Git workspace diff |
 | /tasks | Show active and queued work |
@@ -259,6 +273,7 @@ The model can use these native tools:
 | Tool | Purpose |
 | --- | --- |
 | execute_rust | Compile and run Rust in the configured sandbox |
+| execute_python | Run Python through the optional external compatibility bridge |
 | write_file | Write a workspace relative file |
 | read_file | Read a workspace relative file |
 | list_files | List a workspace directory |
@@ -279,6 +294,7 @@ r105 is local first, but model generated actions still cross explicit boundaries
 - Web tools accept only HTTP(S), reject embedded credentials, block private and metadata addresses, pin the validated DNS address for the request, and validate every redirect before following it.
 - Arithmetic limits bound expression size, recursion, powers, intermediates, and factorial arguments.
 - execute_rust uses the selected sandbox backend, clears inherited environment variables, uses the workspace as its working directory, bounds runtime and output, and removes temporary artifacts.
+- execute_python is available only through an explicitly configured external bridge and a one-time `/approve execute_python` approval; the Rust binary never embeds Python.
 - auto selects nsjail, bwrap, Docker, or the timeout based fallback. r105 doctor reports the selected backend.
 - full-access, sandboxed, restricted, and off permission postures are represented in config. Native Rust execution is disabled under off.
 - Rust plugins are operator installed executables and are namespaced as plugin_<plugin>_<tool>. They run with a sanitized environment and a 30 second response limit.
@@ -336,7 +352,25 @@ The executable receives one JSON request on stdin and returns one JSON object on
 {"method":"call","tool":"hello","arguments":{"name":"Ada"}}
 ```
 
-Return {"content":"..."} or {"result":"..."}. Plugin tools are exposed to the model as plugin_example_hello. Python plugin files are not loaded by the Rust application.
+Return {"content":"..."} or {"result":"..."}. Plugin tools are exposed to the model as plugin_example_hello. A Python implementation can remain outside the binary by using the optional bridge below.
+
+## Optional Python compatibility bridge
+
+Normal r105 installations do not require Python. If an existing workflow still
+needs the legacy `execute_python` tool, configure the repository's stdlib-only
+reference bridge as an external process:
+
+```sh
+chmod +x bridge/r105_python_bridge.py
+export R105_PYTHON_BRIDGE="python3 /path/to/r105/bridge/r105_python_bridge.py"
+r105 bridge
+```
+
+Then approve it for the current TUI process with `/approve execute_python`.
+The Rust side sends one newline-delimited JSON request, keeps the bridge under
+the selected sandbox and timeout, clears inherited secrets, and returns bounded
+stdout/stderr. The bridge is not included in native binary or package assets;
+users may replace it with a compatible executable that implements protocol v1.
 
 ## MCP
 
@@ -376,6 +410,7 @@ The default file is ~/.config/r105/config.json:
   "provider": "llamacpp",
   "url": "http://127.0.0.1:8080/v1",
   "model": "local-model",
+  "python_bridge_command": "python3 /path/to/r105/bridge/r105_python_bridge.py",
   "auto_compact": true,
   "cache_prompt": true,
   "permission_posture": "sandboxed",
@@ -420,6 +455,7 @@ Commands:
   doctor         Diagnose config, sandbox, backend, and workspace
   profiles       Print llama-router profiles
   config-schema  Print or write the config JSON Schema
+  bridge         Check the optional external Python compatibility bridge
 ```
 
 Common options:
@@ -439,7 +475,7 @@ Common options:
 | --json | Request JSON object responses |
 | --session <NAME> | Load a saved session |
 | --timeout <SECONDS> | Backend and tool timeout |
-| --yes | Compatibility flag that selects full access for native Rust execution |
+| --yes | Compatibility flag that selects full access and approves Python execution |
 
 ## Development
 
@@ -455,6 +491,7 @@ src/
 ├── mcp.rs       native MCP discovery and calls
 ├── model.rs     messages, state, usage
 ├── plugin.rs    executable plugin protocol
+├── python_bridge.rs external Python compatibility protocol
 ├── provider.rs  provider catalog and connection resolution
 ├── sandbox.rs   subprocess boundary
 ├── security.rs  path and web security checks
