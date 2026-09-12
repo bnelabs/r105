@@ -69,6 +69,9 @@ pub struct Config {
     pub provider: Option<String>,
     pub allow_plugin_overrides: bool,
     pub docker_image: Option<String>,
+    /// Optional shell-like command for the external Python compatibility
+    /// bridge. It is parsed without a shell and never bundled into releases.
+    pub python_bridge_command: Option<String>,
     pub auto_approve_execute_python: bool,
     pub timeout_seconds: u64,
 }
@@ -101,6 +104,7 @@ impl Default for Config {
             provider: None,
             allow_plugin_overrides: false,
             docker_image: None,
+            python_bridge_command: None,
             auto_approve_execute_python: false,
             timeout_seconds: 120,
         }
@@ -185,6 +189,7 @@ impl Config {
                 "provider": {"type": ["string", "null"]},
                 "allow_plugin_overrides": {"type": "boolean"},
                 "docker_image": {"type": ["string", "null"]},
+                "python_bridge_command": {"type": ["string", "null"]},
                 "auto_approve_execute_python": {"type": "boolean", "deprecated": true},
                 "timeout_seconds": {"type": "integer", "minimum": 1}
             }
@@ -218,6 +223,7 @@ fn known_keys() -> BTreeSet<&'static str> {
         "provider",
         "allow_plugin_overrides",
         "docker_image",
+        "python_bridge_command",
         "auto_approve_execute_python",
         "timeout_seconds",
     ]
@@ -311,6 +317,16 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.sandbox_backend, "auto");
         assert!(config.auto_compact);
+        assert!(config.python_bridge_command.is_none());
         assert_eq!(config.timeout_seconds, 120);
+    }
+
+    #[test]
+    fn schema_includes_external_python_bridge_compatibility() {
+        assert_eq!(
+            Config::schema()["properties"]["python_bridge_command"]["type"],
+            json!(["string", "null"])
+        );
+        assert!(known_keys().contains("python_bridge_command"));
     }
 }

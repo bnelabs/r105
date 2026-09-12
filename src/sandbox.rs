@@ -8,8 +8,14 @@
 use std::{path::Path, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use tokio::{process::Command, time::timeout};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    process::{Child, Command},
+    time::timeout,
+};
 use tokio_util::sync::CancellationToken;
+
+const MAX_PROCESS_OUTPUT: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxBackend {
@@ -92,6 +98,10 @@ impl Sandbox {
         self.selected().as_str()
     }
 
+    pub fn timeout_seconds(&self) -> u64 {
+        self.timeout.as_secs()
+    }
+
     pub async fn run(
         &self,
         program: &str,
@@ -111,27 +121,87 @@ impl Sandbox {
             .env("HOME", workspace)
             .env("R105_SANDBOX", self.selected_name());
         command.kill_on_drop(true);
-        let child = command
+        let mut child = command
             .spawn()
             .with_context(|| format!("starting {program}"))?;
-        let wait = child.wait_with_output();
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("subprocess stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("subprocess stderr unavailable"))?;
+        let wait = wait_for_output(&mut child, stdout, stderr);
         tokio::pin!(wait);
-        let result = tokio::select! {
+        tokio::select! {
             _ = cancellation.cancelled() => {
                 bail!("process cancelled");
             }
             result = timeout(self.timeout, &mut wait) => {
                 match result {
-                    Ok(result) => result.context("waiting for subprocess")?,
+                    Ok(result) => Ok(result?),
                     Err(_) => bail!("execution timed out ({}s)", self.timeout.as_secs()),
                 }
             }
-        };
-        Ok(ProcessOutput {
-            status: result.status.code(),
-            stdout: String::from_utf8_lossy(&result.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
-        })
+        }
+    }
+
+    /// Run a subprocess with one bounded request written to stdin.
+    ///
+    /// This is used by the optional Python compatibility bridge and keeps its
+    /// transport inside the same sandbox, timeout, cancellation, and
+    /// environment boundary as native executable tools.
+    pub async fn run_with_input(
+        &self,
+        program: &str,
+        arguments: &[String],
+        workspace: &Path,
+        allow_network: bool,
+        cancellation: &CancellationToken,
+        input: &[u8],
+    ) -> Result<ProcessOutput> {
+        let mut command = self.command(program, arguments, workspace, allow_network)?;
+        command
+            .current_dir(workspace)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", workspace)
+            .env("R105_SANDBOX", self.selected_name());
+        command.kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("starting {program}"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            tokio::select! {
+                _ = cancellation.cancelled() => bail!("process cancelled"),
+                result = timeout(self.timeout, stdin.write_all(input)) => {
+                    result.context("writing subprocess input")??;
+                }
+            }
+        }
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("subprocess stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("subprocess stderr unavailable"))?;
+        let wait = wait_for_output(&mut child, stdout, stderr);
+        tokio::pin!(wait);
+        tokio::select! {
+            _ = cancellation.cancelled() => bail!("process cancelled"),
+            result = timeout(self.timeout, &mut wait) => {
+                match result {
+                    Ok(result) => Ok(result?),
+                    Err(_) => bail!("execution timed out ({}s)", self.timeout.as_secs()),
+                }
+            }
+        }
     }
 
     fn command(
@@ -207,6 +277,56 @@ impl Sandbox {
     }
 }
 
+struct BoundedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R) -> std::io::Result<BoundedOutput> {
+    let mut bytes = Vec::with_capacity(MAX_PROCESS_OUTPUT.min(8192));
+    let mut buffer = [0u8; 8192];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_PROCESS_OUTPUT.saturating_sub(bytes.len());
+        if remaining > 0 {
+            bytes.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+        if read > remaining {
+            truncated = true;
+        }
+    }
+    Ok(BoundedOutput { bytes, truncated })
+}
+
+async fn wait_for_output(
+    child: &mut Child,
+    stdout: impl AsyncRead + Unpin,
+    stderr: impl AsyncRead + Unpin,
+) -> Result<ProcessOutput> {
+    let (stdout, stderr, status) =
+        tokio::join!(read_bounded(stdout), read_bounded(stderr), child.wait());
+    let stdout = stdout.context("reading subprocess stdout")?;
+    let stderr = stderr.context("reading subprocess stderr")?;
+    let status = status.context("waiting for subprocess")?;
+    Ok(ProcessOutput {
+        status: status.code(),
+        stdout: output_text(stdout),
+        stderr: output_text(stderr),
+    })
+}
+
+fn output_text(output: BoundedOutput) -> String {
+    let mut text = String::from_utf8_lossy(&output.bytes).into_owned();
+    if output.truncated {
+        text.push_str("\n[output truncated by r105 sandbox]");
+    }
+    text
+}
+
 pub fn available_backends() -> Vec<&'static str> {
     ["nsjail", "bwrap", "docker", "rlimit", "none"]
         .into_iter()
@@ -228,5 +348,24 @@ mod tests {
     fn explicit_none_is_preserved() {
         let sandbox = Sandbox::detect("none", None, 30);
         assert_eq!(sandbox.selected_name(), "none");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subprocess_output_is_bounded_while_reading() {
+        let directory = tempfile::tempdir().unwrap();
+        let sandbox = Sandbox::detect("none", None, 10);
+        let output = sandbox
+            .run(
+                "sh",
+                &["-c".into(), "head -c 300000 /dev/zero".into()],
+                directory.path(),
+                false,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(output.stdout.len() < 300_000);
+        assert!(output.stdout.contains("output truncated by r105 sandbox"));
     }
 }

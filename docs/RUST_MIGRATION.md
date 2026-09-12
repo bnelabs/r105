@@ -13,9 +13,11 @@ release.
   schema versions and atomic replacement.
 - The Rust 1.0 line is the supported product. The 0.8.x Python line remains in
   the git history for compatibility reference only.
-- Python plugins, Python document exporters, and `execute_python` were removed.
-  Native Rust plugins, `execute_rust`, and dependency-free Markdown, text, JSON,
-  HTML, and PDF exporters replace them.
+- Embedded Python, Python plugin loading, and Python document exporters were
+  removed from the shipped runtime. The legacy `execute_python` tool remains
+  available through an explicitly configured, approval gated external bridge;
+  native Rust plugins, `execute_rust`, and dependency-free Markdown, text, JSON,
+  HTML, and PDF exporters remain the built-in paths.
 
 ## UX direction
 
@@ -83,6 +85,7 @@ The first Rust crate is intentionally split by responsibility:
 | `sandbox` | Native process limits and optional nsjail/bwrap/docker backends |
 | `mcp` | stdio and HTTP MCP client with explicit transport compatibility |
 | `plugin` | Signed/declared Rust executable plugin protocol |
+| `python_bridge` | Optional external Python compatibility protocol |
 | `ui` | Ratatui renderer, event loop, overlays, transcript, composer |
 | `export` | Native text, Markdown, JSON, HTML, and PDF output |
 
@@ -120,3 +123,5 @@ checks are:
    tool loop.
 5. Implemented MCP transports and the Rust executable plugin protocol.
 6. Implemented native exporters and Rust binary/package release workflows.
+7. Restored the legacy Python execution boundary as an optional external
+   protocol without adding Python to the native binary or package footprint.

@@ -46,6 +46,8 @@ A local mock that returns an OpenAI compatible JSON response can validate the se
 - src/security.rs and src/sandbox.rs define the execution boundaries.
 - src/session.rs and src/config.rs own durable formats and atomic writes.
 - src/plugin.rs and src/mcp.rs define local extension protocols.
+- src/python_bridge.rs defines the optional external Python compatibility protocol;
+  the reference implementation lives in bridge/ and is not bundled into releases.
 
 Keep responsibilities in their module. Add a small helper when it improves a boundary, then add a focused test for the behavior it protects.
 
@@ -75,7 +77,10 @@ The Rust loader continues to read the 0.8.x config and session JSON shape. Keep 
 
 Credentials must stay out of config and session files. Provider metadata can be persisted, but API keys are read from the environment or held only in memory by the guided connection flow.
 
-The repository is Rust only. Python plugins and Python optional dependencies are not part of the runtime or release pipeline.
+The shipped runtime and release packages are Rust only. Python plugins and
+Python optional dependencies are not embedded or installed. Existing Python
+workflows may use the explicitly configured, approval gated external bridge;
+keep that compatibility layer process based and versioned.
 
 ## Packaging
 

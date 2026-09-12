@@ -28,10 +28,12 @@ const MAX_WEB_BODY: usize = 5 * 1024 * 1024;
 pub struct ToolContext {
     pub workspace: PathBuf,
     pub plugins_dir: PathBuf,
+    pub python_bridge_command: Option<String>,
     pub sandbox: Sandbox,
     pub cancellation: CancellationToken,
     pub allow_network: bool,
     pub allow_code: bool,
+    pub python_approved: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +56,12 @@ fn builtin_definitions() -> Vec<Value> {
             "execute_rust",
             "Compile and execute Rust code in the configured sandbox.",
             json!({"code": {"type": "string", "description": "Rust source containing fn main()."}}),
+            &["code"],
+        ),
+        definition(
+            "execute_python",
+            "Execute Python through the optional external r105 Python bridge; requires one-time approval.",
+            json!({"code": {"type": "string", "description": "Python source code to execute."}}),
             &["code"],
         ),
         definition(
@@ -135,6 +143,7 @@ pub async fn execute(name: &str, raw_arguments: &Value, context: &ToolContext) -
     let arguments = repair_arguments(raw_arguments);
     let content = match name {
         "execute_rust" => execute_rust(&arguments, context).await?,
+        "execute_python" => execute_python(&arguments, context).await?,
         "write_file" => write_file(&arguments, &context.workspace)?,
         "read_file" => read_file(&arguments, &context.workspace)?,
         "list_files" => list_files(&arguments, &context.workspace)?,
@@ -518,6 +527,26 @@ async fn execute_rust(arguments: &Value, context: &ToolContext) -> Result<String
             output.stderr
         })
     }
+}
+
+async fn execute_python(arguments: &Value, context: &ToolContext) -> Result<String> {
+    if !context.allow_code {
+        bail!("Python execution is disabled by the current permission posture");
+    }
+    if !context.python_approved {
+        bail!("Python execution needs one-time approval; use /approve execute_python first");
+    }
+    let code = argument_string(arguments, "code")?;
+    validate_tool_text(&code, "code", MAX_CODE_SIZE)?;
+    crate::python_bridge::execute(
+        context.python_bridge_command.as_deref(),
+        &code,
+        &context.workspace,
+        &context.sandbox,
+        context.allow_network,
+        &context.cancellation,
+    )
+    .await
 }
 
 struct ExpressionParser<'a> {
