@@ -1,154 +1,116 @@
 # Contributing to r105
 
-## Development Setup
+r105 is a Rust native terminal AI harness. The contribution path is intentionally small: one Cargo project, one native binary, and platform packaging driven by GitHub Actions.
+
+## Development setup
+
+Install a stable Rust toolchain with rustup or your operating system package manager:
 
 ```sh
-# Clone and set up
 git clone https://github.com/bnelabs/r105.git
 cd r105
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-
-# Verify
-python -m pytest tests/ -v
+cargo check
 ```
 
-You need Python 3.12 or later. An OpenAI-compatible backend (Ollama, vLLM, or any `/v1` endpoint) is required for end-to-end testing, but unit and integration tests run without one.
+An OpenAI compatible backend is needed for live model, streaming, and tool loop checks. Unit tests run without a backend.
 
-## Running Tests
+## Local checks
+
+Run the same checks used by CI:
 
 ```sh
-# All tests
-python -m pytest tests/ -v
-
-# Specific test file
-python -m pytest tests/test_client.py -v
-
-# With coverage
-pip install pytest-cov
-python -m pytest tests/ --cov=r105 --cov-report=term-missing
+cargo fmt --all -- --check
+cargo check --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets
 ```
 
-### Test Structure
-
-| File | What it tests |
-|------|---------------|
-| `tests/test_client.py` | RouterClient helpers: `_build_payload`, `_parse_response`, `_extract_tool_calls` |
-| `tests/test_client_chaos.py` | Error handling, malformed SSE, streaming retries |
-| `tests/test_mcp_client.py` | MCP manager validation, disconnect, reconnect, and tool discovery |
-| `tests/test_errors.py` | Actionable backend error messages |
-| `tests/test_integration.py` | Full async flows with mocked HTTP responses (`pytest-httpx`) |
-| `tests/test_commands.py` | Slash command handlers and state mutations |
-| `tests/test_tools.py` | Tool execution, sandbox, safe math evaluator, unit conversion |
-| `tests/test_state.py` | ChatState, TokenUsage, token estimation |
-| `tests/test_skills.py` | Skill file listing, reading, parameter substitution |
-| `tests/test_config.py` | Config validation (manual + pydantic schema) |
-| `tests/test_plugin_compat.py` | Plugin host/dependency compatibility and reload draining |
-| `tests/test_session_version_search.py` | Session migration, search, and state round-trips |
-| `tests/test_model_catalog.py` | Model family/context resolution and overrides |
-| `tests/test_reasoning_permissions.py` | Reasoning effort and permission posture handling |
-| `tests/test_sessions_export_guard.py` | Optional export-dependency guard |
-| `tests/test_sandbox_fallback.py` | Sandbox fallback reasons and weak-backend warnings |
-| `tests/test_plugin_validation.py` | Plugin signature and tool-schema validation |
-| `tests/test_session_diff.py` | Session diff summaries |
-| `tests/test_tools_screen.py` | Tool-inspector collection and rendering |
-| `tests/test_tui.py` | Command detection, palette data integrity, widget structure |
-| `tests/test_command_palette.py` | Fuzzy matching and palette filtering |
-| `tests/test_tui_features.py` | TUI feature coverage (streaming, panels, markers) |
-| `tests/test_tui_virtualization.py` | Virtualized transcript, collapsible panels and results |
-
-## Linting & Type Checking
+Build and smoke test the executable:
 
 ```sh
-# Lint
-ruff check r105/ tests/
-
-# Auto-fix
-ruff check --fix r105/ tests/
-
-# Format
-ruff format r105/ tests/
-
-# Type check
-mypy r105/
+cargo build --release
+target/release/r105 --version
+target/release/r105 --help
+target/release/r105 config-schema
 ```
 
-All three must pass before submitting a PR. CI enforces this automatically.
+A local mock that returns an OpenAI compatible JSON response can validate the send path. A live provider validates SSE and tool execution.
 
-### Pre-commit Hooks (Optional)
+## Source layout
+
+- src/backend.rs contains the authoritative backend interface and HTTP/SSE implementation.
+- src/provider.rs contains connection presets and credential lookup.
+- src/ui.rs contains TUI orchestration and focused overlays.
+- src/command.rs contains the slash command registry and scrolling visibility helper.
+- src/tool.rs contains native tool schemas, dispatch, and bounded arithmetic.
+- src/security.rs and src/sandbox.rs define the execution boundaries.
+- src/session.rs and src/config.rs own durable formats and atomic writes.
+- src/plugin.rs and src/mcp.rs define local extension protocols.
+
+Keep responsibilities in their module. Add a small helper when it improves a boundary, then add a focused test for the behavior it protects.
+
+## Adding a slash command
+
+1. Add a CommandSpec to COMMANDS in src/command.rs.
+2. Add the handler branch in UiApp::handle_command or a focused helper in src/ui.rs.
+3. Describe the command in the README.
+4. Add parser or state tests when the command changes durable behavior.
+
+The command palette must keep keyboard selection visible. Use command::ensure_visible for any new picker or list.
+
+## Adding a tool
+
+1. Add a schema to builtin_definitions in src/tool.rs.
+2. Add a bounded handler to execute.
+3. Route filesystem work through safe_path and output through truncate_output.
+4. Route public web requests through validate_web_url and resolve_public_socket.
+5. Use ToolContext cancellation for operations that can wait.
+6. Add a meaningful unit test.
+
+Native Rust execution must continue through Sandbox. Do not add eval, exec, or an unbounded subprocess path.
+
+## Compatibility rules
+
+The Rust loader continues to read the 0.8.x config and session JSON shape. Keep serde defaults for fields that may be absent, and add a migration path when changing the session version.
+
+Credentials must stay out of config and session files. Provider metadata can be persisted, but API keys are read from the environment or held only in memory by the guided connection flow.
+
+The repository is Rust only. Python plugins and Python optional dependencies are not part of the runtime or release pipeline.
+
+## Packaging
+
+The release workflow builds:
+
+- Linux GNU x86_64 and aarch64 archives;
+- macOS x86_64 and arm64 archives;
+- Windows x86_64 and arm64 archives;
+- Ubuntu/Debian deb, Arch pkg.tar.zst, Fedora rpm;
+- FreeBSD amd64 pkg;
+- Alpine x86_64 apk.
+
+Package recipes are in packaging/. Release archives are target specific and include README, LICENSE, and SHA256SUMS at publication time.
+
+## Pull requests
+
+- Keep the change focused.
+- Explain user visible behavior and compatibility impact.
+- Update CHANGELOG.md under Unreleased.
+- Run formatting, check, clippy, and tests.
+- Do not commit target/, build/, dist/, caches, credentials, or local config files.
+
+## Release process
+
+Update the version in Cargo.toml and move the matching Unreleased notes into a dated section in CHANGELOG.md. Validate the metadata:
 
 ```sh
-pip install pre-commit
-pre-commit install
+./packaging/check_release.sh --tag v1.0.0
 ```
 
-This runs ruff and mypy on every commit.
-
-## Code Style
-
-- **Line length:** 100 characters
-- **Quotes:** Double quotes (`"`)
-- **Imports:** `from __future__ import annotations` at the top of every file
-- **Type hints:** Use `from typing import Any` for `Any`. Use `dict[str, Any]` and `list[str]` (not `Dict`/`List` from typing). Use `| None` instead of `Optional`.
-- **Docstrings:** Google-style. Every public function should have one.
-
-### Async Patterns
-
-Use `async def` / `await` for all I/O. Offload blocking calls with `asyncio.to_thread()`.
-
-Use `return_exceptions=True` with `asyncio.gather()` when batching independent tasks — a single failure should not cancel the rest.
-
-Textual workers use `@work(exclusive=True)`. The `finally` block is the right place for UI cleanup (it runs even on `CancelledError`).
-
-### Error Handling
-
-- Catch `httpx.HTTPError` for network failures — these are user-facing (router down, timeout)
-- Let `asyncio.CancelledError` propagate — it's how Textual cancels workers
-- Use `BaseException` checks when processing `asyncio.gather(return_exceptions=True)` results — `CancelledError` inherits from `BaseException`, not `Exception`
-
-## Project Conventions
-
-### Adding a New Slash Command
-
-1. Add the command name to `SLASH_COMMANDS` in `r105/commands.py`
-2. Write an `async def _cmd_yourcmd(args, state, client, workspace_dir, http_client)` handler and register it in `COMMAND_DISPATCH`
-3. Add the command to `command_menu()` output
-4. Register it in `COMMAND_DEFS` in `r105/tui/widgets/command_palette.py` (category, command, usage, description)
-
-### Adding a New Tool
-
-1. Write the handler function in `r105/tools.py` and decorate it with `@get_tool_registry().register(...)` (name, description, parameters, required, network/filesystem flags) — this defines the LLM schema and wires up dispatch
-2. Add argument checks to `_validate_tool_args()` if the tool needs them
-3. Add tests in `tests/test_tools.py`
-
-## PR Process
-
-1. Fork the repo and create a feature branch
-2. Make your changes
-3. Add an entry to `CHANGELOG.md` under `[Unreleased]` in the appropriate section
-4. Run `ruff check r105/ tests/ && mypy r105/ && python -m pytest tests/ -v --cov=r105`
-5. Push and open a PR against `main`
-6. CI will run the same checks automatically
-
-## Release Process (Maintainers)
+Commit the release, push the branch, merge it to main, and push the tag:
 
 ```sh
-# Update the version in pyproject.toml and r105/__init__.py
-# Move [Unreleased] entries to a dated version section in CHANGELOG.md
-python packaging/check_release.py
-
-# Commit and tag only after CI is green
-git tag vX.Y.Z
-git push --tags
-
-# Local Python package check
-python -m build
-twine upload dist/*
+git tag -a v1.0.0 -m "r105 v1.0.0"
+git push origin main --follow-tags
 ```
 
-The tagged GitHub Actions workflow builds and publishes the PyPI sdist/wheel,
-Linux/macOS/Windows standalone archives, Ubuntu/Debian `.deb`, Arch
-`.pkg.tar.zst`, Fedora `.rpm`, FreeBSD `.pkg`, Alpine `.apk` (best effort), and
-`SHA256SUMS`. It also updates Homebrew/Scoop metadata. Package recipe
-templates and target details live in `packaging/README.md`.
+The tag workflow builds and publishes the native matrix, package formats, checksums, and release notes. Homebrew and Scoop metadata are synchronized after the release assets are available.

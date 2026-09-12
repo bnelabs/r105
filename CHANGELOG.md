@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [1.0.0] — 2026-09-12
+
+### Added
+- Rust native implementation of the r105 AI harness with a Ratatui TUI,
+  Tokio async runtime, OpenAI compatible direct/router backends, streaming SSE,
+  model discovery, sessions, exports, skills, plugins, MCP, tools, and doctor
+  diagnostics
+- Guided /connect flow for OpenCode Zen, OpenCode Go, llama.cpp, llama-router,
+  Ollama, LM Studio, vLLM, OpenAI, Groq, OpenRouter, DeepSeek, Together, and
+  custom endpoints
+- Native execute_rust tool with sandbox selection, cancellation, bounded
+  arithmetic, workspace containment, DNS/IP SSRF controls, and redirect checks
+- Native executable plugin protocol and live MCP tools/list discovery with
+  /mcp reconnect
+- Native release artifacts for Linux x86_64/aarch64, macOS x86_64/arm64,
+  Windows x86_64/arm64, FreeBSD amd64, Ubuntu/Debian, Arch, Fedora, and Alpine
+
+### Changed
+- Replaced the Textual/Python runtime with one Rust executable and a smaller
+  dependency surface
+- Redesigned the TUI around a persistent composer, explicit build/plan/ask
+  modes, focused provider/model pickers, visible queue and context state,
+  cancellable work, and a scroll-safe command palette
+- Replaced Python optional exporters with dependency-free Markdown, text, JSON,
+  HTML, and PDF exporters
+- Preserved the existing config and session JSON shape where practical, with
+  versioned atomic session writes and __autosave__ on exit
+- Homebrew and Scoop distributions now consume platform binaries instead of a
+  Python virtual environment and dependency resource tree
+
+### Removed
+- Embedded Python runtime, Python plugin loading, and execute_python
+- PyPI, PyInstaller, and Python-only package build steps
+
 ## [0.8.3] — 2026-09-11
 
 ### Added
@@ -314,7 +348,8 @@ _No unreleased changes._
 - File explorer sidebar
 - Token usage estimation and auto-compaction at 80% context
 
-[Unreleased]: https://github.com/bnelabs/r105/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/bnelabs/r105/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/bnelabs/r105/compare/v0.8.3...v1.0.0
 [0.8.3]: https://github.com/bnelabs/r105/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/bnelabs/r105/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/bnelabs/r105/compare/v0.8.0...v0.8.1

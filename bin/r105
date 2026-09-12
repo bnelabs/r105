@@ -1,6 +1,0 @@
-#!/usr/bin/env sh
-# Resolve symlinks to find the real script location
-SCRIPT="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
-R105_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
-export PYTHONPATH="${R105_DIR}${PYTHONPATH:+:$PYTHONPATH}"
-exec "${R105_DIR}/.venv/bin/python" -m r105 "$@"

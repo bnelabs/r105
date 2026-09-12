@@ -1,7 +1,7 @@
 name: "r105"
 version: "@VERSION@"
 origin: "misc/r105"
-comment: "Rich terminal AI assistant for OpenAI-compatible backends"
+comment: "Native local-first AI harness for OpenAI-compatible backends"
 maintainer: "r105 maintainers <maintainers@r105.dev>"
 www: "https://github.com/bnelabs/r105"
 abi: "@ABI@"
@@ -9,7 +9,7 @@ prefix: "/usr/local"
 licenselogic: "single"
 licenses: [ "MIT" ]
 categories: [ "devel", "shells" ]
-desc: "r105 is a local-first Textual terminal assistant with tools and MCP integration."
+desc: "r105 is a Rust terminal AI harness with tools and MCP integration."
 files: {
   "/usr/local/bin/r105": "@R105_SHA256@",
   "/usr/local/share/licenses/r105/LICENSE": "@LICENSE_SHA256@",

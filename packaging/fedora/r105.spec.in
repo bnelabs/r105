@@ -1,7 +1,7 @@
 Name:           r105
 Version:        @VERSION@
 Release:        1%{?dist}
-Summary:        Rich terminal AI assistant for OpenAI-compatible backends
+Summary:        Native local-first AI harness for OpenAI-compatible backends
 License:        MIT
 URL:            https://github.com/bnelabs/r105
 Source0:        r105
@@ -10,8 +10,8 @@ Source2:        README.md
 Requires:       glibc >= 2.35
 
 %description
-r105 is a local-first Textual terminal assistant with streaming responses,
-tools, MCP integration, plugins, sessions, and sandbox-aware execution.
+r105 is a Rust terminal AI harness with streaming responses, bounded tools,
+MCP integration, native plugins, sessions, and sandbox-aware execution.
 
 %prep
 
