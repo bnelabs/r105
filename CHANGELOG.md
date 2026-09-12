@@ -7,8 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Fixed the Alpine musl build to use the Rust 1.88 toolchain required by the
-  native crate instead of Alpine's older repository compiler.
+_No unreleased changes._
 
 ## [1.0.0] — 2026-09-12
 
@@ -39,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   versioned atomic session writes and __autosave__ on exit
 - Homebrew and Scoop distributions now consume platform binaries instead of a
   Python virtual environment and dependency resource tree
+
+### Fixed
+- Alpine musl packaging uses the Rust 1.88 toolchain required by the native
+  crate instead of Alpine's older repository compiler
+- Cross compiled Linux aarch64 and Windows ARM artifacts are no longer run on
+  incompatible x86 release runners during smoke testing
 
 ### Removed
 - Embedded Python runtime, Python plugin loading, and execute_python

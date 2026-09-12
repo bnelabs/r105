@@ -115,11 +115,11 @@ jobs:
           7z a (Join-Path $env:GITHUB_WORKSPACE "release/${{ matrix.asset }}") r105.exe LICENSE README.md
           Pop-Location
       - name: Smoke test Unix
-        if: ${{ !startsWith(matrix.target, 'x86_64-pc-windows') && !startsWith(matrix.target, 'aarch64-pc-windows') }}
+        if: ${{ !startsWith(matrix.target, 'x86_64-pc-windows') && !startsWith(matrix.target, 'aarch64-pc-windows') && matrix.target != 'aarch64-unknown-linux-gnu' }}
         shell: bash
         run: target/${{ matrix.target }}/release/r105 --version
       - name: Smoke test Windows
-        if: ${{ startsWith(matrix.target, 'x86_64-pc-windows') || startsWith(matrix.target, 'aarch64-pc-windows') }}
+        if: ${{ (startsWith(matrix.target, 'x86_64-pc-windows') || startsWith(matrix.target, 'aarch64-pc-windows')) && matrix.target != 'aarch64-pc-windows-msvc' }}
         shell: pwsh
         run: target/${{ matrix.target }}/release/r105.exe --version
       - uses: actions/upload-artifact@v7
