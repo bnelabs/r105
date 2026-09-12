@@ -26,9 +26,24 @@ pub struct CommandSpec {
 
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
+        name: "/",
+        usage: "/",
+        description: "show commands and keybindings",
+    },
+    CommandSpec {
         name: "/help",
         usage: "/help [command]",
         description: "show commands and keybindings",
+    },
+    CommandSpec {
+        name: "/state",
+        usage: "/state",
+        description: "show active settings and connection",
+    },
+    CommandSpec {
+        name: "/history",
+        usage: "/history",
+        description: "show a transcript preview",
     },
     CommandSpec {
         name: "/connect",
@@ -59,6 +74,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "/profiles",
         usage: "/profiles",
         description: "list llama-router profiles",
+    },
+    CommandSpec {
+        name: "/profile",
+        usage: "/profile [name|auto]",
+        description: "set the llama-router profile",
     },
     CommandSpec {
         name: "/plan",
@@ -96,9 +116,29 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "show context usage and estimate confidence",
     },
     CommandSpec {
+        name: "/quality",
+        usage: "/quality [fast|balanced|best]",
+        description: "set router quality hint",
+    },
+    CommandSpec {
+        name: "/json",
+        usage: "/json [on|off]",
+        description: "toggle JSON response mode",
+    },
+    CommandSpec {
+        name: "/max",
+        usage: "/max [tokens]",
+        description: "set or clear completion token limit",
+    },
+    CommandSpec {
         name: "/cache-prompt",
         usage: "/cache-prompt [on|off]",
         description: "toggle llama.cpp prompt caching",
+    },
+    CommandSpec {
+        name: "/config",
+        usage: "/config <show|reload>",
+        description: "inspect or reload configuration",
     },
     CommandSpec {
         name: "/clear",
@@ -144,6 +184,36 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "/theme",
         usage: "/theme [name]",
         description: "show or switch the theme",
+    },
+    CommandSpec {
+        name: "/autocompact",
+        usage: "/autocompact [on|off]",
+        description: "toggle automatic context compaction",
+    },
+    CommandSpec {
+        name: "/reasoning",
+        usage: "/reasoning [auto|off|low|medium|high]",
+        description: "set reasoning effort hint",
+    },
+    CommandSpec {
+        name: "/permissions",
+        usage: "/permissions [full-access|restricted|sandboxed|off]",
+        description: "set local tool permission posture",
+    },
+    CommandSpec {
+        name: "/approve",
+        usage: "/approve execute_python",
+        description: "approve Python bridge execution for this run",
+    },
+    CommandSpec {
+        name: "/preview",
+        usage: "/preview <filename>",
+        description: "preview a workspace file",
+    },
+    CommandSpec {
+        name: "/bridge",
+        usage: "/bridge",
+        description: "show optional Python bridge status",
     },
     CommandSpec {
         name: "/copy",

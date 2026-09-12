@@ -2,6 +2,8 @@ dist/
 workspace/*
 !workspace/.gitkeep
 *.log
+__pycache__/
+*.py[cod]
 .aider*
 .codewhale/
 build/
