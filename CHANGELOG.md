@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+- Fixed the Alpine musl build to use the Rust 1.88 toolchain required by the
+  native crate instead of Alpine's older repository compiler.
 
 ## [1.0.0] — 2026-09-12
 

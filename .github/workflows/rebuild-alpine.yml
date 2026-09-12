@@ -44,8 +44,8 @@ jobs:
           docker run --rm -e VERSION="$VERSION" \
             -w /workspace \
             -v "$GITHUB_WORKSPACE:/workspace" -v "$output_root:/out" \
-            alpine:3.22 sh -euxc '
-              apk add --no-cache alpine-sdk rust cargo build-base cmake perl
+            rust:1.88-alpine3.22 sh -euxc '
+              apk add --no-cache alpine-sdk build-base cmake perl
               cargo build --release --locked
               adduser -D builder
               addgroup builder abuild
