@@ -6,6 +6,6 @@ Architecture: amd64
 Depends: libc6 (>= 2.35)
 Maintainer: r105 maintainers <maintainers@r105.dev>
 Homepage: https://github.com/bnelabs/r105
-Description: Rich terminal AI assistant for OpenAI-compatible backends
- r105 is a local-first Textual terminal assistant with streaming responses,
- tools, MCP integration, plugins, sessions, and sandbox-aware execution.
+Description: Native local-first AI harness for OpenAI-compatible backends
+ r105 is a Rust terminal AI harness with streaming responses, bounded tools,
+ MCP integration, native plugins, sessions, and sandbox-aware execution.

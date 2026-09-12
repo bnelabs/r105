@@ -1,12 +1,8 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
 dist/
-.venv/
-.pytest_cache/
 workspace/*
 !workspace/.gitkeep
 *.log
 .aider*
 .codewhale/
 build/
+target/

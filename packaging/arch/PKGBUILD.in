@@ -1,7 +1,7 @@
 pkgname=r105
 pkgver=@VERSION@
 pkgrel=1
-pkgdesc='Rich terminal AI assistant for OpenAI-compatible backends'
+pkgdesc='Native local-first AI harness for OpenAI-compatible backends'
 arch=('x86_64')
 url='https://github.com/bnelabs/r105'
 license=('MIT')

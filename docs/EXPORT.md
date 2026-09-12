@@ -1,23 +1,15 @@
-# Export Extra
+# Export formats
 
-r105 core installs with minimal dependencies for terminal use.
+Export is part of the Rust binary and has no optional runtime dependencies.
 
-## Optional export dependencies
+From the TUI:
 
-Document export features are opt-in:
-
-```bash
-pip install "r105[export]"
+```text
+/export markdown workspace.md
+/export text workspace.txt
+/export json workspace.json
+/export html workspace.html
+/export pdf workspace.pdf
 ```
 
-This installs:
-- `python-pptx`
-- `python-docx`
-- `fpdf2`
-- `pillow`
-
-### Usage
-
-Once installed, the `/export` slash commands and `export_conversation` will work for all formats.
-
-If the extra is not installed, the CLI will show a helpful error suggesting the install command.
+If the path is relative, it is resolved inside the configured workspace. The Markdown, text, JSON, and HTML exporters include the full transcript and tool call metadata. The built in PDF writer produces a portable summary PDF without downloading a document or rendering runtime.
