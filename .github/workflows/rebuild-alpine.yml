@@ -45,28 +45,14 @@ jobs:
             -w /workspace \
             -v "$GITHUB_WORKSPACE:/workspace" -v "$output_root:/out" \
             alpine:3.22 sh -euxc '
-              apk add --no-cache alpine-sdk python3 py3-pip py3-virtualenv \
-                build-base libffi-dev openssl-dev
-              python3 -m venv /tmp/r105-venv
-              /tmp/r105-venv/bin/python -m pip install --upgrade pip
-              /tmp/r105-venv/bin/python -m pip install --no-cache-dir pyinstaller .
-              /tmp/r105-venv/bin/python -m PyInstaller --clean --onefile --name r105 \
-                --distpath /workspace/dist-alpine --workpath /workspace/build-alpine \
-                --specpath /workspace/build-alpine \
-                --hidden-import=r105.cli \
-                --hidden-import=r105.tui \
-                --hidden-import=r105.tui.screens \
-                --hidden-import=r105.tui.widgets \
-                --hidden-import=r105.themes \
-                --add-data "$(pwd)/r105/themes:r105/themes" \
-                --add-data "$(pwd)/r105/skills:r105/skills" \
-                r105/__main__.py
+              apk add --no-cache alpine-sdk rust cargo build-base cmake perl
+              cargo build --release --locked
               adduser -D builder
               addgroup builder abuild
               mkdir -p /var/cache/distfiles /workspace/alpine-package
               chgrp abuild /var/cache/distfiles
               chmod g+w /var/cache/distfiles
-              cp /workspace/dist-alpine/r105 /workspace/alpine-package/r105
+              cp /workspace/target/release/r105 /workspace/alpine-package/r105
               cp /workspace/LICENSE /workspace/README.md /workspace/alpine-package/
               sed "s/@VERSION@/${VERSION}/g" /workspace/packaging/alpine/APKBUILD.in \
                 > /workspace/alpine-package/APKBUILD

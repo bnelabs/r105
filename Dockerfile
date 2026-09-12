@@ -1,23 +1,21 @@
-# r105 Docker image
+# r105 native Rust image
 # Usage:
 #   docker build -t r105 .
-#   docker run -it --rm r105 --help
-#   docker run -it --rm -v ~/.config/r105:/root/.config/r105 r105 chat
+#   docker run -it --rm r105 chat
 
-FROM python:3.12-slim-bookworm
+FROM rust:1.88-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo build --release --locked
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bubblewrap \
-    nsjail \
-    xclip \
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates bubblewrap \
     && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-COPY pyproject.toml README.md ./
-COPY r105/ ./r105/
-
-RUN pip install --no-cache-dir .
-
+COPY --from=build /src/target/release/r105 /usr/local/bin/r105
+RUN useradd --create-home --shell /bin/sh r105
+USER r105
+WORKDIR /home/r105
 ENTRYPOINT ["r105"]
 CMD ["chat"]

@@ -1,171 +1,53 @@
-# Skills in r105
+# Skills
 
-Skills are markdown prompt templates that inject domain-specific guidance into the conversation as system messages. They support `{param}` placeholder substitution for dynamic parameterization.
+Skills are local Markdown prompt templates. r105 reads them from the configured skills directory and injects active skills as system messages before the conversation history.
 
-## What Are Skills?
+## Location and format
 
-A skill is a markdown file in `~/.config/r105/skills/` that describes how the LLM should behave for a specific task. When activated via `/skill use`, its content is prepended to every chat request as a system message.
-
-Skills are the simplest way to customize r105's behavior without writing code.
-
-## Creating a Skill
-
-### Directory
-
-Skills live in `~/.config/r105/skills/` by default. Create the directory if it doesn't exist:
+The default directory is ~/.config/r105/skills. A skill is one Markdown file:
 
 ```sh
 mkdir -p ~/.config/r105/skills
+cat > ~/.config/r105/skills/reviewer.md <<'EOF'
+Review the requested change for correctness, security, and missing tests.
+Return findings with file, line, impact, and a concrete fix.
+EOF
 ```
 
-### File Format
-
-A skill is a plain markdown (`.md`) file. The filename (without `.md`) becomes the skill name:
-
-```
-~/.config/r105/skills/
-├── code-reviewer.md
-├── poet.md
-├── web-researcher.md
-└── shell-expert.md
-```
-
-### Basic Skill
-
-```markdown
-<!-- ~/.config/r105/skills/poet.md -->
-Always respond in rhyming couplets. Use vivid imagery and metaphor.
-Prefer iambic pentameter where possible. End each response with a ~.
-```
-
-Usage:
-```
-/skill use poet
-```
-
-### Parameterized Skill
-
-Skills support `{key}` placeholders that are substituted when the skill is activated:
-
-```markdown
-<!-- ~/.config/r105/skills/code-reviewer.md -->
-You are a {language} code reviewer. Apply the following standards:
-- Style guide: {style_guide}
-- Focus areas: {focus_areas}
-- Severity threshold: {severity}
-
-For each issue found, report: file, line, severity, description, and fix.
-```
-
-Usage:
-```
-/skill use code-reviewer language=Rust style_guide="rustfmt + clippy" focus_areas="correctness,unsafe blocks" severity=high
-```
-
-The system message injected into the conversation becomes:
-
-```
-Active skill: code-reviewer
-You are a Rust code reviewer. Apply the following standards:
-- Style guide: rustfmt + clippy
-- Focus areas: correctness,unsafe blocks
-- Severity threshold: high
-
-For each issue found, report: file, line, severity, description, and fix.
-```
-
-### Placeholder Rules
-
-- Placeholder names: `{key}` — alphanumeric, underscores, hyphens
-- Substitution is literal string replacement (no evaluation, no recursion)
-- Unmatched placeholders are left as-is (the LLM sees the raw `{key}`)
-- Values can contain spaces when quoted: `key="value with spaces"`
+Skill names are a single local filename. Path separators, absolute paths, dot names, and parent traversal are rejected.
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `/skills` | List all available skill files |
-| `/skill use <name> [key=value ...]` | Activate a skill with optional parameters |
-| `/skill show <name>` | Print the raw content of a skill file |
-| `/skill drop <name>` | Deactivate one skill |
-| `/skill clear` | Deactivate all skills |
+| Command | Behavior |
+| --- | --- |
+| /skills | List Markdown files |
+| /skill use <name> [key=value ...] | Activate a skill and substitute parameters |
+| /skill show <name> | Display the raw skill |
+| /skill drop <name> | Deactivate one skill |
+| /skill clear | Deactivate all skills |
 
-### Multiple Skills
+Example:
 
-You can activate multiple skills simultaneously. They are injected as separate system messages in order of activation:
-
+```text
+/skills
+/skill use reviewer
+/skill show reviewer
+/skill drop reviewer
 ```
-/skill use poet
-/skill use web-researcher query="how CPUs work"
-```
 
-Both skills' system messages are included in each chat request. If they conflict, the LLM resolves the conflict — typically the later or more specific instruction takes precedence.
+## Parameters
 
-## Skill Lifecycle
-
-1. **Load:** `/skill use <name>` reads the `.md` file and adds it to `ChatState.active_skills`
-2. **Inject:** Before every chat request, `skill_messages()` (in `r105/skills.py`) reads each active skill and builds system messages
-3. **Parameterize:** `{key}` placeholders are substituted with values from `ChatState.skill_params`
-4. **Deactivate:** `/skill drop` removes the skill; `/skill clear` removes all
-
-Skills are **not persisted** across sessions. Re-activate them on each launch, or use the `--skills-dir` CLI flag to set a custom location.
-
-## Example Skill Files
-
-### Code Reviewer
+A skill can contain literal placeholders:
 
 ```markdown
-<!-- code-reviewer.md -->
-You are a {language} code reviewer.
-
-For each issue found, report:
-- **File:** path
-- **Line:** number
-- **Severity:** critical | major | minor | style
-- **Issue:** description
-- **Fix:** concrete suggestion
-
-Focus on: {focus_areas}
+You are reviewing a {language} project.
+Focus on {areas}.
 ```
 
-### Web Researcher
+Activate it with quoted values when needed:
 
-```markdown
-<!-- web-researcher.md -->
-When answering questions, follow this process:
-1. Break the question into search queries
-2. Use web_search for each query
-3. Use web_fetch for the top 3 results
-4. Synthesize findings with citations (URL + snippet)
-5. Note any gaps or uncertainties
-
-Query: {query}
+```text
+/skill use reviewer language=Rust areas="security and tests"
 ```
 
-### Shell Expert
-
-```markdown
-<!-- shell-expert.md -->
-You are a Linux shell expert. When writing commands:
-- Prefer POSIX-compatible syntax unless {shell} is specified
-- Explain each flag and pipeline stage
-- Warn about destructive operations (rm, dd, mkfs)
-- Show expected output format
-- Suggest safer alternatives when available
-
-Target shell: {shell}
-Target OS: {os}
-```
-
-## Security
-
-Skills are read from the local filesystem and injected as system messages. They are **not** executable code — they're prompt templates. The only risk is prompt injection if you activate a skill from an untrusted source, so review skill content before activation.
-
-The skill loader blocks path traversal:
-
-```python
-def read_skill(skills_dir: Path, name: str, params: dict | None = None) -> str:
-    if "/" in name or "\\" in name or name.startswith("."):
-        return ""  # blocks ../../etc/passwd style attacks
-```
+Values are literal replacements. They are stored in the session state and injected on the next request. Skills are prompt text; r105 does not execute them.
