@@ -6,10 +6,12 @@
   "version": "1.0.0",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/bnelabs/r105/releases/download/v1.0.0/r105-windows-x86_64.zip"
+      "url": "https://github.com/bnelabs/r105/releases/download/v1.0.0/r105-windows-x86_64.zip",
+      "hash": "00aa4d7bd96e5e2ed729b8baa97653d769868ebe098658dcaed9960736c34d5a"
     },
     "arm64": {
-      "url": "https://github.com/bnelabs/r105/releases/download/v1.0.0/r105-windows-arm64.zip"
+      "url": "https://github.com/bnelabs/r105/releases/download/v1.0.0/r105-windows-arm64.zip",
+      "hash": "314af6daf13f76798a48f7ad03eb0661cffd7e4e56f27fa229d677cf8988a9e9"
     }
   },
   "bin": "r105.exe",
