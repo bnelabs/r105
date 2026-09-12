@@ -1,0 +1,34 @@
+[package]
+name = "r105"
+version = "1.0.0"
+edition = "2024"
+description = "r105 — Beyond the prompt. Local-first AI harness for OpenAI-compatible backends."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/bnelabs/r105"
+rust-version = "1.88"
+
+[[bin]]
+name = "r105"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive", "env"] }
+crossterm = "0.29"
+futures-util = "0.3"
+ratatui = "0.30"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.47", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2.5"
+uuid = { version = "1.18", features = ["v4"] }
+walkdir = "2.5"
+which = "8.0"
+
+[dev-dependencies]
+tempfile = "3.23"

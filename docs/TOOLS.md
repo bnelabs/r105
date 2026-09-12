@@ -1,250 +1,124 @@
-# Custom Tools in r105
+# Native tools
 
-r105 ships with 10 built-in tools (`execute_python`, `write_file`, `read_file`, `list_files`, `web_search`, `web_fetch`, `get_time`, `calculate`, `convert`, `system_info`). This guide explains how tools work and how to add your own.
+r105 sends tool schemas in the OpenAI compatible request and executes returned calls through the Rust tool protocol.
 
-## How Tools Work
+## Built in tools
 
-Each tool has two parts:
+| Tool | Input | Behavior |
+| --- | --- | --- |
+| execute_rust | code | Compile and run a Rust program in the configured sandbox |
+| write_file | path, content | Write a UTF-8 file under the workspace |
+| read_file | path | Read a UTF-8 workspace file |
+| list_files | path | List a workspace directory |
+| get_time | none | Return the system clock |
+| calculate | expression | Evaluate bounded arithmetic |
+| convert | value, from_unit, to_unit | Convert common units |
+| system_info | none | Return OS, architecture, cwd, and pid |
+| web_search | query | Search public web pages through DuckDuckGo |
+| web_fetch | url | Fetch one public HTTP(S) page |
 
-1. **A JSON Schema definition** — tells the LLM what the tool does and what arguments it accepts
-2. **A handler function** — executes the tool and returns a result
+The native ToolContext carries the workspace, sandbox, cancellation token, network permission, code permission, and plugin directory. Tool calls in one model response run concurrently. A failed call becomes a tool result containing its error, so independent calls can finish.
 
-When the LLM decides to call a tool, it emits a `tool_calls` array in its response. r105's tool loop picks up these calls, dispatches to the handler via `execute_tool_call()`, and feeds the results back into the conversation.
+## Tool protocol
 
-## Anatomy of a Tool
+A tool schema has the normal OpenAI function shape:
 
-### The Schema Definition
-
-Registered with the `@get_tool_registry().register(...)` decorator in `r105/tools.py` (the schema doubles as the LLM's `TOOL_DEFINITIONS` entry):
-
-```python
-@get_tool_registry().register(
-    name="web_search",
-    description="Search the web and return results with titles, URLs, and snippets.",
-    parameters={
-        "query": {
-            "type": "string",
-            "description": "Search query string.",
-        },
-    },
-    required=["query"],
-    needs_network=True,
-    needs_filesystem=False,
-    needs_output_truncation=True,
-)
-def web_search(arguments: dict[str, Any]) -> str:
-    ...
-
-### The Handler Function
-
-A synchronous function that receives parsed arguments. Handlers may declare
-`(arguments)`, `(arguments, workspace_dir)`, or no parameters at all —
-dispatch adapts to the declared arity (`call_tool_handler()` in
-`r105/registry.py`), so pure tools omit what they don't need:
-
-```python
-def web_search(arguments: dict[str, Any]) -> str:
-    """Search the web using DuckDuckGo HTML (no API key required)."""
-    query = arguments.get("query", "")
-    if not query:
-        return "error: query is required"
-
-    try:
-        # Production web tools use _safe_http_client() and
-        # _request_with_validated_redirects() from r105.tools_web so every
-        # redirect and every post-DNS TCP destination is checked.
-        with _safe_http_client() as client:
-            response = _request_with_validated_redirects(
-                client,
-                "https://html.duckduckgo.com/html/",
-                params={"q": query},
-                timeout=15.0,
-            )
-        response.raise_for_status()
-        results = parse_ddg_results(response.text, WEB_SEARCH_MAX_RESULTS)
-        return json.dumps(results, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return f"search error: {e}"
-```
-
-Shared web plumbing (SSRF allow-listing, HTML stripping, DDG parsing) lives
-in `r105/tools_web.py` — import from there instead of duplicating it.
-
-### The Dispatch Entry
-
-Dispatch is automatic: the decorator registers the handler on the shared `ToolRegistry`, and `execute_tool_call()` routes by name (built-ins → plugins → MCP). No manual dispatch table to edit. Add argument checks to `_validate_tool_args()` in `r105/tools.py` when the tool needs them:
-
-```python
-elif name == "web_search":
-    query = arguments.get("query", "")
-    if not query:
-        return "query is required"
-```
-
-## Adding a New Tool: Step by Step
-
-Let's walk through adding a `send_email` tool.
-
-### Step 1: Write the Handler
-
-In `r105/tools.py`, add a new function:
-
-```python
-def send_email(arguments: dict[str, Any]) -> str:
-    """Send an email via SMTP (requires smtplib credentials in config)."""
-    to_addr = arguments.get("to", "")
-    subject = arguments.get("subject", "")
-    body = arguments.get("body", "")
-
-    if not all([to_addr, subject, body]):
-        return "error: 'to', 'subject', and 'body' are required"
-
-    # In production, load SMTP config from config.json
-    # For now, return a placeholder
-    return f"Would send email to {to_addr}:\nSubject: {subject}\n{len(body)} chars"
-```
-
-### Step 2: Register the Schema
-
-Decorate the handler with `@get_tool_registry().register(...)` (name, description, parameters, required, plus `needs_network` / `needs_filesystem` / `needs_output_truncation` flags). This both defines the LLM-facing JSON Schema and wires up dispatch — there is no separate `TOOL_DEFINITIONS` list or `elif` chain to edit:
-
-```python
-@get_tool_registry().register(
-    name="send_email",
-    description="Send an email to a recipient.",
-    parameters={
-        "to": {
-            "type": "string",
-            "description": "Recipient email address.",
-        },
-        "subject": {
-            "type": "string",
-            "description": "Email subject line.",
-        },
-        "body": {
-            "type": "string",
-            "description": "Email body text.",
-        },
-    },
-    required=["to", "subject", "body"],
-    needs_network=True,
-    needs_filesystem=False,
-)
-def send_email(arguments: dict[str, Any]) -> str:
-    ...
-```
-
-### Step 3: Validate Arguments
-
-If the tool needs argument checks, add a branch to `_validate_tool_args()` in `r105/tools.py`:
-
-```python
-elif name == "send_email":
-    if not arguments.get("to"):
-        return "to is required"
-```
-
-### Step 4: Add Tests
-
-In `tests/test_tools.py`:
-
-```python
-def test_send_email_missing_args(workspace_dir: Path) -> None:
-    call = {
-        "id": "call_test",
-        "function": {
-            "name": "send_email",
-            "arguments": '{"to": "a@b.com"}',
-        },
-    }
-    result = execute_tool_call(call, workspace_dir)
-    assert "required" in result["content"]
-
-
-def test_send_email_success(workspace_dir: Path) -> None:
-    call = {
-        "id": "call_test",
-        "function": {
-            "name": "send_email",
-            "arguments": '{"to": "a@b.com", "subject": "Hi", "body": "Hello"}',
-        },
-    }
-    result = execute_tool_call(call, workspace_dir)
-    assert "Would send email" in result["content"]
-```
-
-## Tool Execution Model
-
-Tools run **synchronously** in a thread pool via `asyncio.to_thread()`:
-
-```python
-async def _exec_one(tc: dict[str, Any]) -> dict[str, Any]:
-    return await asyncio.to_thread(execute_tool_call, tc, self.workspace)
-```
-
-This prevents I/O or CPU-heavy tools from blocking the TUI event loop. Multiple independent tool calls run in **parallel** via `asyncio.gather()`.
-
-## Return Value Format
-
-Tool handlers must return a `str`. The result is wrapped in a tool message:
-
-```python
+```json
 {
-    "role": "tool",
-    "tool_call_id": call.get("id", ""),
-    "name": name,
-    "content": result,  # your handler's return value
+  "type": "function",
+  "function": {
+    "name": "read_file",
+    "description": "Read a UTF-8 workspace file",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" }
+      },
+      "required": ["path"]
+    }
+  }
 }
 ```
 
-For structured data (search results, API responses), return JSON:
+Tool arguments are accepted as JSON objects. The parser also repairs a JSON string wrapped in a Markdown JSON fence, because some compatible backends emit that form.
 
-```python
-return json.dumps(results, indent=2, ensure_ascii=False)
+## Workspace security
+
+All workspace paths pass through the canonical workspace root. The following are rejected:
+
+- absolute paths;
+- parent traversal;
+- symlink paths that resolve outside the workspace;
+- oversized file writes and reads.
+
+Writes report whether a file was created or updated. Reads and tool results are bounded before they reach the model.
+
+## Web security
+
+web_fetch and web_search use a client with automatic redirects disabled.
+
+For each request r105:
+
+1. checks the scheme and rejects credentials;
+2. rejects local and known metadata hostnames;
+3. resolves all DNS answers;
+4. rejects the host if any answer is loopback, private, link local, multicast, unspecified, carrier grade NAT, or IPv6 unique local;
+5. pins the chosen public address in reqwest;
+6. validates a Location target before following it;
+7. stops after five redirects and truncates the response.
+
+This closes the redirect bypass and the check then resolve gap for the request path. Public hosts with mixed public and private DNS answers fail closed.
+
+## Arithmetic limits
+
+calculate uses a recursive descent parser rather than eval. It limits expression length, nesting depth, numeric literals, powers, finite intermediate values, and factorial arguments. It supports arithmetic, pi, e, tau, sqrt, trigonometric functions, logarithms, exp, abs, floor, ceil, round, and factorial.
+
+## Rust execution
+
+execute_rust writes source under workspace/.r105/runs, compiles with rustc, runs the binary, and removes the temporary files. The Sandbox chooses:
+
+1. nsjail;
+2. bubblewrap;
+3. Docker;
+4. rlimit timeout fallback;
+5. none only when explicitly configured.
+
+The environment is cleared before the child starts. Network access is disabled for the Rust tool unless the permission posture allows it. Under the off posture, execute_rust is refused.
+
+The rlimit fallback is a process timeout and output boundary. It is not a substitute for OS namespace isolation; r105 doctor shows which backend is active.
+
+## Plugins
+
+A plugin consists of a JSON manifest and an executable. A manifest in ~/.config/r105/plugins/ looks like this:
+
+```json
+{
+  "name": "example",
+  "command": "r105-plugin-example",
+  "version": "1",
+  "tools": [
+    {
+      "name": "hello",
+      "description": "Return a greeting",
+      "parameters": {
+        "name": { "type": "string" }
+      },
+      "required": ["name"]
+    }
+  ]
+}
 ```
 
-For errors, prefix with `error:`:
+The executable receives one newline terminated request:
 
-```python
-return f"error: {description}"
+```json
+{"method":"call","tool":"hello","arguments":{"name":"Ada"}}
 ```
 
-## Security Considerations
+It returns one JSON object with content or result. The model sees the tool as plugin_example_hello. Plugin names are namespaced and plugin processes inherit a cleared environment plus PATH.
 
-### Sandboxing
+## MCP
 
-Python execution (`execute_python`) runs in the auto-detected sandbox backend (`nsjail` > `bwrap` > `docker` > `rlimit` > `none`):
-- Strong backends (nsjail/bwrap/docker): namespace/container isolation, 256 MB memory, 25s CPU, stripped environment
-- Weak backends (rlimit/none): resource limits only or nothing — auto-selection is surfaced via a startup warning and the TUI status bar
+MCP servers use the config.json mcp_servers list. /mcp reconnect performs initialize and tools/list, caches the returned schemas, and exposes them as mcp_server_tool. /mcp tools prints the cached OpenAI function schemas. /mcp list prints configured and discovered counts.
 
-See [Sandbox & Security](../README.md#sandbox--security) in the README for details.
-
-For other tools, apply input validation:
-
-```python
-# File tools: path containment check
-def _resolve_path(path: str, workspace_dir: Path) -> Path:
-    # Prevents path traversal (../../etc/passwd → workspaces-only)
-
-# Web tools: URL validation
-if not url.startswith(("http://", "https://")):
-    return "error: invalid URL scheme"
-```
-
-### Input Validation Checklist
-
-- **File paths:** Route through `_resolve_path()` to enforce workspace containment
-- **URLs:** Validate scheme (http/https only), consider an allowlist
-- **Search queries:** Sanitize length, avoid injection
-- **Code execution:** Always use the sandbox, never `eval()` or `exec()` in-process
-- **Rate limiting:** Consider adding per-session call counters for web_search/web_fetch
-
-## Tool Arguments Convention
-
-| Pattern | Convention |
-|---------|------------|
-| Required args | Listed in `required` array in schema |
-| Optional args | Have sensible defaults in handler |
-| Boolean flags | Use `True`/`False`, not `"true"`/`"false"` |
-| File paths | Always resolved relative to workspace |
-| Large output | Truncate with `... (truncated, original: N chars)` |
+Stdio servers receive JSON RPC lines. HTTP servers receive request/response JSON or an SSE data response. Each tool call has a 30 second response limit.
