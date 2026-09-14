@@ -10,7 +10,7 @@ use std::{
     io::{self, Write, stdout},
     path::{Path, PathBuf},
     process::{Command as OsCommand, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -60,9 +60,33 @@ enum UiEvent {
     },
     ModelsLoaded {
         backend: Backend,
-        models: Vec<String>,
+        models: Vec<ModelInfo>,
     },
     Notice(String),
+}
+
+/// One entry of a provider model list. `status` carries the backend's load
+/// state (`loaded`, `unloaded`, …) when the provider reports one; most
+/// OpenAI-compatible endpoints omit it entirely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelInfo {
+    id: String,
+    status: Option<String>,
+}
+
+impl ModelInfo {
+    fn display(&self, active: &str) -> String {
+        let marker = if self.id == active { "●" } else { " " };
+        let mut text = if self.id == active {
+            format!("{marker} {} (active)", self.id)
+        } else {
+            format!("{marker} {}", self.id)
+        };
+        if let Some(status) = &self.status {
+            text.push_str(&format!(" · {status}"));
+        }
+        text
+    }
 }
 
 #[derive(Debug)]
@@ -73,7 +97,7 @@ enum Overlay {
         scroll: usize,
     },
     Models {
-        items: Vec<String>,
+        items: Vec<ModelInfo>,
         selected: usize,
         scroll: usize,
         active: String,
@@ -157,6 +181,11 @@ struct UiApp {
     busy: bool,
     streaming: String,
     status: String,
+    /// When the active request started, for the slow-start hint. Cold model
+    /// loads look exactly like a hung request until the first token lands.
+    request_started: Option<Instant>,
+    awaiting_first_token: bool,
+    slow_hint_shown: bool,
     queue: VecDeque<(String, Option<String>)>,
     /// File context resolved from `@refs`, pushed as a system message next
     /// to the user message once the backend answers.
@@ -250,6 +279,9 @@ impl UiApp {
             busy: false,
             streaming: String::new(),
             status,
+            request_started: None,
+            awaiting_first_token: false,
+            slow_hint_shown: false,
             queue: VecDeque::new(),
             pending_context: None,
             redo_stack: Vec::new(),
@@ -292,6 +324,7 @@ impl UiApp {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             self.process_events();
+            self.maybe_note_slow_start();
             terminal.draw(|frame| self.draw(frame))?;
             if self.editor_requested {
                 self.editor_requested = false;
@@ -347,6 +380,7 @@ impl UiApp {
             match event {
                 UiEvent::Backend(BackendEvent::Token(token)) => {
                     self.streaming.push_str(&token);
+                    self.awaiting_first_token = false;
                     self.status = "Generating…".into();
                     self.follow_transcript = true;
                 }
@@ -354,6 +388,7 @@ impl UiApp {
                 UiEvent::ChatDone(result) => self.chat_done(result),
                 UiEvent::ChatError(error) => {
                     self.streaming.clear();
+                    self.awaiting_first_token = false;
                     self.busy = false;
                     self.cancellation = None;
                     self.tool_round = 0;
@@ -378,6 +413,7 @@ impl UiApp {
                     }
                 }
                 UiEvent::ToolsDone(results) => {
+                    self.awaiting_first_token = false;
                     for result in &results {
                         self.state.history.push(Message::tool(
                             result.call_id.clone(),
@@ -394,6 +430,7 @@ impl UiApp {
                     self.start_continue();
                 }
                 UiEvent::Compacted { summary, recent } => {
+                    self.awaiting_first_token = false;
                     self.state.history =
                         vec![Message::system(format!("Conversation summary:\n{summary}"))];
                     self.state.history.extend(recent);
@@ -411,10 +448,29 @@ impl UiApp {
                         self.status = "Connected; provider returned no model list".into();
                         self.persist_connection(None);
                     } else {
-                        self.status =
-                            format!("Connected; choose a model ({} available)", models.len());
+                        let cold = models
+                            .iter()
+                            .filter(|model| {
+                                model
+                                    .status
+                                    .as_deref()
+                                    .is_some_and(|status| status != "loaded")
+                            })
+                            .count();
+                        self.status = if cold > 0 {
+                            format!(
+                                "Connected; choose a model ({} available, {} unloaded — first use loads them)",
+                                models.len(),
+                                cold
+                            )
+                        } else {
+                            format!("Connected; choose a model ({} available)", models.len())
+                        };
                         let active = self.state.model.clone();
-                        let selected = models.iter().position(|m| *m == active).unwrap_or(0);
+                        let selected = models
+                            .iter()
+                            .position(|model| model.id == active)
+                            .unwrap_or(0);
                         self.overlay = Overlay::Models {
                             items: models,
                             selected,
@@ -430,6 +486,7 @@ impl UiApp {
 
     fn chat_done(&mut self, result: ChatResult) {
         self.streaming.clear();
+        self.awaiting_first_token = false;
         self.state.last_usage = result.usage.clone();
         if let Some(tokens) = result.usage.prompt_tokens {
             self.session_in += tokens;
@@ -535,6 +592,25 @@ impl UiApp {
         }
     }
 
+    /// A request with no first token after a while is usually a cold model
+    /// load, not a hang. Say so once per request instead of leaving the
+    /// stale "Sending…" status up for a minute.
+    fn maybe_note_slow_start(&mut self) {
+        const SLOW_START_SECONDS: u64 = 15;
+        if slow_start_due(
+            self.busy,
+            self.awaiting_first_token,
+            self.slow_hint_shown,
+            self.request_started,
+            Instant::now(),
+        ) {
+            self.slow_hint_shown = true;
+            self.status = format!(
+                "Still waiting for the first token (>{SLOW_START_SECONDS}s) — the server may be loading the model; Esc cancels"
+            );
+        }
+    }
+
     fn start_prompt(&mut self, prompt: String, context: Option<String>) {
         if self.busy {
             self.queue.push_back((prompt, context));
@@ -545,6 +621,9 @@ impl UiApp {
         self.active_user = Some(prompt.clone());
         self.last_failed_prompt = None;
         self.pending_context = context;
+        self.request_started = Some(Instant::now());
+        self.awaiting_first_token = true;
+        self.slow_hint_shown = false;
         self.state.last_usage = Usage::default();
         self.tool_round = 0;
         self.streaming.clear();
@@ -801,8 +880,8 @@ impl UiApp {
                     KeyCode::PageDown => selected = (selected + 8).min(count.saturating_sub(1)),
                     KeyCode::Enter => {
                         if let Some(model) = items.get(selected) {
-                            self.state.model = model.clone();
-                            let model = model.clone();
+                            self.state.model = model.id.clone();
+                            let model = model.id.clone();
                             self.persist_connection(Some(&model));
                             self.status = format!("Model selected: {model}");
                         }
@@ -1712,6 +1791,9 @@ impl UiApp {
         state.history.clear();
         let sender = self.tx.clone();
         self.busy = true;
+        self.request_started = Some(Instant::now());
+        self.awaiting_first_token = true;
+        self.slow_hint_shown = false;
         self.cancellation = Some(CancellationToken::new());
         self.status = if automatic {
             "Context near its limit; compacting…".into()
@@ -2949,16 +3031,8 @@ impl UiApp {
                 scroll,
                 active,
             } => {
-                let display: Vec<String> = items
-                    .iter()
-                    .map(|name| {
-                        if *name == *active {
-                            format!("● {name} (active)")
-                        } else {
-                            format!("  {name}")
-                        }
-                    })
-                    .collect();
+                let display: Vec<String> =
+                    items.iter().map(|model| model.display(active)).collect();
                 render_picker(
                     frame,
                     area,
@@ -3245,6 +3319,18 @@ fn compact_number(value: u64) -> String {
     }
 }
 
+fn slow_start_due(
+    busy: bool,
+    awaiting: bool,
+    shown: bool,
+    started: Option<Instant>,
+    now: Instant,
+) -> bool {
+    busy && awaiting
+        && !shown
+        && started.is_some_and(|start| now.duration_since(start) >= Duration::from_secs(15))
+}
+
 fn git_branch_for(workspace: &Path) -> Option<String> {
     let output = OsCommand::new("git")
         .args([
@@ -3486,26 +3572,41 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-fn extract_models(value: &Value) -> Vec<String> {
+fn extract_models(value: &Value) -> Vec<ModelInfo> {
     let source = value.get("data").or_else(|| value.get("models"));
     let Some(items) = source.and_then(Value::as_array) else {
         return Vec::new();
     };
-    let mut models = items
-        .iter()
-        .filter_map(|item| match item {
-            Value::String(value) => Some(value.clone()),
-            Value::Object(object) => object
-                .get("id")
-                .or_else(|| object.get("name"))
-                .or_else(|| object.get("model"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    models.sort();
-    models.dedup();
+    let mut models: Vec<ModelInfo> = Vec::new();
+    for item in items {
+        let (id, status) = match item {
+            Value::String(value) => (Some(value.clone()), None),
+            Value::Object(object) => {
+                let id = object
+                    .get("id")
+                    .or_else(|| object.get("name"))
+                    .or_else(|| object.get("model"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let status = object.get("status").and_then(|status| match status {
+                    Value::String(value) => Some(value.clone()),
+                    Value::Object(object) => object
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    _ => None,
+                });
+                (id, status)
+            }
+            _ => (None, None),
+        };
+        if let Some(id) = id
+            && !models.iter().any(|model| model.id == id)
+        {
+            models.push(ModelInfo { id, status });
+        }
+    }
+    models.sort_by(|left, right| left.id.cmp(&right.id));
     models
 }
 
@@ -3633,5 +3734,72 @@ mod tests {
             assert!(is_known_key_action(action));
         }
         assert!(!is_known_key_action("quit"));
+    }
+
+    #[test]
+    fn model_list_keeps_router_load_status() {
+        let value = serde_json::json!({
+            "data": [
+                {"id": "b-model", "status": {"value": "unloaded", "args": ["x"]}},
+                {"id": "a-model", "status": {"value": "loaded"}},
+                {"id": "c-model", "status": "loading"},
+                {"id": "plain"},
+                "legacy-string",
+                {"id": "b-model", "status": {"value": "loaded"}},
+            ]
+        });
+        let models = extract_models(&value);
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["a-model", "b-model", "c-model", "legacy-string", "plain"]
+        );
+        let status = |id: &str| {
+            models
+                .iter()
+                .find(|model| model.id == id)
+                .and_then(|model| model.status.clone())
+        };
+        assert_eq!(status("a-model").as_deref(), Some("loaded"));
+        // First occurrence wins on duplicates.
+        assert_eq!(status("b-model").as_deref(), Some("unloaded"));
+        assert_eq!(status("c-model").as_deref(), Some("loading"));
+        assert_eq!(status("plain"), None);
+    }
+
+    #[test]
+    fn model_display_marks_active_and_status() {
+        let loaded = ModelInfo {
+            id: "a".into(),
+            status: Some("loaded".into()),
+        };
+        assert_eq!(loaded.display("a"), "● a (active) · loaded");
+        assert_eq!(loaded.display("b"), "  a · loaded");
+        let unknown = ModelInfo {
+            id: "a".into(),
+            status: None,
+        };
+        assert_eq!(unknown.display("b"), "  a");
+    }
+
+    #[test]
+    fn slow_start_hint_fires_once_after_fifteen_silent_seconds() {
+        let now = Instant::now();
+        let silent_long = Some(now - Duration::from_secs(20));
+        // Fires while busy, awaiting, unshown, and slow.
+        assert!(slow_start_due(true, true, false, silent_long, now));
+        // Not before the threshold.
+        assert!(!slow_start_due(
+            true,
+            true,
+            false,
+            Some(now - Duration::from_secs(5)),
+            now
+        ));
+        // Never twice, never idle, never after the first token, never dateless.
+        assert!(!slow_start_due(true, true, true, silent_long, now));
+        assert!(!slow_start_due(false, true, false, silent_long, now));
+        assert!(!slow_start_due(true, false, false, silent_long, now));
+        assert!(!slow_start_due(true, true, false, None, now));
     }
 }
