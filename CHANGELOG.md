@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [1.2.0] — 2026-09-14
+
+### Added
+- The `/models` picker shows each model's provider load state, and the
+  connect flow warns when a pick needs a first-use load.
+- A request with no first token after 15 seconds notes once that the
+  server may be loading the model, covering prompts and compactions.
+
 ## [1.1.0] — 2026-09-14
 
 ### Added
