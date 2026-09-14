@@ -220,9 +220,7 @@ async fn main() -> Result<()> {
             println!("{}", result.content);
             eprintln!("[wall={:.2}s]", result.wall_seconds);
         }
-        Command::Chat => {
-            ui::run(backend, state, paths, config.plugins_dir, python_approved).await?
-        }
+        Command::Chat => ui::run(backend, state, paths, config, python_approved).await?,
         Command::Health => println!(
             "{}",
             serde_json::to_string_pretty(&backend.health().await?)?

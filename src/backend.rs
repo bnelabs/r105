@@ -163,11 +163,13 @@ impl Backend {
     }
 
     fn is_llama_cpp(&self) -> bool {
+        // Only the explicit provider id opts into llama.cpp extensions.
+        // Matching on a port substring (e.g. ":8080") misfires for any
+        // unrelated service on that port.
         self.connection
             .provider_id
             .as_deref()
             .is_some_and(|id| id == "llamacpp")
-            || self.connection.base_url.contains(":8080")
     }
 
     async fn check_response(response: Response) -> Result<Response> {
@@ -397,5 +399,25 @@ mod tests {
             backend.endpoint("/v1/models"),
             "http://127.0.0.1:8080/v1/models"
         );
+    }
+
+    #[test]
+    fn llama_cpp_detection_requires_the_provider_id() {
+        let local = |provider: Option<&str>| Backend {
+            client: Client::builder().build().unwrap(),
+            connection: Connection {
+                provider_id: provider.map(str::to_string),
+                backend: "direct".into(),
+                base_url: "http://127.0.0.1:8080/v1".into(),
+                api_key: None,
+                model: "local".into(),
+            },
+            timeout: Duration::from_secs(10),
+        };
+        assert!(local(Some("llamacpp")).is_llama_cpp());
+        // Any unrelated service can listen on :8080; the port alone
+        // must not opt into llama.cpp-only request fields.
+        assert!(!local(Some("custom")).is_llama_cpp());
+        assert!(!local(None).is_llama_cpp());
     }
 }

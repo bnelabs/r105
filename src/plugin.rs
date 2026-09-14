@@ -39,14 +39,6 @@ pub struct PluginManifest {
     pub tools: Vec<PluginTool>,
 }
 
-pub fn manifests() -> Vec<PluginManifest> {
-    let paths = crate::config::ConfigPaths::discover();
-    let directory = crate::config::Config::load(&paths)
-        .map(|config| config.plugins_dir)
-        .unwrap_or(paths.plugins_dir);
-    load_manifests(&directory)
-}
-
 fn load_manifests(directory: &Path) -> Vec<PluginManifest> {
     let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
@@ -96,7 +88,13 @@ pub fn definitions_from(directory: &Path) -> Vec<Value> {
     result
 }
 
-pub async fn call_from(directory: &Path, name: &str, arguments: &Value) -> Result<String> {
+pub async fn call_from(
+    workspace: &Path,
+    plugins_dir: &Path,
+    name: &str,
+    arguments: &Value,
+) -> Result<String> {
+    let directory = plugins_dir;
     let Some((manifest, tool_name)) = load_manifests(directory).into_iter().find_map(|manifest| {
         let prefix = format!("plugin_{}_", manifest.name);
         name.strip_prefix(&prefix)
@@ -116,8 +114,15 @@ pub async fn call_from(directory: &Path, name: &str, arguments: &Value) -> Resul
     });
     let mut command = Command::new(&manifest.command);
     command.args(&manifest.args);
+    // Confine plugin execution to the workspace directory with a sanitized
+    // environment. Plugins still run as the local user (no namespace isolation),
+    // so network/code posture is enforced by the caller in tool::execute.
+    command.current_dir(workspace);
+    command.kill_on_drop(true);
     command.env_clear();
     command.env("PATH", std::env::var("PATH").unwrap_or_default());
+    command.env("HOME", workspace);
+    command.env("R105_PLUGIN", &manifest.name);
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -148,8 +153,9 @@ pub async fn call_from(directory: &Path, name: &str, arguments: &Value) -> Resul
         .unwrap_or_else(|| value.to_string()))
 }
 
-pub fn status() -> Vec<Value> {
-    manifests()
+pub fn status_from(directory: &Path) -> Vec<Value> {
+    let manifests = load_manifests(directory);
+    manifests
         .into_iter()
         .map(|manifest| {
             json!({

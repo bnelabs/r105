@@ -15,10 +15,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use futures_util::StreamExt;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -72,6 +73,7 @@ enum Overlay {
         items: Vec<String>,
         selected: usize,
         scroll: usize,
+        active: String,
     },
     ApiKey {
         provider: String,
@@ -79,20 +81,29 @@ enum Overlay {
     CustomUrl {
         provider: String,
     },
+    Theme {
+        selected: usize,
+        original: String,
+    },
 }
+
+pub use crate::config::THEMES;
 
 pub async fn run(
     backend: Backend,
     state: ChatState,
     paths: ConfigPaths,
-    plugins_dir: PathBuf,
+    config: Config,
     python_approved: bool,
 ) -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let result = UiApp::new(backend, state, paths, plugins_dir, python_approved)
-        .event_loop(&mut terminal)
-        .await;
+    let mut app = UiApp::new(backend, state, paths, config, python_approved);
+    let result = app.event_loop(&mut terminal).await;
     restore_terminal(&mut terminal)?;
+    // The alternate screen is gone here, so the autosave note is visible.
+    if let Some(notice) = app.exit_notice.take() {
+        eprintln!("{notice}");
+    }
     result
 }
 
@@ -129,6 +140,7 @@ struct UiApp {
     status: String,
     queue: VecDeque<String>,
     active_user: Option<String>,
+    last_failed_prompt: Option<String>,
     tool_round: usize,
     cancellation: Option<CancellationToken>,
     pending_connection: Option<Connection>,
@@ -139,6 +151,7 @@ struct UiApp {
     tx: mpsc::UnboundedSender<UiEvent>,
     rx: mpsc::UnboundedReceiver<UiEvent>,
     quit: bool,
+    exit_notice: Option<String>,
 }
 
 impl UiApp {
@@ -146,16 +159,26 @@ impl UiApp {
         backend: Backend,
         state: ChatState,
         paths: ConfigPaths,
-        plugins_dir: PathBuf,
+        config: Config,
         python_approved: bool,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        let config = Config::load(&paths).unwrap_or_default();
+        let plugins_dir = config.plugins_dir.clone();
         let sandbox = Sandbox::detect(
             &config.sandbox_backend,
             config.docker_image.clone(),
             config.timeout_seconds,
         );
+        // Surface weak isolation up front: the rlimit/none fallback still
+        // applies timeouts, output bounds, a sanitized env, and workspace
+        // confinement, but it is not a namespace/container boundary.
+        let status = match sandbox.selected_name() {
+            "rlimit" | "none" => format!(
+                "Ready · sandbox '{}' fallback — install nsjail/bwrap/docker for stronger isolation (/state)",
+                sandbox.selected_name()
+            ),
+            _ => "Ready".into(),
+        };
         Self {
             backend,
             state,
@@ -172,9 +195,10 @@ impl UiApp {
             show_details: false,
             busy: false,
             streaming: String::new(),
-            status: "Ready".into(),
+            status,
             queue: VecDeque::new(),
             active_user: None,
+            last_failed_prompt: None,
             tool_round: 0,
             cancellation: None,
             pending_connection: None,
@@ -185,13 +209,20 @@ impl UiApp {
             tx,
             rx,
             quit: false,
+            exit_notice: None,
         }
     }
 
     async fn event_loop(
-        mut self,
+        &mut self,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> Result<()> {
+        // Async input via EventStream + a redraw tick: no blocking poll on a
+        // Tokio worker, no yield_now spin. Streaming tokens redraw on the
+        // next 45ms tick at the latest.
+        let mut reader = EventStream::new();
+        let mut tick = tokio::time::interval(Duration::from_millis(45));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             self.process_events();
             terminal.draw(|frame| self.draw(frame))?;
@@ -199,19 +230,40 @@ impl UiApp {
                 if let Some(cancellation) = &self.cancellation {
                     cancellation.cancel();
                 }
-                if !self.state.history.is_empty()
-                    && let Err(error) = session::save(&self.paths, "__autosave__", &self.state)
-                {
-                    eprintln!("warning: could not save autosession: {error}");
+                if self.state.history.is_empty() {
+                    self.exit_notice = None;
+                } else {
+                    match session::save(&self.paths, "__autosave__", &self.state) {
+                        Ok(_) => {
+                            self.exit_notice = Some(format!(
+                                "Autosaved session '__autosave__' ({} messages)",
+                                self.state.history.len()
+                            ));
+                        }
+                        Err(error) => {
+                            self.exit_notice =
+                                Some(format!("warning: could not save autosession: {error}"));
+                        }
+                    }
                 }
                 break;
             }
-            if event::poll(Duration::from_millis(45))?
-                && let Event::Key(key) = event::read()?
-            {
-                self.handle_key(key).await?;
+            tokio::select! {
+                biased;
+                maybe = reader.next() => {
+                    match maybe {
+                        Some(Ok(Event::Key(key))) => self.handle_key(key).await?,
+                        Some(Ok(_)) => {}
+                        Some(Err(error)) => {
+                            self.status = format!("input error: {error}");
+                        }
+                        None => {
+                            self.quit = true;
+                        }
+                    }
+                }
+                _ = tick.tick() => {}
             }
-            tokio::task::yield_now().await;
         }
         Ok(())
     }
@@ -230,7 +282,14 @@ impl UiApp {
                     self.streaming.clear();
                     self.busy = false;
                     self.cancellation = None;
-                    self.status = format!("Request failed: {error}");
+                    self.tool_round = 0;
+                    if let Some(prompt) = self.active_user.take() {
+                        self.last_failed_prompt = Some(prompt.clone());
+                        // Restore the failed prompt so it is not lost; /retry reuses it.
+                        self.input = prompt;
+                        self.cursor = self.input.len();
+                    }
+                    self.status = format!("Request failed: {error} · /retry to try again");
                     self.start_next_queued();
                 }
                 UiEvent::ToolsDone(results) => {
@@ -240,7 +299,13 @@ impl UiApp {
                             format!("[{}]\n{}", result.name, result.content),
                         ));
                     }
-                    self.status = format!("{} tool result(s) received; continuing…", results.len());
+                    let names =
+                        tool_names(&results.iter().map(|r| r.name.clone()).collect::<Vec<_>>());
+                    self.status = format!(
+                        "{} tool result(s) [{}] received; continuing…",
+                        results.len(),
+                        names
+                    );
                     self.start_continue();
                 }
                 UiEvent::Compacted { summary, recent } => {
@@ -263,10 +328,13 @@ impl UiApp {
                     } else {
                         self.status =
                             format!("Connected; choose a model ({} available)", models.len());
+                        let active = self.state.model.clone();
+                        let selected = models.iter().position(|m| *m == active).unwrap_or(0);
                         self.overlay = Overlay::Models {
                             items: models,
-                            selected: 0,
+                            selected,
                             scroll: 0,
+                            active,
                         };
                     }
                 }
@@ -288,15 +356,30 @@ impl UiApp {
         self.last_response = result.content.clone();
         self.follow_transcript = true;
 
-        if !result.tool_calls.is_empty() && self.tool_round < 8 {
+        if !result.tool_calls.is_empty() && self.tool_round < MAX_TOOL_ROUNDS {
             self.tool_round += 1;
-            self.status = format!("Running {} tool call(s)…", result.tool_calls.len());
+            let names: Vec<String> = result
+                .tool_calls
+                .iter()
+                .map(|c| c.function.name.clone())
+                .collect();
+            self.status = format!(
+                "Running {} tool call(s) [{}]…",
+                result.tool_calls.len(),
+                tool_names(&names)
+            );
+            let Some(cancellation) = self.cancellation.clone() else {
+                self.busy = false;
+                self.status = "Tool execution aborted: missing cancellation token".into();
+                self.start_next_queued();
+                return;
+            };
             let context = ToolContext {
                 workspace: self.state.workspace.clone(),
                 plugins_dir: self.plugins_dir.clone(),
                 python_bridge_command: self.python_bridge_command.clone(),
                 sandbox: self.sandbox.clone(),
-                cancellation: self.cancellation.clone().unwrap_or_default(),
+                cancellation,
                 allow_network: self.state.permission_posture != "restricted"
                     && self.state.permission_posture != "off",
                 allow_code: self.state.permission_posture != "off",
@@ -316,7 +399,25 @@ impl UiApp {
                 }
             });
         } else {
-            if self.state.auto_compact
+            if !result.tool_calls.is_empty() {
+                // Tool-round limit reached with pending calls: do not claim success.
+                let names: Vec<String> = result
+                    .tool_calls
+                    .iter()
+                    .map(|c| c.function.name.clone())
+                    .collect();
+                self.busy = false;
+                self.cancellation = None;
+                self.status = format!(
+                    "Tool-round limit ({MAX_TOOL_ROUNDS}) reached; {} call(s) [{}] not executed",
+                    result.tool_calls.len(),
+                    tool_names(&names)
+                );
+                self.push_system(&format!(
+                    "Tool-round limit ({MAX_TOOL_ROUNDS}) reached. The model requested further tool calls that were not executed. Refine the prompt or continue manually."
+                ));
+                self.start_next_queued();
+            } else if self.state.auto_compact
                 && self.state.history.len() >= 4
                 && self.state.token_usage().percent() >= 80.0
             {
@@ -338,6 +439,7 @@ impl UiApp {
         }
         self.busy = true;
         self.active_user = Some(prompt.clone());
+        self.last_failed_prompt = None;
         self.state.last_usage = Usage::default();
         self.tool_round = 0;
         self.streaming.clear();
@@ -373,6 +475,8 @@ impl UiApp {
     fn start_continue(&mut self) {
         let Some(cancellation) = self.cancellation.clone() else {
             self.busy = false;
+            self.status = "Done; continuation unavailable (no active request)".into();
+            self.start_next_queued();
             return;
         };
         let backend = self.backend.clone();
@@ -566,6 +670,7 @@ impl UiApp {
                 items,
                 mut selected,
                 mut scroll,
+                active,
             } => {
                 let count = items.len();
                 let mut keep = true;
@@ -592,6 +697,7 @@ impl UiApp {
                         items,
                         selected,
                         scroll,
+                        active,
                     };
                 }
             }
@@ -670,6 +776,39 @@ impl UiApp {
                 }
                 _ => self.overlay = Overlay::CustomUrl { provider },
             },
+            Overlay::Theme {
+                mut selected,
+                original,
+            } => {
+                let count = THEMES.len();
+                let mut keep = true;
+                match key.code {
+                    KeyCode::Up => {
+                        selected = selected.saturating_sub(1);
+                        self.state.theme = THEMES[selected].to_string();
+                    }
+                    KeyCode::Down => {
+                        selected = (selected + 1).min(count.saturating_sub(1));
+                        self.state.theme = THEMES[selected].to_string();
+                    }
+                    KeyCode::Enter => {
+                        let theme = THEMES[selected].to_string();
+                        self.state.theme = theme.clone();
+                        self.persist_config(|config| config.theme = theme.clone());
+                        self.status = format!("Theme: {theme}");
+                        keep = false;
+                    }
+                    KeyCode::Esc => {
+                        // Revert the live preview.
+                        self.state.theme = original.clone();
+                        keep = false;
+                    }
+                    _ => {}
+                }
+                if keep {
+                    self.overlay = Overlay::Theme { selected, original };
+                }
+            }
             Overlay::None => {}
         }
         Ok(())
@@ -768,7 +907,9 @@ impl UiApp {
             "/session" => self.command_session(&parsed.args),
             "/export" => self.command_export(&parsed.args),
             "/mcp" => self.command_mcp(&parsed.args)?,
-            "/plugin" => self.push_system(&serde_json::to_string_pretty(&crate::plugin::status())?),
+            "/plugin" => self.push_system(&serde_json::to_string_pretty(
+                &crate::plugin::status_from(&self.plugins_dir),
+            )?),
             "/theme" => self.command_theme(&parsed.args),
             "/autocompact" => self.command_autocompact(&parsed.args),
             "/reasoning" => self.command_reasoning(&parsed.args),
@@ -789,6 +930,7 @@ impl UiApp {
                 self.queue.len(),
                 self.tool_round
             )),
+            "/retry" => self.command_retry(),
             "/exit" => self.quit = true,
             _ => self.status = format!("Unknown command {}; type /help", parsed.name),
         }
@@ -1113,6 +1255,27 @@ impl UiApp {
             return;
         }
         self.start_compaction(false);
+    }
+
+    fn command_retry(&mut self) {
+        if self.busy {
+            self.status = "Finish the active request before retrying".into();
+            return;
+        }
+        let Some(prompt) = self.last_failed_prompt.clone().or_else(|| {
+            if self.input.trim().is_empty() {
+                None
+            } else {
+                Some(self.input.trim().to_string())
+            }
+        }) else {
+            self.status = "Nothing to retry".into();
+            return;
+        };
+        self.last_failed_prompt = None;
+        self.input.clear();
+        self.cursor = 0;
+        self.start_prompt(prompt);
     }
 
     fn start_compaction(&mut self, automatic: bool) {
@@ -1452,6 +1615,7 @@ impl UiApp {
 
     fn persist_connection(&mut self, model: Option<&String>) {
         let Ok(mut config) = Config::load(&self.paths) else {
+            self.status = "connected, but could not read config to persist connection".into();
             return;
         };
         let connection = self.backend.connection();
@@ -1562,17 +1726,25 @@ impl UiApp {
     }
 
     fn command_theme(&mut self, args: &[String]) {
-        let valid = ["r105", "dracula", "solarized-dark", "high-contrast"];
         if let Some(theme) = args.first() {
-            if valid.contains(&theme.as_str()) {
+            if THEMES.contains(&theme.as_str()) {
                 self.state.theme = theme.clone();
+                self.persist_config(|config| config.theme = theme.clone());
                 self.status = format!("Theme: {theme}");
             } else {
-                self.status = format!("Unknown theme; choose {}", valid.join(", "));
+                self.status = format!("Unknown theme; choose {}", THEMES.join(", "));
             }
-        } else {
-            self.push_system(&format!("Theme: {}", self.state.theme));
+            return;
         }
+        let selected = THEMES
+            .iter()
+            .position(|name| *name == self.state.theme)
+            .unwrap_or(0);
+        self.overlay = Overlay::Theme {
+            selected,
+            original: self.state.theme.clone(),
+        };
+        self.status = "Choose a theme — preview is live, Enter keeps it, Esc reverts".into();
     }
 
     fn workspace_map(&self) -> String {
@@ -1739,12 +1911,11 @@ impl UiApp {
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
         let connection = self.backend.connection();
+        let accent = accent_color(&self.state.theme);
         let title = Line::from(vec![
             Span::styled(
                 " r105 ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "AI harness",
@@ -1783,11 +1954,12 @@ impl UiApp {
 
     fn draw_transcript(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let mut lines = Vec::new();
+        let palette = theme_palette(&self.state.theme);
         for message in &self.state.history {
             let color = match message.role.as_str() {
-                "user" => Color::Cyan,
-                "assistant" => Color::Green,
-                "tool" => Color::Yellow,
+                "user" => palette.user,
+                "assistant" => palette.assistant,
+                "tool" => palette.tool,
                 _ => Color::Magenta,
             };
             let label = message.role.to_ascii_uppercase();
@@ -1807,8 +1979,17 @@ impl UiApp {
                 }
             }
             if !message.tool_calls.is_empty() {
+                let names: Vec<String> = message
+                    .tool_calls
+                    .iter()
+                    .map(|c| c.function.name.clone())
+                    .collect();
                 lines.push(Line::from(Span::styled(
-                    format!("  ↳ {} tool call(s)", message.tool_calls.len()),
+                    format!(
+                        "  ↳ {} tool call(s): {}",
+                        message.tool_calls.len(),
+                        tool_names(&names)
+                    ),
                     Style::default().fg(Color::Yellow),
                 )));
             }
@@ -1858,6 +2039,7 @@ impl UiApp {
             items.len(),
         );
         self.palette_scroll = scroll;
+        let selection = selection_style(&self.state.theme);
         let rows = items
             .iter()
             .skip(scroll)
@@ -1866,10 +2048,7 @@ impl UiApp {
             .map(|(offset, item)| {
                 let index = scroll + offset;
                 let style = if index == self.palette_selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
+                    selection
                 } else {
                     Style::default().fg(Color::White)
                 };
@@ -1953,20 +2132,33 @@ impl UiApp {
                     &items,
                     selected,
                     scroll,
+                    selection_style(&self.state.theme),
                 );
             }
             Overlay::Models {
                 items,
                 selected,
                 scroll,
+                active,
             } => {
+                let display: Vec<String> = items
+                    .iter()
+                    .map(|name| {
+                        if *name == *active {
+                            format!("● {name} (active)")
+                        } else {
+                            format!("  {name}")
+                        }
+                    })
+                    .collect();
                 render_picker(
                     frame,
                     area,
-                    " Models · provider response ",
-                    items,
+                    " Models · ● active · Enter select ",
+                    &display,
                     selected,
                     scroll,
+                    selection_style(&self.state.theme),
                 );
             }
             Overlay::ApiKey { provider } => {
@@ -1986,6 +2178,33 @@ impl UiApp {
                             .title(" Credentials "),
                     ),
                     rect,
+                );
+            }
+            Overlay::Theme { selected, .. } => {
+                let items: Vec<String> = THEMES
+                    .iter()
+                    .map(|name| {
+                        if *name == self.state.theme {
+                            format!("● {name} (active)")
+                        } else {
+                            format!("  {name}")
+                        }
+                    })
+                    .collect();
+                // Theme picker is small; reuse the shared picker renderer
+                // with a zero scroll so ↑/↓ + live preview stay consistent.
+                let mut scroll = 0usize;
+                // Preview uses the highlighted row's theme so the whole
+                // screen recolors live as you move.
+                let preview = THEMES.get(*selected).copied().unwrap_or("r105");
+                render_picker(
+                    frame,
+                    area,
+                    " Theme · live preview · Enter keep · Esc revert ",
+                    &items,
+                    selected,
+                    &mut scroll,
+                    selection_style(preview),
                 );
             }
             Overlay::CustomUrl { provider } => {
@@ -2016,6 +2235,30 @@ impl UiApp {
             }
         }
     }
+}
+
+const MAX_TOOL_ROUNDS: usize = 8;
+
+fn tool_names(names: &[String]) -> String {
+    const MAX_SHOWN: usize = 3;
+    const MAX_CHARS: usize = 80;
+    if names.is_empty() {
+        return "none".into();
+    }
+    let mut text = names
+        .iter()
+        .take(MAX_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > MAX_SHOWN {
+        text.push_str(&format!(", +{} more", names.len() - MAX_SHOWN));
+    }
+    if text.len() > MAX_CHARS {
+        text.truncate(MAX_CHARS);
+        text.push('…');
+    }
+    text
 }
 
 fn provider_label(preset: &Preset) -> String {
@@ -2093,6 +2336,61 @@ fn skill_name(input: &str) -> Option<String> {
     .then_some(name)
 }
 
+/// Named theme palette: accent drives the header + selection highlight,
+/// role colors drive transcript labels. High-contrast maximizes separation.
+struct ThemePalette {
+    accent: Color,
+    user: Color,
+    assistant: Color,
+    tool: Color,
+}
+
+fn theme_palette(theme: &str) -> ThemePalette {
+    match theme {
+        "dracula" => ThemePalette {
+            accent: Color::Magenta,
+            user: Color::Cyan,
+            assistant: Color::Magenta,
+            tool: Color::Yellow,
+        },
+        "solarized-dark" => ThemePalette {
+            accent: Color::Blue,
+            user: Color::Blue,
+            assistant: Color::Green,
+            tool: Color::Yellow,
+        },
+        "high-contrast" => ThemePalette {
+            accent: Color::Yellow,
+            user: Color::White,
+            assistant: Color::White,
+            tool: Color::Yellow,
+        },
+        _ => ThemePalette {
+            accent: Color::Cyan,
+            user: Color::Cyan,
+            assistant: Color::Green,
+            tool: Color::Yellow,
+        },
+    }
+}
+
+fn accent_color(theme: &str) -> Color {
+    theme_palette(theme).accent
+}
+
+fn selection_style(theme: &str) -> Style {
+    if theme == "high-contrast" {
+        return Style::default()
+            .fg(Color::Black)
+            .bg(Color::White)
+            .add_modifier(Modifier::BOLD);
+    }
+    Style::default()
+        .fg(Color::Black)
+        .bg(accent_color(theme))
+        .add_modifier(Modifier::BOLD)
+}
+
 fn render_picker(
     frame: &mut Frame<'_>,
     screen: Rect,
@@ -2100,6 +2398,7 @@ fn render_picker(
     items: &[String],
     selected: &mut usize,
     scroll: &mut usize,
+    selection: Style,
 ) {
     let height = (items.len().min(screen.height.saturating_sub(8) as usize) as u16 + 4)
         .max(8)
@@ -2117,10 +2416,7 @@ fn render_picker(
         .map(|(offset, item)| {
             let index = *scroll + offset;
             let style = if index == *selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                selection
             } else {
                 Style::default().fg(Color::White)
             };
