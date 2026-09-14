@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [1.0.2] — 2026-09-14
+
+### Added
+- Endpoint prompts in the provider menu for local and self-hosted
+  `llama-router`, llama.cpp, Ollama, LM Studio, and vLLM connectors.
+- LAN hostname/IP support for local inference providers, with each provider's
+  loopback URL retained as the empty-input default.
+
+### Fixed
+- Selecting llama.cpp from the TUI no longer immediately attempts only
+  `127.0.0.1:8080`; it now lets the user enter and validate the server URL
+  before model discovery.
+
 ## [1.0.1] — 2026-09-12
 
 ### Added
