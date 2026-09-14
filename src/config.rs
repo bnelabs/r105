@@ -62,6 +62,11 @@ pub struct Config {
     pub reasoning_effort: String,
     pub show_thinking: bool,
     pub thinking_default_expanded: bool,
+    /// Ring the terminal bell when a request fully settles.
+    pub attention_bell: bool,
+    /// Capture the mouse for transcript wheel-scrolling. Off by default so
+    /// the terminal keeps native selection behavior.
+    pub mouse: bool,
     pub model_contexts: BTreeMap<String, u64>,
     pub context_tokens: Option<u64>,
     pub model_families: BTreeMap<String, Option<String>>,
@@ -97,6 +102,8 @@ impl Default for Config {
             reasoning_effort: "auto".to_string(),
             show_thinking: true,
             thinking_default_expanded: false,
+            attention_bell: true,
+            mouse: false,
             model_contexts: BTreeMap::new(),
             context_tokens: None,
             model_families: BTreeMap::new(),
@@ -182,6 +189,8 @@ impl Config {
                 "reasoning_effort": {"type": "string", "enum": ["auto", "off", "low", "medium", "high"]},
                 "show_thinking": {"type": "boolean"},
                 "thinking_default_expanded": {"type": "boolean"},
+                "attention_bell": {"type": "boolean"},
+                "mouse": {"type": "boolean"},
                 "model_contexts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
                 "context_tokens": {"type": ["integer", "null"], "minimum": 1},
                 "model_families": {"type": "object", "additionalProperties": {"type": ["string", "null"]}},
@@ -216,6 +225,8 @@ fn known_keys() -> BTreeSet<&'static str> {
         "reasoning_effort",
         "show_thinking",
         "thinking_default_expanded",
+        "attention_bell",
+        "mouse",
         "model_contexts",
         "context_tokens",
         "model_families",
@@ -321,6 +332,8 @@ mod tests {
         assert!(config.auto_compact);
         assert!(config.python_bridge_command.is_none());
         assert_eq!(config.timeout_seconds, 120);
+        assert!(config.attention_bell);
+        assert!(!config.mouse);
     }
 
     #[test]

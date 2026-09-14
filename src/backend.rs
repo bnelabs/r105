@@ -309,7 +309,7 @@ impl Backend {
             }
         }
         if content.is_empty() && tool_calls.is_empty() && !reasoning.is_empty() {
-            content = reasoning;
+            content = wrap_reasoning(reasoning);
         }
         let calls = tool_calls.finish();
         let raw = json!({
@@ -381,6 +381,13 @@ impl Backend {
     }
 }
 
+/// Wrap a reasoning-only reply so the TUI can collapse or hide the model's
+/// chain of thought without losing it. The wrapper covers the whole content
+/// by construction, which keeps it distinguishable from model-emitted text.
+fn wrap_reasoning(reasoning: String) -> String {
+    format!("<thinking>\n{}\n</thinking>", reasoning.trim_end())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +426,11 @@ mod tests {
         // must not opt into llama.cpp-only request fields.
         assert!(!local(Some("custom")).is_llama_cpp());
         assert!(!local(None).is_llama_cpp());
+    }
+
+    #[test]
+    fn reasoning_only_replies_are_wrapped() {
+        let wrapped = wrap_reasoning("consider alternatives\n".to_string());
+        assert_eq!(wrapped, "<thinking>\nconsider alternatives\n</thinking>");
     }
 }
