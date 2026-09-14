@@ -162,7 +162,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/session",
-        usage: "/session <save|load|list|search|delete|diff> ...",
+        usage: "/session <save|load|list|search|delete|diff|fork> ...",
         description: "manage local sessions",
     },
     CommandSpec {
@@ -217,8 +217,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/copy",
-        usage: "/copy",
-        description: "copy the last response",
+        usage: "/copy [n]",
+        description: "copy the last response or its nth code block",
     },
     CommandSpec {
         name: "/tasks",
@@ -229,6 +229,36 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "/retry",
         usage: "/retry",
         description: "retry the last failed prompt",
+    },
+    CommandSpec {
+        name: "/undo",
+        usage: "/undo",
+        description: "remove the last exchange and restore its prompt",
+    },
+    CommandSpec {
+        name: "/redo",
+        usage: "/redo",
+        description: "re-apply the last undone exchange",
+    },
+    CommandSpec {
+        name: "/editor",
+        usage: "/editor",
+        description: "compose the prompt in $EDITOR",
+    },
+    CommandSpec {
+        name: "/settings",
+        usage: "/settings",
+        description: "change theme, permissions, reasoning, and toggles",
+    },
+    CommandSpec {
+        name: "/thinking",
+        usage: "/thinking [on|off]",
+        description: "show or hide the model's thinking blocks",
+    },
+    CommandSpec {
+        name: "/attention",
+        usage: "/attention [on|off]",
+        description: "toggle the bell when a request finishes",
     },
     CommandSpec {
         name: "/exit",
@@ -327,7 +357,7 @@ pub fn help_text() -> String {
         output.push_str(&format!("  {:<42} {}\n", item.usage, item.description));
     }
     output.push_str(
-        "\nKeys\n  Enter send   Tab mode   Esc cancel   Ctrl+C quit/cancel   Ctrl+X cancel tools\n  Ctrl+O details   Ctrl+T tasks   Ctrl+R history search   Up/Down navigate\n",
+        "\nKeys\n  Enter send (steer while busy)   Alt/Shift+Enter newline   Tab mode/complete   Esc cancel\n  Ctrl+C quit/cancel   Ctrl+X cancel   Ctrl+O details   Ctrl+T tasks   Ctrl+R history hint\n  Up/Down history or file picks   @file attach file context   !cmd run shell into context\n",
     );
     output
 }
@@ -389,5 +419,19 @@ mod tests {
     #[test]
     fn fuzzy_commands_prioritize_exact_prefix() {
         assert_eq!(filtered("/conn")[0].name, "/connect");
+    }
+
+    #[test]
+    fn review_followup_commands_are_registered() {
+        for name in [
+            "/undo",
+            "/redo",
+            "/editor",
+            "/settings",
+            "/thinking",
+            "/attention",
+        ] {
+            assert!(command(name).is_some(), "{name} is registered");
+        }
     }
 }
