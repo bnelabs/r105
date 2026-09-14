@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [1.1.0] — 2026-09-14
+
+### Added
+- `@file` references with fuzzy workspace completion (Tab accepts); attached
+  files and directory listings join the conversation as context.
+- `!` shell prefix runs commands inside the sandbox boundary and attaches
+  their output to the conversation.
+- New slash commands: `/editor` (compose in `$EDITOR`), `/settings` (one
+  overlay for theme, permissions, reasoning, and toggles), `/thinking`
+  (show or hide thinking blocks), `/attention` (completion bell toggle),
+  `/undo` (drop the last exchange and restore its prompt), and `/redo`.
+- Steering: Enter while a request is active cancels it and jumps the queue;
+  Alt+Enter while busy queues a follow-up instead.
+- Terminal bell when a request fully settles, with `attention_bell` config.
+- Footer session token telemetry (`↑in ↓out`), git branch, and input hints;
+  the header shows the sandbox backend and skill count.
+- `keybindings` config remaps the five Ctrl shortcuts (`cancel`, `details`,
+  `tasks`, `history`, `redraw`) with `ctrl+<letter>` specs.
+- `/session fork <name>`, `/copy [n]` for the nth fenced code block, and
+  opt-in mouse wheel scrolling via the `mouse` config key.
+
+### Changed
+- Reasoning-only replies are wrapped in `<thinking>` blocks so the transcript
+  can hide them or collapse them to two lines.
+- Tool errors auto-expand even when tool details are collapsed.
+- The tool-round limit reports the skipped calls instead of a bare Done.
+- Failed prompts are preserved in the composer with `/retry` recovery.
+- Tool names appear in the status bar and transcript; the model picker marks
+  the active model and the theme picker previews live.
+- The event loop uses an async `EventStream` instead of blocking polls.
+
+### Fixed
+- Session search no longer risks a panic on Unicode text and matches
+  case-insensitively beyond ASCII.
+- Session files with unknown message roles are rejected instead of poisoning
+  the backend payload.
+- llama.cpp detection requires the provider id instead of matching `:8080`
+  in any URL; router inference parses the real URL port.
+- `safe_path` no longer creates parent directories as a side effect.
+- Calculator power towers and sign chains respect the nesting depth guard.
+- `execute_rust` maps workspace paths for the Docker `/workspace` mount.
+- Malformed MCP `config.json` warns instead of silently dropping servers.
+- Native plugins are gated by the permission posture and run confined to
+  the workspace with a sanitized environment.
+
 ## [1.0.2] — 2026-09-14
 
 ### Added
