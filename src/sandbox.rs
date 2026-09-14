@@ -98,6 +98,24 @@ impl Sandbox {
         self.selected().as_str()
     }
 
+    pub fn is_docker(&self) -> bool {
+        self.selected == SandboxBackend::Docker
+    }
+
+    /// Map a host workspace path to the path visible inside the sandbox.
+    /// Only the Docker backend remounts the workspace (at /workspace);
+    /// all other backends share the host filesystem view.
+    pub fn guest_path(&self, workspace: &Path, path: &Path) -> String {
+        if !self.is_docker() {
+            return path.display().to_string();
+        }
+        let relative = path.strip_prefix(workspace).unwrap_or(path);
+        if relative.as_os_str().is_empty() {
+            return "/workspace".to_string();
+        }
+        format!("/workspace/{}", relative.display())
+    }
+
     pub fn timeout_seconds(&self) -> u64 {
         self.timeout.as_secs()
     }
@@ -348,6 +366,23 @@ mod tests {
     fn explicit_none_is_preserved() {
         let sandbox = Sandbox::detect("none", None, 30);
         assert_eq!(sandbox.selected_name(), "none");
+    }
+
+    #[test]
+    fn docker_backend_remaps_workspace_paths_to_guest() {
+        let workspace = Path::new("/home/user/work");
+        let docker = Sandbox::detect("docker", None, 30);
+        assert!(docker.is_docker());
+        assert_eq!(
+            docker.guest_path(workspace, &workspace.join(".r105/runs/run-1.rs")),
+            "/workspace/.r105/runs/run-1.rs"
+        );
+        let local = Sandbox::detect("none", None, 30);
+        assert!(!local.is_docker());
+        assert_eq!(
+            local.guest_path(workspace, &workspace.join("a.rs")),
+            "/home/user/work/a.rs"
+        );
     }
 
     #[cfg(unix)]

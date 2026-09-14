@@ -208,22 +208,10 @@ pub fn search(paths: &ConfigPaths, query: &str) -> Vec<Value> {
                 .iter()
                 .filter_map(|message| {
                     let content = value_text(message.get("content").unwrap_or(&Value::Null));
-                    let lower = content.to_ascii_lowercase();
-                    let index = lower.find(&needle)?;
-                    let start = content[..index]
-                        .char_indices()
-                        .rev()
-                        .nth(60)
-                        .map(|(offset, _)| offset)
-                        .unwrap_or(0);
-                    let end = content[index..]
-                        .char_indices()
-                        .nth(needle.len() + 60)
-                        .map(|(offset, _)| index + offset)
-                        .unwrap_or(content.len());
+                    let snippet = case_insensitive_snippet(&content, &needle)?;
                     Some(serde_json::json!({
                         "role": message.get("role").map(value_text).unwrap_or_default(),
-                        "snippet": content[start..end].to_string()
+                        "snippet": snippet
                     }))
                 })
                 .take(3)
@@ -275,7 +263,13 @@ fn session_path(paths: &ConfigPaths, name: &str) -> Result<PathBuf> {
 
 fn parse_message(value: &Value) -> Option<Message> {
     let object = value.as_object()?;
-    let role = object.get("role")?.as_str()?.to_string();
+    let role = object.get("role")?.as_str()?;
+    // Reject unknown roles so a hand-edited or foreign session file cannot
+    // inject payloads the backend would refuse (or misattribute).
+    if !matches!(role, "user" | "assistant" | "system" | "tool") {
+        return None;
+    }
+    let role = role.to_string();
     let content = value_text(object.get("content").unwrap_or(&Value::Null));
     let tool_calls = object
         .get("tool_calls")
@@ -324,6 +318,27 @@ fn optional_string(value: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Case-insensitive substring match over Unicode chars with 60 chars of
+/// context on each side. Char-based (not byte-based) so lowercasing, which
+/// can change byte length, can never produce an invalid slice.
+fn case_insensitive_snippet(content: &str, needle: &str) -> Option<String> {
+    if needle.is_empty() {
+        return None;
+    }
+    let content_chars: Vec<char> = content.chars().collect();
+    let lower_content: Vec<char> = content.to_lowercase().chars().collect();
+    let lower_needle: Vec<char> = needle.to_lowercase().chars().collect();
+    if lower_needle.is_empty() || lower_needle.len() > lower_content.len() {
+        return None;
+    }
+    let position = lower_content
+        .windows(lower_needle.len())
+        .position(|window| window == lower_needle.as_slice())?;
+    let start = position.saturating_sub(60);
+    let end = (position + lower_needle.len() + 60).min(content_chars.len());
+    Some(content_chars[start..end].iter().collect())
+}
+
 fn value_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
@@ -363,5 +378,25 @@ mod tests {
         state.history.clear();
         assert_eq!(load(&paths, "test", &mut state).unwrap(), 1);
         assert_eq!(state.history[0].content, "hello");
+    }
+
+    #[test]
+    fn search_handles_unicode_without_panicking() {
+        // Multibyte content must match case-insensitively and keep original case.
+        let snippet = case_insensitive_snippet("HELLO WÖRLD", "wörld").unwrap();
+        assert!(snippet.contains("WÖRLD"));
+        assert!(case_insensitive_snippet("hello world", "missing").is_none());
+        assert!(case_insensitive_snippet("abc", "").is_none());
+        // Expanding case folds (İ -> i + combining dot) change char counts;
+        // the search must never panic even when positions don't map 1:1.
+        let _ = case_insensitive_snippet("İstanbul is beautiful", "istanbul");
+    }
+
+    #[test]
+    fn unknown_roles_are_rejected() {
+        let value = serde_json::json!({"role": "admin", "content": "hi"});
+        assert!(parse_message(&value).is_none());
+        let value = serde_json::json!({"role": "user", "content": "hi"});
+        assert_eq!(parse_message(&value).unwrap().role, "user");
     }
 }

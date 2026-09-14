@@ -184,6 +184,10 @@ pub fn preset(id: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|item| item.id == normalized)
 }
 
+fn url_port(value: &str) -> Option<u16> {
+    url::Url::parse(value).ok()?.port_or_known_default()
+}
+
 pub fn valid_url(value: &str) -> bool {
     let Ok(parsed) = url::Url::parse(value) else {
         return false;
@@ -229,7 +233,7 @@ pub fn resolve_connection(
         .or_else(|| selected.map(|item| item.backend))
         .or_else(|| {
             inferred_url
-                .filter(|url| url.contains(":8010"))
+                .filter(|url| url_port(url) == Some(8010))
                 .map(|_| BackendKind::Router)
         })
         .unwrap_or_else(|| {
@@ -309,6 +313,16 @@ mod tests {
     #[test]
     fn default_is_local_router() {
         let connection = resolve_connection(None, None, Some("http://127.0.0.1:8010"));
+        assert_eq!(connection.backend, "router");
+    }
+
+    #[test]
+    fn router_inference_uses_the_url_port() {
+        // A path that merely contains ":8010" is not a router port.
+        let connection =
+            resolve_connection(None, None, Some("http://example.com/api/v1:8010/models"));
+        assert_eq!(connection.backend, "direct");
+        let connection = resolve_connection(None, None, Some("http://192.168.1.10:8010"));
         assert_eq!(connection.backend, "router");
     }
 }

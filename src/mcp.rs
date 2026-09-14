@@ -32,11 +32,22 @@ struct Server {
 
 fn servers() -> Vec<Server> {
     let paths = crate::config::ConfigPaths::discover();
-    let Ok(text) = fs::read_to_string(paths.config_file) else {
+    let Ok(text) = fs::read_to_string(&paths.config_file) else {
         return Vec::new();
     };
-    let Ok(value) = serde_json::from_str::<Value>(&text) else {
-        return Vec::new();
+    let value: Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            // Malformed config would otherwise silently drop all MCP servers.
+            // Log once per call site batch via tracing; the TUI surfaces
+            // config errors separately on /config reload.
+            tracing::warn!(
+                config = %paths.config_file.display(),
+                error = %error,
+                "ignoring mcp_servers: config.json is not valid JSON"
+            );
+            return Vec::new();
+        }
     };
     value
         .get("mcp_servers")

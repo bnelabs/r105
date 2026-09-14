@@ -60,12 +60,31 @@ pub fn safe_path(workspace: &Path, requested: &str) -> Result<PathBuf> {
     let resolved = if candidate.exists() {
         fs::canonicalize(&candidate)?
     } else {
-        let parent = candidate
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("path has no parent"))?;
-        fs::create_dir_all(parent)?;
-        let parent = fs::canonicalize(parent)?;
-        parent.join(candidate.file_name().unwrap_or_default())
+        // Resolve the nearest existing ancestor without creating anything:
+        // path resolution must not have filesystem side effects (a read or
+        // preview of a missing file should not create parent directories).
+        let mut ancestor = candidate.parent();
+        let mut missing: Vec<std::ffi::OsString> = Vec::new();
+        while let Some(dir) = ancestor {
+            if dir.exists() {
+                break;
+            }
+            if let Some(name) = dir.file_name() {
+                missing.push(name.to_os_string());
+            }
+            ancestor = dir.parent();
+        }
+        let Some(existing) = ancestor else {
+            bail!("path has no resolvable parent");
+        };
+        let mut resolved = fs::canonicalize(existing)?;
+        for part in missing.iter().rev() {
+            resolved.push(part);
+        }
+        if let Some(name) = candidate.file_name() {
+            resolved.push(name);
+        }
+        resolved
     };
     if !resolved.starts_with(&root) {
         bail!("access denied: path escapes the workspace");
@@ -181,5 +200,12 @@ mod tests {
         assert!(path.starts_with(workspace_root(directory.path()).unwrap()));
         assert!(safe_path(directory.path(), "../outside").is_err());
         assert!(safe_path(directory.path(), "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn resolving_a_missing_path_creates_nothing() {
+        let directory = tempdir().unwrap();
+        let _ = safe_path(directory.path(), "new/parent/missing.txt").unwrap();
+        assert!(!directory.path().join("new").exists());
     }
 }
