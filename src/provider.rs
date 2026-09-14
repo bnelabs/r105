@@ -28,6 +28,7 @@ pub struct Preset {
     pub label: &'static str,
     pub backend: BackendKind,
     pub base_url: Option<&'static str>,
+    pub asks_for_url: bool,
     pub description: &'static str,
     pub api_key_env: Option<&'static str>,
     pub api_key_required: bool,
@@ -39,6 +40,7 @@ pub const PRESETS: &[Preset] = &[
         label: "OpenCode Zen",
         backend: BackendKind::Direct,
         base_url: Some("https://opencode.ai/zen/v1"),
+        asks_for_url: false,
         description: "OpenCode curated cloud models",
         api_key_env: Some("OPENCODE_API_KEY"),
         api_key_required: true,
@@ -48,6 +50,7 @@ pub const PRESETS: &[Preset] = &[
         label: "OpenCode Go",
         backend: BackendKind::Direct,
         base_url: Some("https://opencode.ai/zen/go/v1"),
+        asks_for_url: false,
         description: "OpenCode lower-cost cloud models",
         api_key_env: Some("OPENCODE_API_KEY"),
         api_key_required: true,
@@ -57,7 +60,8 @@ pub const PRESETS: &[Preset] = &[
         label: "llama-router",
         backend: BackendKind::Router,
         base_url: Some("http://127.0.0.1:8010"),
-        description: "Local router with profiles and routing metadata",
+        asks_for_url: true,
+        description: "Local or LAN router with profiles and routing metadata",
         api_key_env: None,
         api_key_required: false,
     },
@@ -66,7 +70,8 @@ pub const PRESETS: &[Preset] = &[
         label: "llama.cpp",
         backend: BackendKind::Direct,
         base_url: Some("http://127.0.0.1:8080/v1"),
-        description: "Local llama-server OpenAI-compatible endpoint",
+        asks_for_url: true,
+        description: "Local or LAN llama-server OpenAI-compatible endpoint",
         api_key_env: None,
         api_key_required: false,
     },
@@ -75,7 +80,8 @@ pub const PRESETS: &[Preset] = &[
         label: "Ollama",
         backend: BackendKind::Direct,
         base_url: Some("http://127.0.0.1:11434/v1"),
-        description: "Local Ollama OpenAI-compatible endpoint",
+        asks_for_url: true,
+        description: "Local or LAN Ollama OpenAI-compatible endpoint",
         api_key_env: None,
         api_key_required: false,
     },
@@ -84,7 +90,8 @@ pub const PRESETS: &[Preset] = &[
         label: "LM Studio",
         backend: BackendKind::Direct,
         base_url: Some("http://127.0.0.1:1234/v1"),
-        description: "Local LM Studio OpenAI-compatible endpoint",
+        asks_for_url: true,
+        description: "Local or LAN LM Studio OpenAI-compatible endpoint",
         api_key_env: None,
         api_key_required: false,
     },
@@ -93,7 +100,8 @@ pub const PRESETS: &[Preset] = &[
         label: "vLLM",
         backend: BackendKind::Direct,
         base_url: Some("http://127.0.0.1:8000/v1"),
-        description: "Local or hosted vLLM endpoint",
+        asks_for_url: true,
+        description: "Local or self-hosted vLLM endpoint",
         api_key_env: Some("OPENAI_API_KEY"),
         api_key_required: false,
     },
@@ -102,6 +110,7 @@ pub const PRESETS: &[Preset] = &[
         label: "OpenAI",
         backend: BackendKind::Direct,
         base_url: Some("https://api.openai.com/v1"),
+        asks_for_url: false,
         description: "OpenAI API",
         api_key_env: Some("OPENAI_API_KEY"),
         api_key_required: true,
@@ -111,6 +120,7 @@ pub const PRESETS: &[Preset] = &[
         label: "Groq",
         backend: BackendKind::Direct,
         base_url: Some("https://api.groq.com/openai/v1"),
+        asks_for_url: false,
         description: "Groq hosted inference",
         api_key_env: Some("GROQ_API_KEY"),
         api_key_required: true,
@@ -120,6 +130,7 @@ pub const PRESETS: &[Preset] = &[
         label: "OpenRouter",
         backend: BackendKind::Direct,
         base_url: Some("https://openrouter.ai/api/v1"),
+        asks_for_url: false,
         description: "OpenRouter model gateway",
         api_key_env: Some("OPENROUTER_API_KEY"),
         api_key_required: true,
@@ -129,6 +140,7 @@ pub const PRESETS: &[Preset] = &[
         label: "DeepSeek",
         backend: BackendKind::Direct,
         base_url: Some("https://api.deepseek.com/v1"),
+        asks_for_url: false,
         description: "DeepSeek API",
         api_key_env: Some("DEEPSEEK_API_KEY"),
         api_key_required: true,
@@ -138,6 +150,7 @@ pub const PRESETS: &[Preset] = &[
         label: "Together AI",
         backend: BackendKind::Direct,
         base_url: Some("https://api.together.xyz/v1"),
+        asks_for_url: false,
         description: "Together hosted inference",
         api_key_env: Some("TOGETHER_API_KEY"),
         api_key_required: true,
@@ -147,6 +160,7 @@ pub const PRESETS: &[Preset] = &[
         label: "Custom OpenAI-compatible API",
         backend: BackendKind::Direct,
         base_url: None,
+        asks_for_url: true,
         description: "Enter any OpenAI-compatible base URL",
         api_key_env: None,
         api_key_required: false,
@@ -266,6 +280,23 @@ mod tests {
     fn aliases_resolve() {
         assert_eq!(aliases("llama.cpp"), "llamacpp");
         assert_eq!(preset("zen").map(|p| p.id), Some("opencode"));
+    }
+
+    #[test]
+    fn local_connectors_ask_for_an_endpoint() {
+        for id in ["router", "llamacpp", "ollama", "lmstudio", "vllm"] {
+            assert!(preset(id).is_some_and(|item| item.asks_for_url), "{id}");
+        }
+        for id in [
+            "opencode",
+            "openai",
+            "groq",
+            "openrouter",
+            "deepseek",
+            "together",
+        ] {
+            assert!(!preset(id).is_some_and(|item| item.asks_for_url), "{id}");
+        }
     }
 
     #[test]

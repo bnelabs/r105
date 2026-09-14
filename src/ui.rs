@@ -76,7 +76,9 @@ enum Overlay {
     ApiKey {
         provider: String,
     },
-    CustomUrl,
+    CustomUrl {
+        provider: String,
+    },
 }
 
 pub async fn run(
@@ -534,11 +536,8 @@ impl UiApp {
                     KeyCode::Enter => {
                         let preset = provider::PRESETS[selected];
                         let id = preset.id.to_string();
-                        if id == "custom" {
-                            self.input.clear();
-                            self.cursor = 0;
-                            self.status = "Enter an OpenAI-compatible http(s) base URL".into();
-                            self.overlay = Overlay::CustomUrl;
+                        if preset.asks_for_url {
+                            self.open_url_overlay(id);
                             keep = false;
                         } else if preset.api_key_required
                             && preset
@@ -617,27 +616,59 @@ impl UiApp {
                 }
                 _ => self.overlay = Overlay::ApiKey { provider },
             },
-            Overlay::CustomUrl => match key.code {
+            Overlay::CustomUrl { provider } => match key.code {
                 KeyCode::Enter => {
-                    let value = self.input.trim().to_string();
+                    let value = if self.input.trim().is_empty() {
+                        provider::preset(&provider)
+                            .and_then(|preset| preset.base_url)
+                            .unwrap_or_default()
+                            .to_string()
+                    } else {
+                        self.input.trim().to_string()
+                    };
                     self.input.clear();
                     self.cursor = 0;
                     if provider::valid_url(&value) {
-                        self.start_provider("custom".into(), Some(value));
+                        self.start_provider(provider, Some(value));
                     } else {
                         self.status = "Enter an http:// or https:// URL without credentials".into();
-                        self.overlay = Overlay::CustomUrl;
+                        self.overlay = Overlay::CustomUrl { provider };
                     }
+                }
+                KeyCode::Char('a' | 'A') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.input.clear();
+                    self.cursor = 0;
+                    self.overlay = Overlay::CustomUrl { provider };
                 }
                 KeyCode::Char(character) => {
                     self.insert_text(&character.to_string());
-                    self.overlay = Overlay::CustomUrl;
+                    self.overlay = Overlay::CustomUrl { provider };
                 }
                 KeyCode::Backspace => {
                     self.backspace();
-                    self.overlay = Overlay::CustomUrl;
+                    self.overlay = Overlay::CustomUrl { provider };
                 }
-                _ => self.overlay = Overlay::CustomUrl,
+                KeyCode::Delete => {
+                    self.delete();
+                    self.overlay = Overlay::CustomUrl { provider };
+                }
+                KeyCode::Left => {
+                    self.cursor = previous_boundary(&self.input, self.cursor);
+                    self.overlay = Overlay::CustomUrl { provider };
+                }
+                KeyCode::Right => {
+                    self.cursor = next_boundary(&self.input, self.cursor);
+                    self.overlay = Overlay::CustomUrl { provider };
+                }
+                KeyCode::Home => {
+                    self.cursor = 0;
+                    self.overlay = Overlay::CustomUrl { provider };
+                }
+                KeyCode::End => {
+                    self.cursor = self.input.len();
+                    self.overlay = Overlay::CustomUrl { provider };
+                }
+                _ => self.overlay = Overlay::CustomUrl { provider },
             },
             Overlay::None => {}
         }
@@ -1246,19 +1277,38 @@ impl UiApp {
                         self.status = "Invalid custom URL".into();
                     }
                 } else {
-                    self.overlay = Overlay::CustomUrl;
-                    self.status = "Enter an OpenAI-compatible http(s) base URL".into();
+                    self.open_url_overlay("custom".into());
                 }
             }
             Some(provider_id) => {
-                if provider::preset(provider_id).is_some() {
-                    self.start_provider(provider_id.to_string(), args.get(1).cloned());
+                let provider_id = provider::aliases(provider_id);
+                if let Some(preset) = provider::preset(&provider_id) {
+                    if preset.asks_for_url && args.get(1).is_none() {
+                        self.open_url_overlay(provider_id);
+                    } else {
+                        self.start_provider(provider_id, args.get(1).cloned());
+                    }
                 } else {
                     self.status =
                         format!("Unknown provider '{provider_id}'; use /connect to browse");
                 }
             }
         }
+    }
+
+    fn open_url_overlay(&mut self, provider: String) {
+        self.input.clear();
+        self.cursor = 0;
+        self.status = match provider::preset(&provider) {
+            Some(preset) if preset.base_url.is_some() => {
+                format!(
+                    "Enter {} base URL; Enter uses the local default",
+                    preset.label
+                )
+            }
+            _ => "Enter an OpenAI-compatible http(s) base URL".into(),
+        };
+        self.overlay = Overlay::CustomUrl { provider };
     }
 
     fn command_mcp(&mut self, args: &[String]) -> Result<()> {
@@ -1938,24 +1988,29 @@ impl UiApp {
                     rect,
                 );
             }
-            Overlay::CustomUrl => {
+            Overlay::CustomUrl { provider } => {
                 let rect = centered(area, 78, 7);
                 frame.render_widget(Clear, rect);
+                let preset = provider::preset(provider);
+                let title = preset
+                    .map(|preset| format!(" {} connection ", preset.label))
+                    .unwrap_or_else(|| " Custom connection ".into());
+                let prompt = preset
+                    .map(|preset| format!("{} base URL", preset.label))
+                    .unwrap_or_else(|| "OpenAI-compatible base URL".into());
+                let hint = preset
+                    .and_then(|preset| preset.base_url)
+                    .map(|default_url| format!("Empty = {default_url} · LAN: replace 127.0.0.1"))
+                    .unwrap_or_else(|| "Enter submit · Ctrl+A clear · Esc cancel".into());
                 frame.render_widget(
                     Paragraph::new(vec![
-                        Line::from("OpenAI-compatible base URL"),
+                        Line::from(prompt),
                         Line::from(""),
                         Line::from(format!("  {}", self.input)),
                         Line::from(""),
-                        Line::from(
-                            "Example: https://api.example.com/v1 · Enter submit · Esc cancel",
-                        ),
+                        Line::from(hint),
                     ])
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(" Custom connection "),
-                    ),
+                    .block(Block::default().borders(Borders::ALL).title(title)),
                     rect,
                 );
             }

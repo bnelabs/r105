@@ -149,11 +149,11 @@ The same flow is available in scripted form:
 | --- | --- | --- | --- |
 | /connect opencode | direct | https://opencode.ai/zen/v1 | OPENCODE_API_KEY |
 | /connect opencode-go | direct | https://opencode.ai/zen/go/v1 | OPENCODE_API_KEY |
-| /connect llamacpp | direct | http://127.0.0.1:8080/v1 | none |
-| /connect ollama | direct | http://127.0.0.1:11434/v1 | none |
-| /connect lmstudio | direct | http://127.0.0.1:1234/v1 | none |
-| /connect vllm | direct | http://127.0.0.1:8000/v1 | optional OPENAI_API_KEY |
-| /connect router | router | http://127.0.0.1:8010 | none |
+| /connect llamacpp | direct | menu asks; local default http://127.0.0.1:8080/v1 | none |
+| /connect ollama | direct | menu asks; local default http://127.0.0.1:11434/v1 | none |
+| /connect lmstudio | direct | menu asks; local default http://127.0.0.1:1234/v1 | none |
+| /connect vllm | direct | menu asks; local default http://127.0.0.1:8000/v1 | optional OPENAI_API_KEY |
+| /connect router | router | menu asks; local default http://127.0.0.1:8010 | none |
 | /connect openai | direct | https://api.openai.com/v1 | OPENAI_API_KEY |
 | /connect groq | direct | https://api.groq.com/openai/v1 | GROQ_API_KEY |
 | /connect openrouter | direct | https://openrouter.ai/api/v1 | OPENROUTER_API_KEY |
@@ -162,6 +162,8 @@ The same flow is available in scripted form:
 | /connect url https://host/v1 | direct | custom | optional OPENAI_API_KEY |
 
 OpenCode and other cloud providers ask for the key before the model request when the corresponding environment variable is absent. A key supplied in the TUI is only held by that process. Provider metadata, URL, backend, and selected model can be saved for the next launch without saving credentials.
+
+Local and self-hosted providers (`llama-router`, `llama.cpp`, Ollama, LM Studio, and vLLM) open an endpoint dialog from the provider menu. Empty input keeps the local default; replace `127.0.0.1` with a LAN hostname or IP for a server on your network. r105 probes the endpoint before showing its model picker and saving the connection.
 
 ### llama.cpp
 
@@ -172,7 +174,7 @@ llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
 r105 chat
 ```
 
-In the TUI, use /connect llamacpp. The provider supports model listing, SSE streaming, tool calls, prompt caching with /cache-prompt on, and model switching.
+In the TUI, open `/connect` and choose `llama.cpp`. The menu asks for the base URL and uses `http://127.0.0.1:8080/v1` when submitted empty. For a server on your LAN, enter an address such as `http://192.168.1.50:8080/v1`; r105 checks `/v1/models`, then lets you choose a model and saves the working endpoint. The provider supports model listing, SSE streaming, tool calls, prompt caching with /cache-prompt on, and model switching.
 
 ### Environment variables
 
