@@ -217,10 +217,12 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 - Up and Down keep the selected command inside the visible palette window, including when the list is taller than the terminal.
 - /connect and /models use scrollable provider and model pickers.
 - Tab cycles through build, plan, and ask modes.
-- New prompts sent while a request is active are queued and shown in the footer.
+- Type @ to fuzzy-complete a workspace file; Tab accepts, Enter sends with the file attached as context.
+- Start a line with ! to run a shell command in the sandbox; its output joins the conversation context.
+- Enter while a request is active steers it (the new prompt jumps the queue); Alt+Enter while busy queues a follow-up instead.
 - Esc or Ctrl+X cancels the current request or local tool batch.
-- Ctrl+O expands tool details; Ctrl+T shows active work.
-- PageUp and PageDown scroll the transcript.
+- Ctrl+O expands tool details; Ctrl+T shows active work. The five Ctrl shortcuts are remappable via `keybindings` in config.json.
+- PageUp and PageDown scroll the transcript (mouse wheel too, with `"mouse": true`).
 - Alt+Enter or Shift+Enter inserts a newline; Enter sends the prompt.
 - Exiting with /exit or Ctrl+C saves an __autosave__ session when the transcript is nonempty.
 
@@ -252,20 +254,28 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /config show|reload | Inspect or reload configuration |
 | /clear | Clear the transcript |
 | /workspace [path] | Show or change the workspace |
-| /session save|load|list|search|delete|diff | Manage local sessions |
+| /session save|load|list|search|delete|diff|fork | Manage local sessions |
 | /export markdown|text|json|html|pdf [path] | Export the transcript |
 | /mcp list|tools|reconnect [server] | Inspect or rediscover MCP tools |
 | /plugin list|reload | Inspect native executable plugins |
 | /theme [name] | Show or switch the theme |
 | /autocompact [on|off] | Toggle automatic context compaction |
 | /reasoning [effort] | Set the reasoning effort hint |
+| /thinking [on|off] | Show or hide the model's thinking blocks |
+| /attention [on|off] | Toggle the bell when a request finishes |
+| /settings | Change theme, permissions, reasoning, and toggles |
+| /editor | Compose the prompt in $EDITOR |
 | /permissions [posture] | Set the local tool permission posture |
 | /approve execute_python | Approve the optional Python bridge for this session |
 | /preview <filename> | Preview a workspace file |
 | /bridge | Show optional Python bridge status |
 | /map | Show a compact workspace map |
 | /diff | Show the Git workspace diff |
+| /copy [n] | Copy the last response or its nth code block |
 | /tasks | Show active and queued work |
+| /retry | Retry the last failed prompt |
+| /undo | Remove the last exchange and restore its prompt |
+| /redo | Re-apply the last undone exchange |
 | /exit | Save autosave and quit |
 
 ## Built in tools
