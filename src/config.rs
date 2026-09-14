@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 
 use crate::backend::Connection;
 
+pub const THEMES: [&str; 4] = ["r105", "dracula", "solarized-dark", "high-contrast"];
+
 #[derive(Debug, Clone)]
 pub struct ConfigPaths {
     pub home: PathBuf,
@@ -232,7 +234,7 @@ fn known_keys() -> BTreeSet<&'static str> {
 }
 
 fn validate(config: &Config) -> Result<()> {
-    if !["r105", "dracula", "solarized-dark", "high-contrast"].contains(&config.theme.as_str()) {
+    if !THEMES.contains(&config.theme.as_str()) {
         anyhow::bail!("invalid theme '{}'", config.theme);
     }
     if !["auto", "nsjail", "bwrap", "docker", "rlimit", "none"]

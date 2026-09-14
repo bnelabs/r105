@@ -183,7 +183,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/theme",
         usage: "/theme [name]",
-        description: "show or switch the theme",
+        description: "pick a theme (live preview) or switch directly",
     },
     CommandSpec {
         name: "/autocompact",
@@ -224,6 +224,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "/tasks",
         usage: "/tasks",
         description: "show active and queued work",
+    },
+    CommandSpec {
+        name: "/retry",
+        usage: "/retry",
+        description: "retry the last failed prompt",
     },
     CommandSpec {
         name: "/exit",

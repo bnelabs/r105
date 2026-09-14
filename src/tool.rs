@@ -155,7 +155,11 @@ pub async fn execute(name: &str, raw_arguments: &Value, context: &ToolContext) -
         "web_fetch" => web_fetch(&arguments, context).await?,
         _ if name.starts_with("mcp_") => crate::mcp::call(name, &arguments).await?,
         _ if name.starts_with("plugin_") => {
-            crate::plugin::call_from(&context.plugins_dir, name, &arguments).await?
+            if !context.allow_code {
+                bail!("plugin execution is disabled by the current permission posture");
+            }
+            crate::plugin::call_from(&context.workspace, &context.plugins_dir, name, &arguments)
+                .await?
         }
         _ => bail!("unknown tool '{name}'"),
     };
@@ -487,15 +491,19 @@ async fn execute_rust(arguments: &Value, context: &ToolContext) -> Result<String
         format!("run-{stamp}")
     });
     fs::write(&source, code)?;
+    // Under the Docker backend the workspace is remounted at /workspace, so
+    // host-absolute source/binary paths must be translated to guest paths.
+    let guest_source = context.sandbox.guest_path(&context.workspace, &source);
+    let guest_binary = context.sandbox.guest_path(&context.workspace, &binary);
     let compile = context
         .sandbox
         .run(
             "rustc",
             &[
-                source.display().to_string(),
+                guest_source,
                 "-O".to_string(),
                 "-o".to_string(),
-                binary.display().to_string(),
+                guest_binary.clone(),
             ],
             &context.workspace,
             false,
@@ -509,7 +517,7 @@ async fn execute_rust(arguments: &Value, context: &ToolContext) -> Result<String
     let output = context
         .sandbox
         .run(
-            binary.to_str().unwrap_or_default(),
+            &guest_binary,
             &[],
             &context.workspace,
             false,
@@ -621,6 +629,13 @@ impl<'a> ExpressionParser<'a> {
     }
 
     fn power(&mut self) -> Result<f64> {
+        self.enter()?;
+        let result = self.power_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn power_inner(&mut self) -> Result<f64> {
         let left = self.unary()?;
         self.space();
         if self.input.get(self.position) == Some(&b'*')
@@ -642,6 +657,13 @@ impl<'a> ExpressionParser<'a> {
     }
 
     fn unary(&mut self) -> Result<f64> {
+        self.enter()?;
+        let result = self.unary_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn unary_inner(&mut self) -> Result<f64> {
         self.space();
         if self.input.get(self.position) == Some(&b'+') {
             self.position += 1;
@@ -801,6 +823,15 @@ mod tests {
         );
         assert!(calculate(&json!({"expression": "factorial(10001)"})).is_err());
         assert!(calculate(&json!({"expression": "((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))"})).is_err());
+        // Right-associative power towers and unary sign chains recurse;
+        // both must hit the nesting limit instead of overflowing the stack.
+        assert!(calculate(&json!({"expression": "2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2**2"})).is_err());
+        assert!(
+            calculate(
+                &json!({"expression": "----------------------------------------------------1"})
+            )
+            .is_err()
+        );
     }
 
     #[test]
