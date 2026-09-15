@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Warp-style completion cascade replacing the sidecar model: `!` and
+  `/sh` ghosts resolve from shell-history frequency (cwd-weighted,
+  persisted as `shell_history.json`, capped by `completion_history_max`)
+  then path top-hit. The debounce/dim/Tab/Esc shell is unchanged; the
+  tick is synchronous, so generations and in-flight tracking are gone.
+  `/completion [status|clear]` replaces the sidecar commands.
+
+### Changed
+- Removed the `llama-server` sidecar path and its config keys
+  (`completion_endpoint`, `completion_model_path`,
+  `completion_timeout_ms`); stale keys warn as unknown. No weights to
+  fetch, no inference engine to install.
+
 ## [2.0.0] — 2026-09-15
 
 ### Added

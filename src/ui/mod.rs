@@ -81,11 +81,6 @@ enum UiEvent {
         models: Vec<ModelInfo>,
     },
     Notice(String),
-    /// A ghost-text request finished; stale generations are dropped.
-    GhostReady {
-        generation: u64,
-        text: Option<String>,
-    },
 }
 
 /// One entry of a provider model list. `status` carries the backend's load
@@ -276,20 +271,16 @@ struct UiApp {
     /// Shared with tool workers: `todo_write` replaces the list here,
     /// the results handler syncs it into session state.
     pub(crate) shared_todos: Arc<Mutex<Vec<crate::model::TodoItem>>>,
-    /// Neural ghost text: visible suggestion, debounce bookkeeping, and
-    /// the sidecar client/handle. `ghost_seen_input` drives invalidation.
+    /// Ghost text: visible suggestion, debounce bookkeeping, and the
+    /// shell-history frequency store behind the cascade.
     pub(crate) ghost_text: Option<String>,
     pub(crate) ghost_seen_input: String,
-    pub(crate) ghost_request: String,
-    pub(crate) ghost_generation: u64,
-    pub(crate) ghost_inflight: bool,
+    pub(crate) ghost_dismissed: Option<String>,
     pub(crate) ghost_changed_at: Instant,
     pub(crate) ghost_debounce: Duration,
-    pub(crate) ghost_client: Option<crate::ghost::GhostClient>,
-    pub(crate) ghost_endpoint: String,
-    pub(crate) ghost_model: String,
-    pub(crate) sidecar: Option<crate::ghost::SidecarHandle>,
-    pub(crate) sidecar_attempted: bool,
+    pub(crate) completion_on: bool,
+    pub(crate) shell_history: crate::suggest::ShellHistory,
+    pub(crate) history_max: usize,
     pub(crate) last_response: String,
     pub(crate) tx: mpsc::UnboundedSender<UiEvent>,
     pub(crate) rx: mpsc::UnboundedReceiver<UiEvent>,
@@ -379,6 +370,12 @@ impl UiApp {
         // `a` verdicts from a previous run never carry over; the base
         // policy is always the config file.
         policy.session_allow.clear();
+        // Shell history loads before the literal moves `paths`.
+        let history_max = config.completion_history_max.max(1) as usize;
+        let shell_history = crate::suggest::ShellHistory::load(
+            &paths.config_dir.join("shell_history.json"),
+            history_max,
+        );
         let mut app = Self {
             backend,
             state,
@@ -421,24 +418,12 @@ impl UiApp {
             shared_todos: Arc::new(Mutex::new(Vec::new())),
             ghost_text: None,
             ghost_seen_input: String::new(),
-            ghost_request: String::new(),
-            ghost_generation: 0,
-            ghost_inflight: false,
+            ghost_dismissed: None,
             ghost_changed_at: Instant::now(),
             ghost_debounce: Duration::from_millis(config.completion_debounce_ms),
-            ghost_client: if config.completion_enabled {
-                crate::ghost::GhostClient::new(
-                    &config.completion_endpoint,
-                    Duration::from_millis(config.completion_timeout_ms.max(100)),
-                )
-                .ok()
-            } else {
-                None
-            },
-            ghost_endpoint: config.completion_endpoint.clone(),
-            ghost_model: config.completion_model_path.clone(),
-            sidecar: None,
-            sidecar_attempted: false,
+            completion_on: config.completion_enabled,
+            shell_history,
+            history_max,
             last_response: String::new(),
             tx,
             rx,
@@ -640,9 +625,6 @@ impl UiApp {
                     }
                 }
                 UiEvent::Notice(notice) => self.push_system(&notice),
-                UiEvent::GhostReady { generation, text } => {
-                    self.on_ghost_ready(generation, text);
-                }
                 UiEvent::ShellDraft(outcome) => match outcome {
                     Ok(command) if self.input.is_empty() => {
                         self.input = format!("!{command}");
@@ -1181,19 +1163,35 @@ mod tests {
         );
     }
 
-    /// Stale ghost flights never paint: only the current generation
-    /// applies, and Tab accepts / Esc dismisses the visible suggestion.
-    #[tokio::test]
-    async fn ghost_stale_generation_dropped() {
-        let (mut app, _workspace, _skills) = test_app();
+    /// The tick resolves history ghosts synchronously; dismissal
+    /// sticks until the next edit, acceptance chains continuations.
+    #[test]
+    fn ghost_tick_suggests_from_history() {
+        let (mut app, workspace, _skills) = test_app();
+        let cwd = workspace.path().to_string_lossy().to_string();
+        app.shell_history.record("git status", &cwd);
+        app.shell_history.record("git status", &cwd);
         app.input = "!git sta".to_string();
-        app.cursor = app.input.len();
-        app.ghost_request = app.input.clone();
-        app.on_ghost_ready(app.ghost_generation + 1, Some("tus".to_string()));
-        assert!(app.ghost_text.is_none());
-        assert!(!app.ghost_inflight);
-        app.on_ghost_ready(app.ghost_generation, Some("tus".to_string()));
+        app.ghost_debounce = Duration::ZERO;
+        app.tick_ghost();
         assert_eq!(app.ghost_text.as_deref(), Some("tus"));
+    }
+
+    #[test]
+    fn ghost_dismiss_stays_dismissed() {
+        let (mut app, workspace, _skills) = test_app();
+        let cwd = workspace.path().to_string_lossy().to_string();
+        app.shell_history.record("git status", &cwd);
+        app.input = "!git sta".to_string();
+        app.ghost_debounce = Duration::ZERO;
+        app.tick_ghost();
+        assert_eq!(app.ghost_text.as_deref(), Some("tus"));
+        assert!(app.dismiss_ghost());
+        app.tick_ghost();
+        assert!(app.ghost_text.is_none(), "dismiss must stick");
+        app.input = "!git statu".to_string();
+        app.tick_ghost();
+        assert_eq!(app.ghost_text.as_deref(), Some("s"));
     }
 
     #[tokio::test]
