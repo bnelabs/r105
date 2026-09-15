@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Enforced working modes: plan allows reads and web research but refuses
+  writes and execution, ask answers without tools (`todo_write` excepted
+  so plans can be recorded). The mode persists in the session file, syncs
+  to the Tab label on load, and ships a prompt preamble so the model does
+  not spam denied calls.
+- Per-action approvals: per-category `approval_exec/write/read/network/
+  mcp/plugin` levels (`allow|ask|deny`, ask by default for exec, write,
+  MCP, and plugins) plus `command_allowlist`/`command_denylist` regexes.
+  `ask` calls pause on an inline card (`y` once, `a` always this run,
+  `n` deny); enforcement re-runs inside `execute`, so no path bypasses it.
+- Visible task list: the model-maintained `todo_write` tool renders a
+  collapsible TASKS section with footer `tasks done/total` counts.
+- Ghost-text completion: `!` and `/sh` lines debounce into a local
+  `llama-server` sidecar running Qwen2.5-Coder-0.5B (Q8_0 GGUF,
+  ~350ms warm on M1, ~578MB RSS). Tab accepts, Esc dismisses, all
+  failures fall back silent; `/completion [status|start|stop]` manages it.
+
 ### Removed
 - The Python compatibility layer: `execute_python` tool,
   `src/python_bridge.rs`, the `bridge/` reference script, `/approve`

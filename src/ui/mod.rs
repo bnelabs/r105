@@ -10,6 +10,7 @@ use std::{
     io::{self, Write, stdout},
     path::{Path, PathBuf},
     process::{Command as OsCommand, Stdio},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -49,12 +50,15 @@ use crate::{
     tool::{self, ToolContext, ToolResult},
 };
 
+mod approve;
 mod commands;
 mod complete;
+mod ghost;
 mod input;
 mod render;
 mod transcript;
 
+pub(crate) use approve::*;
 pub(crate) use commands::*;
 pub(crate) use input::*;
 pub(crate) use transcript::*;
@@ -77,6 +81,11 @@ enum UiEvent {
         models: Vec<ModelInfo>,
     },
     Notice(String),
+    /// A ghost-text request finished; stale generations are dropped.
+    GhostReady {
+        generation: u64,
+        text: Option<String>,
+    },
 }
 
 /// One entry of a provider model list. `status` carries the backend's load
@@ -129,6 +138,8 @@ enum Overlay {
     Settings {
         selected: usize,
     },
+    /// A tool call awaits y/a/n; the queue lives in `pending_tools`.
+    Approval,
 }
 
 /// One undoable exchange: everything from a user message onward. The prompt
@@ -258,6 +269,27 @@ struct UiApp {
     pub(crate) cancellation: Option<CancellationToken>,
     pub(crate) pending_connection: Option<Connection>,
     pub(crate) sandbox: Sandbox,
+    /// Approval policy from config; card `a` verdicts extend it per run.
+    pub(crate) policy: crate::approve::Policy,
+    /// Tool round paused on approval cards; cleared by cancel.
+    pub(crate) pending_tools: Option<PendingTools>,
+    /// Shared with tool workers: `todo_write` replaces the list here,
+    /// the results handler syncs it into session state.
+    pub(crate) shared_todos: Arc<Mutex<Vec<crate::model::TodoItem>>>,
+    /// Neural ghost text: visible suggestion, debounce bookkeeping, and
+    /// the sidecar client/handle. `ghost_seen_input` drives invalidation.
+    pub(crate) ghost_text: Option<String>,
+    pub(crate) ghost_seen_input: String,
+    pub(crate) ghost_request: String,
+    pub(crate) ghost_generation: u64,
+    pub(crate) ghost_inflight: bool,
+    pub(crate) ghost_changed_at: Instant,
+    pub(crate) ghost_debounce: Duration,
+    pub(crate) ghost_client: Option<crate::ghost::GhostClient>,
+    pub(crate) ghost_endpoint: String,
+    pub(crate) ghost_model: String,
+    pub(crate) sidecar: Option<crate::ghost::SidecarHandle>,
+    pub(crate) sidecar_attempted: bool,
     pub(crate) last_response: String,
     pub(crate) tx: mpsc::UnboundedSender<UiEvent>,
     pub(crate) rx: mpsc::UnboundedReceiver<UiEvent>,
@@ -338,7 +370,16 @@ impl UiApp {
                 if custom_commands.len() == 1 { "" } else { "s" }
             ));
         }
-        Self {
+        let mut policy = crate::approve::Policy::from_config(&config).unwrap_or_else(|error| {
+            status.push_str(&format!(
+                " · approval policy invalid ({error:#}); tools locked down"
+            ));
+            crate::approve::Policy::locked_down()
+        });
+        // `a` verdicts from a previous run never carry over; the base
+        // policy is always the config file.
+        policy.session_allow.clear();
+        let mut app = Self {
             backend,
             state,
             paths,
@@ -375,6 +416,29 @@ impl UiApp {
             cancellation: None,
             pending_connection: None,
             sandbox,
+            policy,
+            pending_tools: None,
+            shared_todos: Arc::new(Mutex::new(Vec::new())),
+            ghost_text: None,
+            ghost_seen_input: String::new(),
+            ghost_request: String::new(),
+            ghost_generation: 0,
+            ghost_inflight: false,
+            ghost_changed_at: Instant::now(),
+            ghost_debounce: Duration::from_millis(config.completion_debounce_ms),
+            ghost_client: if config.completion_enabled {
+                crate::ghost::GhostClient::new(
+                    &config.completion_endpoint,
+                    Duration::from_millis(config.completion_timeout_ms.max(100)),
+                )
+                .ok()
+            } else {
+                None
+            },
+            ghost_endpoint: config.completion_endpoint.clone(),
+            ghost_model: config.completion_model_path.clone(),
+            sidecar: None,
+            sidecar_attempted: false,
             last_response: String::new(),
             tx,
             rx,
@@ -395,7 +459,9 @@ impl UiApp {
             arg_cache_items: Vec::new(),
             known_models: Vec::new(),
             editor_requested: false,
-        }
+        };
+        app.sync_mode_from_state();
+        app
     }
 
     pub(crate) async fn event_loop(
@@ -411,6 +477,7 @@ impl UiApp {
         loop {
             self.process_events();
             self.maybe_note_slow_start();
+            self.tick_ghost();
             terminal.draw(|frame| self.draw(frame))?;
             if self.editor_requested {
                 self.editor_requested = false;
@@ -513,6 +580,11 @@ impl UiApp {
                             format!("[{}]\n{}", result.name, result.content),
                         ));
                     }
+                    // `todo_write` ran inside the workers: adopt the list
+                    // so the transcript section and footer render it.
+                    if let Ok(todos) = self.shared_todos.lock() {
+                        self.state.todos = todos.clone();
+                    }
                     let names =
                         tool_names(&results.iter().map(|r| r.name.clone()).collect::<Vec<_>>());
                     self.set_status(format!(
@@ -568,6 +640,9 @@ impl UiApp {
                     }
                 }
                 UiEvent::Notice(notice) => self.push_system(&notice),
+                UiEvent::GhostReady { generation, text } => {
+                    self.on_ghost_ready(generation, text);
+                }
                 UiEvent::ShellDraft(outcome) => match outcome {
                     Ok(command) if self.input.is_empty() => {
                         self.input = format!("!{command}");
@@ -638,20 +713,14 @@ impl UiApp {
                 allow_network: self.state.permission_posture != "restricted"
                     && self.state.permission_posture != "off",
                 allow_code: self.state.permission_posture != "off",
+                mode: self.state.mode.clone(),
+                policy: self.policy.clone(),
+                todos: self.shared_todos.clone(),
             };
-            let calls = result.tool_calls;
-            let sender = self.tx.clone();
-            tokio::spawn(async move {
-                match tool::execute_calls(&calls, &context, None).await {
-                    Ok(results) => {
-                        let _ = sender.send(UiEvent::ToolsDone(results));
-                    }
-                    Err(error) => {
-                        let _ =
-                            sender.send(UiEvent::ChatError(format!("tool execution: {error:#}")));
-                    }
-                }
-            });
+            // Policy pre-check: auto-run, pre-deny, or pause on approval
+            // cards. Enforcement re-runs inside execute(), so a card
+            // approval cannot be bypassed by a later code path.
+            self.precheck_tool_calls(result.tool_calls, context);
         } else {
             if !result.tool_calls.is_empty() {
                 // Tool-round limit reached with pending calls: do not claim success.
@@ -733,7 +802,8 @@ impl UiApp {
         self.cancellation = Some(cancellation.clone());
         let backend = self.backend.clone();
         let state = self.state.clone();
-        let tools = tool::definitions_from(&self.plugins_dir);
+        let tools =
+            tool::definitions_for_mode(tool::definitions_from(&self.plugins_dir), &self.state.mode);
         let sender = self.tx.clone();
         let (backend_sender, mut backend_events) = mpsc::unbounded_channel();
         let relay_sender = sender.clone();
@@ -766,7 +836,8 @@ impl UiApp {
         };
         let backend = self.backend.clone();
         let state = self.state.clone();
-        let tools = tool::definitions_from(&self.plugins_dir);
+        let tools =
+            tool::definitions_for_mode(tool::definitions_from(&self.plugins_dir), &self.state.mode);
         let sender = self.tx.clone();
         let (backend_sender, mut backend_events) = mpsc::unbounded_channel();
         let relay_sender = sender.clone();
@@ -829,6 +900,17 @@ impl UiApp {
     }
 
     pub(crate) fn cancel_work(&mut self, status: &str) {
+        // A card-paused round runs nothing: no event will settle it, so
+        // cancel settles it here instead of stranding busy.
+        if self.pending_tools.take().is_some() {
+            self.overlay = Overlay::None;
+            self.busy = false;
+            self.cancellation = None;
+            self.tool_round = 0;
+            self.set_status(status.into());
+            self.start_next_queued();
+            return;
+        }
         if let Some(token) = &self.cancellation {
             token.cancel();
             self.set_status(status.into());
@@ -923,6 +1005,80 @@ mod tests {
         (UiApp::new(backend, state, paths, config), workspace, skills)
     }
 
+    /// Card keys resolve in order: deny delivers without spawning,
+    /// approve-once runs the call and merges back into call order.
+    #[tokio::test]
+    async fn approval_card_keys_resolve() {
+        use crate::model::{FunctionCall, ToolCall};
+
+        fn write_call(id: &str) -> ToolCall {
+            ToolCall {
+                id: id.to_string(),
+                type_: "function".to_string(),
+                function: FunctionCall {
+                    name: "write_file".to_string(),
+                    arguments: r#"{"path":"notes.txt","content":"hi"}"#.to_string(),
+                },
+            }
+        }
+
+        let (mut app, workspace, _skills) = test_app();
+        let plugins_dir = app.plugins_dir.clone();
+        let workspace_path = workspace.path().to_path_buf();
+        let policy = app.policy.clone();
+        let context = || ToolContext {
+            workspace: workspace_path.clone(),
+            plugins_dir: plugins_dir.clone(),
+            sandbox: Sandbox::detect("none", None, 5),
+            cancellation: CancellationToken::new(),
+            allow_network: true,
+            allow_code: true,
+            mode: "build".to_string(),
+            policy: policy.clone(),
+            todos: Arc::new(Mutex::new(Vec::new())),
+        };
+        // Default config asks for writes: the call pauses on a card.
+        app.precheck_tool_calls(vec![write_call("c1")], context());
+        assert!(matches!(app.overlay, Overlay::Approval));
+        let (name, summary, remaining) = app.approval_card().unwrap();
+        assert_eq!(name, "write_file");
+        assert!(summary.contains("notes.txt"), "{summary}");
+        assert_eq!(remaining, 0);
+        app.resolve_approval(ApprovalVerdict::Deny);
+        assert!(matches!(app.overlay, Overlay::None));
+        match app.rx.try_recv().expect("denial delivered") {
+            UiEvent::ToolsDone(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].call_id, "c1");
+                assert!(
+                    results[0].content.contains("denied by user"),
+                    "{}",
+                    results[0].content
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        // Approve-once runs the call for real and merges in order.
+        app.precheck_tool_calls(vec![write_call("c2")], context());
+        app.resolve_approval(ApprovalVerdict::Once);
+        match tokio::time::timeout(std::time::Duration::from_secs(10), app.rx.recv())
+            .await
+            .expect("tools done arrives")
+            .expect("channel open")
+        {
+            UiEvent::ToolsDone(results) => {
+                assert_eq!(results.len(), 1);
+                assert!(
+                    results[0].content.contains("notes.txt"),
+                    "{}",
+                    results[0].content
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(workspace.path().join("notes.txt").exists());
+    }
+
     fn test_custom(name: &str) -> CustomCommand {
         CustomCommand {
             name: name.into(),
@@ -982,6 +1138,83 @@ mod tests {
             joined.contains("> hello world"),
             "composer text missing:\n{joined}"
         );
+    }
+
+    /// The task list renders as a collapsible TASKS section and the
+    /// footer counts progress; collapsing uses the same section state
+    /// as `/expand`.
+    #[test]
+    fn todo_render_section_collapses() {
+        use crate::model::{TodoItem, TodoStatus};
+
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.todos = vec![
+            TodoItem {
+                content: "first".to_string(),
+                status: TodoStatus::Completed,
+            },
+            TodoItem {
+                content: "second".to_string(),
+                status: TodoStatus::InProgress,
+            },
+        ];
+        let joined = render_lines(&mut app, 80, 30).join("\n");
+        assert!(joined.contains("TASKS"), "section missing:\n{joined}");
+        assert!(joined.contains("✓ first"), "done marker missing:\n{joined}");
+        assert!(
+            joined.contains("▶ second"),
+            "active marker missing:\n{joined}"
+        );
+        assert!(
+            joined.contains("tasks 1/2"),
+            "footer count missing:\n{joined}"
+        );
+        app.section_state.insert("todos".to_string(), false);
+        let collapsed = render_lines(&mut app, 80, 30).join("\n");
+        assert!(
+            collapsed.contains("1/2 done"),
+            "collapsed summary missing:\n{collapsed}"
+        );
+        assert!(
+            !collapsed.contains("✓ first"),
+            "collapsed section leaks items:\n{collapsed}"
+        );
+    }
+
+    /// Stale ghost flights never paint: only the current generation
+    /// applies, and Tab accepts / Esc dismisses the visible suggestion.
+    #[tokio::test]
+    async fn ghost_stale_generation_dropped() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "!git sta".to_string();
+        app.cursor = app.input.len();
+        app.ghost_request = app.input.clone();
+        app.on_ghost_ready(app.ghost_generation + 1, Some("tus".to_string()));
+        assert!(app.ghost_text.is_none());
+        assert!(!app.ghost_inflight);
+        app.on_ghost_ready(app.ghost_generation, Some("tus".to_string()));
+        assert_eq!(app.ghost_text.as_deref(), Some("tus"));
+    }
+
+    #[tokio::test]
+    async fn ghost_tab_accepts_esc_dismisses() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "!git sta".to_string();
+        app.cursor = app.input.len();
+        app.ghost_text = Some("tus".to_string());
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(tab).await.unwrap();
+        assert_eq!(app.input, "!git status");
+        assert!(app.ghost_text.is_none());
+        // A fresh ghost dismisses on Esc without touching the request.
+        app.ghost_text = Some(" --help".to_string());
+        app.busy = false;
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_key(esc).await.unwrap();
+        assert!(app.ghost_text.is_none());
+        assert!(!app.busy);
     }
 
     #[test]

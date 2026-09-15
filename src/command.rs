@@ -71,6 +71,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "check backend connectivity",
     },
     CommandSpec {
+        name: "/completion",
+        usage: "/completion [status|start|stop]",
+        description: "ghost-text sidecar status and control",
+    },
+    CommandSpec {
         name: "/profiles",
         usage: "/profiles",
         description: "list llama-router profiles",
@@ -650,7 +655,7 @@ pub fn help_text_with(customs: &[crate::custom::CustomCommand]) -> String {
         }
     }
     output.push_str(
-        "\nKeys\n  Enter send (steer while busy)   Alt/Shift+Enter newline   Tab mode/complete   Esc cancel\n  Ctrl+C quit/cancel   Ctrl+X cancel   Ctrl+O details   Ctrl+T tasks   Ctrl+R history hint\n  Up/Down history or file picks   @file attach file context   !cmd run shell into context   /sh draft shell from words\n",
+        "\nKeys\n  Enter send (steer while busy)   Alt/Shift+Enter newline   Tab ghost/mode/complete   Esc dismiss/cancel\n  Ctrl+C quit/cancel   Ctrl+X cancel   Ctrl+O details   Ctrl+T tasks   Ctrl+R history hint   y/a/n approval card\n  Up/Down history or file picks   @file attach file context   !cmd run shell into context   /sh draft shell from words\n",
     );
     output
 }

@@ -204,6 +204,40 @@ impl UiApp {
             }
             lines.push(Line::from(""));
         }
+        if !self.state.todos.is_empty() {
+            use crate::model::TodoStatus;
+
+            order.push(("todos".to_string(), true));
+            let number = order.len();
+            let done = self
+                .state
+                .todos
+                .iter()
+                .filter(|item| item.status == TodoStatus::Completed)
+                .count();
+            lines.push(Line::from(Span::styled(
+                format!(" TASKS [{number}] "),
+                Style::default()
+                    .fg(palette.tool)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            if self.section_expanded("todos", true) {
+                for item in &self.state.todos {
+                    let marker = match item.status {
+                        TodoStatus::Completed => "✓",
+                        TodoStatus::InProgress => "▶",
+                        TodoStatus::Pending => "·",
+                    };
+                    lines.push(Line::from(format!("  {marker} {}", item.content)));
+                }
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("  ▸[{number}] {done}/{} done…", self.state.todos.len()),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            lines.push(Line::from(""));
+        }
         self.section_order = order;
         if !self.streaming.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -395,8 +429,17 @@ impl UiApp {
         } else {
             " composer · Enter send · Alt/Shift-Enter newline ".into()
         };
+        let mut composer = vec![Span::raw(format!("> {}", self.input))];
+        if self.cursor == self.input.len()
+            && let Some(ghost) = &self.ghost_text
+        {
+            composer.push(Span::styled(
+                ghost.clone(),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
         frame.render_widget(
-            Paragraph::new(format!("> {}", self.input))
+            Paragraph::new(Line::from(composer))
                 .block(Block::default().borders(Borders::ALL).title(title))
                 .wrap(Wrap { trim: false }),
             area,
@@ -426,6 +469,19 @@ impl UiApp {
             .as_deref()
             .map(|name| format!(" ⎇{name}"))
             .unwrap_or_default();
+        let tasks = if self.state.todos.is_empty() {
+            String::new()
+        } else {
+            use crate::model::TodoStatus;
+
+            let done = self
+                .state
+                .todos
+                .iter()
+                .filter(|item| item.status == TodoStatus::Completed)
+                .count();
+            format!("  tasks {done}/{}", self.state.todos.len())
+        };
         let first = Line::from(vec![
             Span::styled(
                 format!(" {} ", self.status),
@@ -434,6 +490,7 @@ impl UiApp {
             Span::raw("  "),
             Span::styled(session_tokens, Style::default().fg(Color::DarkGray)),
             Span::styled(branch, Style::default().fg(Color::DarkGray)),
+            Span::styled(tasks, Style::default().fg(Color::DarkGray)),
         ]);
         let second = Line::from(vec![
             Span::styled(
@@ -449,7 +506,7 @@ impl UiApp {
             ),
             Span::raw("  "),
             Span::styled(
-                "Tab mode · /help · @file · !cmd · /sh",
+                "Tab ghost/mode · /help · @file · !cmd · /sh",
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
@@ -545,6 +602,31 @@ impl UiApp {
                 );
             }
             Overlay::Settings { .. } => {}
+            Overlay::Approval => {
+                let (name, summary, remaining) = self
+                    .approval_card()
+                    .unwrap_or_else(|| ("tool".into(), String::new(), 0));
+                let mut lines = vec![
+                    Line::from(format!("Approve `{name}`?")),
+                    Line::from(""),
+                    Line::from(format!("  {summary}")),
+                    Line::from(""),
+                    Line::from("y approve once · a always allow this run · n deny"),
+                ];
+                let height = if remaining > 0 {
+                    lines.push(Line::from(format!("+{remaining} more awaiting decision")));
+                    9
+                } else {
+                    8
+                };
+                let rect = centered(area, 78, height);
+                frame.render_widget(Clear, rect);
+                frame.render_widget(
+                    Paragraph::new(lines)
+                        .block(Block::default().borders(Borders::ALL).title(" Approval ")),
+                    rect,
+                );
+            }
             Overlay::CustomUrl { provider } => {
                 let rect = centered(area, 78, 7);
                 frame.render_widget(Clear, rect);
