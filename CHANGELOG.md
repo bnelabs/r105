@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [1.4.0] — 2026-09-15
+
+### Added
+- Per-section transcript expansion: collapsed tool sections render as one
+  line with a stable `[n]` gutter id, and `/expand [n|all|none]` opens or
+  closes them. Failed tool calls always stay expanded.
+- Checkpoints and `/rewind [n]`: `/clear` and `/compact` save a checkpoint
+  first (kept to the last 10), and `/rewind` restores an earlier one after
+  backing up the current work, with a boundary notice marking the restore
+  point.
+- Safer compaction: pair-aware context splits, rejection of empty
+  summaries, and `/compact to retry` after a failed compaction.
+- Plugin `before_tool`/`after_tool` hooks: declaring plugins can deny a
+  tool call with a visible reason or rewrite its arguments and result.
+  Hook failures fail the tool visibly instead of silently.
+- Session parents and `/session tree`: sessions record their parent,
+  `/session fork <name> [turns]` snaps to an exchange boundary with
+  tool-pair repair, and `/session tree` shows the fork hierarchy.
+- `#` classify prefix: a `#` line is classified as a shell one-liner
+  (prefilled after `!` for review), an agent prompt (sent as-is), or
+  ambiguous (hint in the status line). Nothing executes unseen.
+- Palette recency and live state: recently used commands rank higher
+  (typo'd input never pollutes history) and running sessions show
+  `· now`/`· active` badges.
+- Tinted status line (muted/success/error) and folding of repeated
+  consecutive notices (`message (×N)`).
+
 ## [1.3.0] — 2026-09-15
 
 ### Added
