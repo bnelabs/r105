@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [1.3.0] — 2026-09-15
+
 ### Added
 - Markdown-backed custom slash commands: `name.md` files in
   `~/.config/r105/commands/` (global) or `<workspace>/.r105/commands/`
