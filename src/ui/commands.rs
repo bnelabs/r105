@@ -25,20 +25,18 @@ impl UiApp {
                 }
             }
             "/health" => self.start_health(),
+            "/completion" => self.command_completion(&parsed.args).await,
             "/profiles" => self.start_profiles(),
             "/profile" => self.command_profile(&parsed.args),
             "/history" => self.command_history(),
             "/plan" => {
-                self.mode = Mode::Plan;
-                self.set_ok("Mode: plan".into());
+                self.set_mode(Mode::Plan);
             }
             "/build" => {
-                self.mode = Mode::Build;
-                self.set_ok("Mode: build".into());
+                self.set_mode(Mode::Build);
             }
             "/ask" => {
-                self.mode = Mode::Ask;
-                self.set_ok("Mode: ask".into());
+                self.set_mode(Mode::Ask);
             }
             "/skills" => self.command_skills(),
             "/skill" => self.command_skill(&parsed.args),
@@ -1100,6 +1098,7 @@ impl UiApp {
                         self.redo_stack.clear();
                         self.reseed_msg_ids();
                         self.prune_sections();
+                        self.sync_mode_from_state();
                         self.current_session = Some(name.to_string());
                         self.follow_transcript = true;
                         self.set_ok(format!("Loaded {name} ({count} messages)"));

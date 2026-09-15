@@ -17,7 +17,14 @@ impl UiApp {
             return Ok(());
         }
         if key.code == KeyCode::Esc {
-            if matches!(self.overlay, Overlay::None) {
+            if matches!(self.overlay, Overlay::Approval) {
+                // Dismissing the card must decide it, or the paused
+                // round would hang busy forever.
+                self.resolve_approval(ApprovalVerdict::Deny);
+            } else if matches!(self.overlay, Overlay::None) {
+                if !self.busy && self.dismiss_ghost() {
+                    return Ok(());
+                }
                 self.cancel_work("Cancelled");
             } else {
                 self.overlay = Overlay::None;
@@ -70,13 +77,20 @@ impl UiApp {
             self.accept_arg_complete();
             return Ok(());
         }
+        // A visible ghost wins over the mode cycle: Tab already means
+        // "complete" everywhere else in the composer.
+        if key.code == KeyCode::Tab && self.cursor == self.input.len() && self.ghost_text.is_some()
+        {
+            self.accept_ghost();
+            return Ok(());
+        }
         if key.code == KeyCode::Tab {
-            self.mode = match self.mode {
+            let next = match self.mode {
                 Mode::Build => Mode::Plan,
                 Mode::Plan => Mode::Ask,
                 Mode::Ask => Mode::Build,
             };
-            self.set_ok(format!("Mode: {}", self.mode.as_str()));
+            self.set_mode(next);
             return Ok(());
         }
         if self.at_menu_active() && matches!(key.code, KeyCode::Up | KeyCode::Down) {
@@ -348,6 +362,20 @@ impl UiApp {
                     self.overlay = Overlay::Settings { selected };
                 }
             }
+            Overlay::Approval => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.resolve_approval(ApprovalVerdict::Once);
+                }
+                KeyCode::Char('a') | KeyCode::Char('A') => {
+                    self.resolve_approval(ApprovalVerdict::Always);
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.resolve_approval(ApprovalVerdict::Deny);
+                }
+                // Any other key keeps the card: an undecided round must
+                // not leak back into the composer.
+                _ => self.overlay = Overlay::Approval,
+            },
             Overlay::None => {}
         }
         Ok(())

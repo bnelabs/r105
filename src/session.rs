@@ -43,6 +43,12 @@ struct SavedState {
     active_skills: Vec<String>,
     #[serde(default)]
     skill_params: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    #[serde(default = "default_saved_mode")]
+    mode: String,
+}
+
+fn default_saved_mode() -> String {
+    "build".to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,6 +88,7 @@ pub fn save_with_parent(
             trace_id: state.trace_id.clone(),
             active_skills: state.active_skills.clone(),
             skill_params: state.skill_params.clone(),
+            mode: state.mode.clone(),
         },
         message_count: state.history.len(),
         saved_at: now_string(),
@@ -132,6 +139,9 @@ pub fn load(paths: &ConfigPaths, name: &str, state: &mut ChatState) -> Result<us
             .unwrap_or(false);
         if let Some(model) = optional_string(saved.get("model")) {
             state.model = model;
+        }
+        if let Some(mode) = optional_string(saved.get("mode")) {
+            state.mode = mode;
         }
         if let Some(context) = saved
             .get("context_tokens")
@@ -699,5 +709,53 @@ mod tests {
             rendered.contains("root work"),
             "preview missing:\n{rendered}"
         );
+    }
+
+    fn test_paths() -> (tempfile::TempDir, ConfigPaths) {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths {
+            home: directory.path().to_path_buf(),
+            config_dir: directory.path().to_path_buf(),
+            config_file: directory.path().join("config.json"),
+            sessions_dir: directory.path().join("sessions"),
+            plugins_dir: directory.path().join("plugins"),
+        };
+        (directory, paths)
+    }
+
+    fn test_state(mode: &str) -> ChatState {
+        let mut state: ChatState = serde_json::from_value(serde_json::json!({})).unwrap();
+        state.mode = mode.to_string();
+        state
+    }
+
+    /// The session file carries the mode across save/load.
+    #[test]
+    fn mode_persists_in_session_file() {
+        let (_directory, paths) = test_paths();
+        save(&paths, "planned", &test_state("plan")).unwrap();
+        let mut loaded = test_state("build");
+        load(&paths, "planned", &mut loaded).unwrap();
+        assert_eq!(loaded.mode, "plan");
+    }
+
+    /// Files written before modes existed carry no mode key; loading
+    /// them leaves the live mode alone (same as model and trace id).
+    #[test]
+    fn mode_absent_in_session_file_leaves_state_untouched() {
+        let (_directory, paths) = test_paths();
+        let mut loaded = test_state("ask");
+        std::fs::create_dir_all(&paths.sessions_dir).unwrap();
+        std::fs::write(
+            paths.sessions_dir.join("legacy.json"),
+            r#"{"version":1,"history":[],"state":{"model":"x"},"message_count":0}"#,
+        )
+        .unwrap();
+        load(&paths, "legacy", &mut loaded).unwrap();
+        assert_eq!(loaded.mode, "ask", "load must not clobber without a value");
+        let mut fresh = test_state("build");
+        fresh.mode = "garbage".to_string();
+        load(&paths, "legacy", &mut fresh).unwrap();
+        assert_eq!(fresh.mode, "garbage");
     }
 }

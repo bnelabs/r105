@@ -16,8 +16,11 @@ r105 sends tool schemas in the OpenAI compatible request and executes returned c
 | system_info | none | Return OS, architecture, cwd, and pid |
 | web_search | query | Search public web pages through DuckDuckGo |
 | web_fetch | url | Fetch one public HTTP(S) page |
+| todo_write | items | Replace the visible task list (max 20, one in_progress) |
 
-The native ToolContext carries the workspace, sandbox, cancellation token, network permission, code permission, and plugin directory. Tool calls in one model response run concurrently. A failed call becomes a tool result containing its error, so independent calls can finish.
+The native ToolContext carries the workspace, sandbox, cancellation token, network permission, code permission, session mode, approval policy, shared todo list, and plugin directory. Tool calls in one model response run concurrently. A failed call becomes a tool result containing its error, so independent calls can finish.
+
+Every call resolves through the approval policy first (mode gate, permission posture, command denylists/allowlists, then the per-category `approval_*` level): denied calls never start, and `ask` calls pause on an inline card in the TUI (`y` once, `a` always this run, `n` deny) or fail closed outside it.
 
 ## Tool protocol
 

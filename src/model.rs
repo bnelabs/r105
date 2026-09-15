@@ -28,6 +28,21 @@ fn default_tool_type() -> String {
     "function".to_string()
 }
 
+/// One entry of the model-maintained task list (`todo_write` tool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoItem {
+    pub content: String,
+    pub status: TodoStatus,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
     pub role: String,
@@ -172,6 +187,8 @@ pub struct ChatState {
     pub thinking_default_expanded: bool,
     #[serde(default = "default_posture")]
     pub permission_posture: String,
+    #[serde(default = "default_mode")]
+    pub mode: String,
     #[serde(default)]
     pub skills_dir: PathBuf,
     #[serde(default)]
@@ -185,6 +202,11 @@ pub struct ChatState {
     pub context_tokens: u64,
     #[serde(default)]
     pub history: Vec<Message>,
+    /// Working task list, replaced wholesale by `todo_write`. Session
+    /// files do not persist it (working state, like scroll position);
+    /// the tool-result messages in history keep the record.
+    #[serde(default)]
+    pub todos: Vec<TodoItem>,
     #[serde(default)]
     pub workspace: PathBuf,
     #[serde(default = "new_trace_id")]
@@ -213,12 +235,32 @@ fn default_posture() -> String {
     "sandboxed".to_string()
 }
 
+fn default_mode() -> String {
+    "build".to_string()
+}
+
 fn default_context() -> u64 {
     DEFAULT_CONTEXT_TOKENS
 }
 
 fn new_trace_id() -> String {
     Uuid::new_v4().simple().to_string()[..12].to_string()
+}
+
+/// One-line instruction prepended to the request when the session mode
+/// is not build, so the model does not spam calls the gate will deny.
+pub fn mode_preamble(mode: &str) -> Option<&'static str> {
+    match mode {
+        "plan" => Some(
+            "Mode: plan. Investigate and propose only; do not call tools that \
+             modify files or execute code. Read-only and web-research tools remain available.",
+        ),
+        "ask" => Some(
+            "Mode: ask. Answer directly from knowledge and the conversation; \
+             do not call tools.",
+        ),
+        _ => None,
+    }
 }
 
 impl ChatState {
@@ -240,12 +282,14 @@ impl ChatState {
             show_thinking: config.show_thinking,
             thinking_default_expanded: config.thinking_default_expanded,
             permission_posture: config.permission_posture.clone(),
+            mode: default_mode(),
             skills_dir: config.skills_dir.clone(),
             active_skills: Vec::new(),
             skill_params: std::collections::BTreeMap::new(),
             model_contexts: config.model_contexts.clone(),
             context_tokens: config.context_tokens.unwrap_or(DEFAULT_CONTEXT_TOKENS),
             history: Vec::new(),
+            todos: Vec::new(),
             workspace,
             trace_id: new_trace_id(),
             last_usage: Usage::default(),
@@ -274,6 +318,9 @@ impl ChatState {
 
     pub fn prompt_messages(&self, user_message: Option<&str>) -> Vec<Message> {
         let mut messages = Vec::with_capacity(self.history.len() + 2);
+        if let Some(preamble) = mode_preamble(&self.mode) {
+            messages.push(Message::system(preamble));
+        }
         for skill in &self.active_skills {
             let name = skill.strip_suffix(".md").unwrap_or(skill);
             let path = PathBuf::from(name);
@@ -306,5 +353,55 @@ impl ChatState {
             messages.push(Message::user(message));
         }
         messages
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn state_with_mode(mode: &str) -> ChatState {
+        let mut state: ChatState = serde_json::from_value(json!({})).unwrap();
+        state.mode = mode.to_string();
+        state
+    }
+
+    #[test]
+    fn mode_preamble_present_only_when_set() {
+        assert!(mode_preamble("build").is_none());
+        assert!(mode_preamble("bogus").is_none());
+        let plan = mode_preamble("plan").unwrap();
+        assert!(plan.contains("plan") && plan.contains("Read-only"));
+        let ask = mode_preamble("ask").unwrap();
+        assert!(ask.contains("ask") && ask.contains("do not call tools"));
+    }
+
+    #[test]
+    fn mode_preamble_heads_prompt_messages() {
+        let state = state_with_mode("plan");
+        let messages = state.prompt_messages(Some("look around"));
+        assert_eq!(
+            messages.first().map(|message| message.role.as_str()),
+            Some("system")
+        );
+        assert!(messages.first().unwrap().content.contains("Mode: plan"));
+        let build = state_with_mode("build");
+        let messages = build.prompt_messages(Some("hi"));
+        assert!(
+            messages
+                .iter()
+                .all(|message| !message.content.contains("Mode: plan"))
+        );
+    }
+
+    #[test]
+    fn mode_defaults_to_build_and_roundtrips() {
+        let state: ChatState = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(state.mode, "build");
+        let planned = state_with_mode("plan");
+        let back: ChatState =
+            serde_json::from_value(serde_json::to_value(&planned).unwrap()).unwrap();
+        assert_eq!(back.mode, "plan");
     }
 }
