@@ -125,6 +125,9 @@ impl UiApp {
             "/undo" => self.command_undo(),
             "/redo" => self.command_redo(),
             "/rewind" => self.command_rewind(&parsed.args),
+            "/filter" => self.command_filter(&parsed.args),
+            "/block" => self.command_block(&parsed.args),
+            "/rerun" => self.command_rerun(&parsed.args).await?,
             "/expand" => self.command_expand(&parsed.args),
             "/editor" => self.command_editor(),
             "/settings" => {
@@ -565,6 +568,12 @@ impl UiApp {
     }
 
     pub(crate) fn command_copy(&mut self, args: &[String]) {
+        // `/copy out [n]`: whole block verbatim (or its filtered view
+        // when a /filter is active), spec 0017.
+        if args.first().is_some_and(|first| first == "out") {
+            self.copy_block(args.get(1));
+            return;
+        }
         if self.last_response.is_empty() {
             self.set_error("There is no response to copy".into());
             return;
@@ -609,6 +618,39 @@ impl UiApp {
                     blocks.len()
                 ));
             }
+        }
+    }
+
+    /// Copy one block to the clipboard: the filtered view when the
+    /// block carries a `/filter`, otherwise the full content. Defaults
+    /// to the last message.
+    fn copy_block(&mut self, arg: Option<&String>) {
+        let history_len = self.state.history.len();
+        let number = match arg {
+            Some(text) => match parse_block_number(text) {
+                Some(number) => number,
+                None => {
+                    self.set_status("Usage: /copy out [n]".into());
+                    return;
+                }
+            },
+            None => history_len,
+        };
+        if number < 1 || number > history_len {
+            self.set_error(format!("Block {number} out of range (1-{history_len})"));
+            return;
+        }
+        let index = number - 1;
+        let id = self.section_id(index);
+        let message = &self.state.history[index];
+        let content = block_copy_content(&message.content, self.block_filters.get(&id));
+        if copy_to_clipboard(&content) {
+            self.set_ok(format!(
+                "Copied block {number} ({} characters)",
+                content.chars().count()
+            ));
+        } else {
+            self.set_error("Clipboard unavailable (try pbcopy, wl-copy, xclip, or clip)".into());
         }
     }
 
@@ -1298,6 +1340,173 @@ impl UiApp {
         self.state.history.extend(entry.messages);
         self.follow_transcript = true;
         self.set_ok(format!("Redid {count} message(s)"));
+    }
+
+    /// `/filter <block> <pattern> [flags]`: store a per-block output
+    /// filter (spec 0017) so long tool/command output can be narrowed
+    /// without losing the block. Bare `/filter` lists active filters.
+    pub(crate) fn command_filter(&mut self, args: &[String]) {
+        let action = match parse_block_filter(self.state.history.len(), args) {
+            Ok(action) => action,
+            Err(error) => {
+                self.set_error(error);
+                return;
+            }
+        };
+        match action {
+            FilterAction::List => {
+                let active: Vec<String> = self
+                    .state
+                    .history
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, message)| {
+                        self.block_filters.get(&message.id).map(|filter| {
+                            format!(
+                                "  block {} ({}) · {}",
+                                index + 1,
+                                message.role,
+                                filter.describe()
+                            )
+                        })
+                    })
+                    .collect();
+                if active.is_empty() {
+                    self.set_status(format!("No block filters active · {FILTER_USAGE}"));
+                } else {
+                    self.push_system(&format!("Block filters\n{}", active.join("\n")));
+                }
+            }
+            FilterAction::Set(index, filter) => {
+                let id = self.section_id(index);
+                let summary = filter.describe();
+                self.block_filters.insert(id, filter);
+                self.set_ok(format!("Filter block {} · {summary}", index + 1));
+            }
+            FilterAction::Clear(index) => {
+                let id = self.section_id(index);
+                if self.block_filters.remove(&id).is_some() {
+                    self.set_ok(format!("Filter cleared on block {}", index + 1));
+                } else {
+                    self.set_status(format!("Block {} has no filter", index + 1));
+                }
+            }
+        }
+    }
+
+    /// `/block [n]`: list the tail of the transcript with block numbers,
+    /// or describe one block (role, size, filter, first line).
+    pub(crate) fn command_block(&mut self, args: &[String]) {
+        const LIST_LIMIT: usize = 40;
+        let Some(first) = args.first() else {
+            if self.state.history.is_empty() {
+                self.set_status("Transcript is empty".into());
+                return;
+            }
+            let start = self.state.history.len().saturating_sub(LIST_LIMIT);
+            let mut lines = vec![format!(
+                "Blocks {}-{} of {}",
+                start + 1,
+                self.state.history.len(),
+                self.state.history.len()
+            )];
+            for (index, message) in self.state.history.iter().enumerate().skip(start) {
+                let preview: String = message
+                    .content
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(60)
+                    .collect();
+                let filtered = if self.block_filters.contains_key(&message.id) {
+                    " ·filtered"
+                } else {
+                    ""
+                };
+                lines.push(format!(
+                    " {:>3} {:<9} {preview}{filtered}",
+                    index + 1,
+                    message.role
+                ));
+            }
+            self.push_system(&lines.join("\n"));
+            return;
+        };
+        let number: usize = match parse_block_number(first) {
+            Some(number) => number,
+            None => {
+                self.set_status("Usage: /block [n]".into());
+                return;
+            }
+        };
+        if number < 1 || number > self.state.history.len() {
+            self.set_error(format!(
+                "Block {number} out of range (1-{})",
+                self.state.history.len()
+            ));
+            return;
+        }
+        let index = number - 1;
+        let id = self.section_id(index);
+        let message = &self.state.history[index];
+        let chars = message.content.chars().count();
+        let lines = message.content.lines().count();
+        let filter = match self.block_filters.get(&id) {
+            Some(filter) => filter.describe(),
+            None => "none".to_string(),
+        };
+        let first_line: String = message
+            .content
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(100)
+            .collect();
+        self.push_system(&format!(
+            "Block {number} · {} · {chars} chars · {lines} line(s) · filter: {filter}\n  {first_line}",
+            message.role
+        ));
+    }
+
+    /// `/rerun [n]`: resubmit an earlier user block. Prompts and `!`
+    /// shell lines run again immediately; `/` commands prefill the
+    /// composer instead, because replaying `/clear` or `/exit` is not
+    /// what rerun should mean.
+    pub(crate) async fn command_rerun(&mut self, args: &[String]) -> Result<()> {
+        if self.busy {
+            self.set_error("Finish the active request before rerunning".into());
+            return Ok(());
+        }
+        let arg = match args.first() {
+            Some(text) => match parse_block_number(text) {
+                Some(number) => Some(number),
+                None => {
+                    self.set_status("Usage: /rerun [n]".into());
+                    return Ok(());
+                }
+            },
+            None => None,
+        };
+        let prompt = match rerun_target(&self.state.history, arg) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                self.set_error(error);
+                return Ok(());
+            }
+        };
+        self.input = prompt;
+        self.cursor = self.input.len();
+        self.at_cache_key.clear();
+        if self.input.starts_with('/') {
+            self.set_status("Rerun prefilled — Enter re-dispatches the command".into());
+            return Ok(());
+        }
+        // Boxed: rerun -> submit -> handle_command -> rerun is a cycle
+        // the compiler cannot size. Slash blocks return above, so the
+        // runtime depth is one.
+        Box::pin(self.submit()).await
     }
 
     /// Any new user-authored turn invalidates the redo stack.

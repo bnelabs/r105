@@ -7,8 +7,9 @@
 ## Problem
 
 Multi-step tasks have no visible plan: progress lives in prose and is
-lost on compaction. Warp renders a server-emitted todo list; r105 can do
-the model-driven half locally with the section machinery from 0004.
+lost on compaction. Server-emitted todo lists are the common design;
+r105 can do the model-driven half locally with the section machinery
+from 0004.
 
 ## Proposal
 

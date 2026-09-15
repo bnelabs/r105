@@ -9,12 +9,30 @@ impl UiApp {
             && !self.input.chars().any(char::is_whitespace)
     }
 
+    /// Single-owner rule (spec 0018): while a menu would own the next
+    /// Tab/↑/↓, the ghost stays hidden. True for an open overlay, the
+    /// slash palette, a live `@path` token, or a slash-command argument
+    /// position with candidates. Cheap: no filesystem work.
+    pub(crate) fn menu_wants_input(&mut self) -> bool {
+        if !matches!(self.overlay, Overlay::None) {
+            return true;
+        }
+        if self.palette_active() {
+            return true;
+        }
+        if self.at_token().is_some() {
+            return true;
+        }
+        !self.arg_menu_items().is_empty()
+    }
+
     pub(crate) fn palette_items(&self) -> Vec<command::PaletteItem> {
         let mut items = command::palette_items(self.input.trim(), &self.custom_commands);
         // Recency is the primary sort key (stable: fuzzy order survives
-        // within a tier), mirroring Warp's (Priority, MatchKind, score).
-        // The fuzzy tiers in `command::palette_items` already encode
-        // exact > prefix > substring, so only recency is added here.
+        // within a tier), mirroring the palette's (priority, match kind,
+        // score) tiers. The fuzzy tiers in `command::palette_items`
+        // already encode exact > prefix > substring, so only recency is
+        // added here.
         items.sort_by_key(|item| {
             let name = item.name.to_ascii_lowercase();
             self.recent_commands
