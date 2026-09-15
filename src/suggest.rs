@@ -1,4 +1,4 @@
-//! Warp-style completion cascade: history frequency first, path
+//! Shell-history completion cascade: history frequency first, path
 //! top-hit second, no weights anywhere. Both layers resolve in
 //! microseconds, so the ghost tick stays synchronous — the debounce,
 //! dim render, and Tab/Esc shell from the sidecar era are unchanged,
@@ -159,19 +159,94 @@ pub fn path_guess(
     name.strip_prefix(file_part).map(str::to_string)
 }
 
-/// The cascade: history frequency, then path top-hit. Returns the
-/// suffix to render dimmed after the composer text.
+/// The cascade: history frequency, then command-name (builtins + PATH
+/// executables), then path top-hit. Returns the suffix to render dimmed
+/// after the composer text.
 pub fn suggest(
     input: &str,
     history: &ShellHistory,
     cwd: &std::path::Path,
+    bins: &[String],
     score: impl Fn(&str, &str) -> Option<i32>,
 ) -> Option<String> {
     let prefix = ghost_prefix(input)?;
     if let Some(suffix) = history.suggest(&prefix, &cwd.to_string_lossy()) {
         return Some(suffix);
     }
+    if let Some(suffix) = command_guess(&prefix, bins) {
+        return Some(suffix);
+    }
     path_guess(&prefix, cwd, score)
+}
+
+/// POSIX-ish shell builtins worth a ghost (the rest come from PATH).
+pub const SHELL_BUILTINS: &[&str] = &[
+    "alias", "bg", "break", "cd", "continue", "echo", "eval", "exec", "exit", "export", "fg",
+    "history", "jobs", "kill", "local", "printf", "pwd", "read", "readonly", "return", "set",
+    "shift", "source", "test", "time", "type", "ulimit", "umask", "unalias", "unset", "wait",
+];
+
+/// Best continuation for the first word of a shell line: builtins plus
+/// PATH executables. Append-only ghost, so only prefix matches qualify
+/// (the `contains` tier of the file scorer cannot produce a suffix);
+/// shorter names win, ties keep the builtin (listed first).
+pub fn command_guess(prefix: &str, bins: &[String]) -> Option<String> {
+    if prefix.is_empty() || prefix.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let mut best: Option<(i32, &str)> = None;
+    for name in SHELL_BUILTINS
+        .iter()
+        .copied()
+        .chain(bins.iter().map(String::as_str))
+    {
+        if name.len() <= prefix.len() || !name.starts_with(prefix) {
+            continue;
+        }
+        let rank = 10 - name.len().min(9) as i32;
+        if best.as_ref().is_none_or(|(top, _)| rank > *top) {
+            best = Some((rank, name));
+        }
+    }
+    let name = best?.1;
+    name.strip_prefix(prefix).map(str::to_string)
+}
+
+/// PATH executables for the command layer, from the live environment.
+pub fn scan_path_bins() -> Vec<String> {
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    scan_bins(std::env::split_paths(&path))
+}
+
+/// Sorted, deduped file names across `dirs` (regular files only, capped
+/// so a pathological PATH cannot stall a keystroke).
+pub fn scan_bins(dirs: impl IntoIterator<Item = std::path::PathBuf>) -> Vec<String> {
+    const MAX_BINS: usize = 2000;
+    let mut bins = std::collections::BTreeSet::new();
+    for dir in dirs {
+        let Ok(listing) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in listing.flatten() {
+            if bins.len() >= MAX_BINS {
+                break;
+            }
+            if !entry.metadata().is_ok_and(|meta| meta.is_file()) {
+                continue;
+            }
+            if let Ok(name) = entry.file_name().into_string()
+                && !name.is_empty()
+            {
+                bins.insert(name);
+            }
+        }
+        if bins.len() >= MAX_BINS {
+            break;
+        }
+    }
+    bins.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -289,5 +364,65 @@ mod tests {
         assert_eq!(ghost_prefix("/sh"), None);
         assert_eq!(ghost_prefix("hello world"), None);
         assert_eq!(ghost_prefix(""), None);
+    }
+
+    /// Command layer: builtins and PATH bins complete the first token,
+    /// argument territory and exact matches do not.
+    #[test]
+    fn command_guess_covers_builtins_and_bins() {
+        let bins = vec!["cargo".to_string(), "git".to_string()];
+        assert_eq!(command_guess("ec", &[]), Some("ho".to_string()));
+        assert_eq!(command_guess("gi", &bins), Some("t".to_string()));
+        assert_eq!(command_guess("car", &bins), Some("go".to_string()));
+        assert_eq!(command_guess("git sta", &bins), None);
+        assert_eq!(command_guess("git", &bins), None);
+        assert_eq!(command_guess("", &bins), None);
+    }
+
+    /// PATH executables beat path guesses; history beats both; the path
+    /// layer still handles tokens no binary matches.
+    #[test]
+    fn suggest_cascade_order_prefers_history_then_bins() {
+        let directory = tempfile::TempDir::new().unwrap();
+        std::fs::write(directory.path().join("cargo.toml"), "").unwrap();
+        let score = |relative: &str, query: &str| relative.starts_with(query).then_some(100);
+        let bins = vec!["cargo".to_string()];
+        let empty = ShellHistory::new(10);
+
+        // History frequency wins over the command layer.
+        let mut history = ShellHistory::new(10);
+        history.record("cargo build", "/repo");
+        assert_eq!(
+            suggest("!car", &history, directory.path(), &bins, score),
+            Some("go build".to_string())
+        );
+        // No history for the prefix: the binary completes `car` → `go`,
+        // not the `cargo.toml` path top-hit.
+        assert_eq!(
+            suggest("!car", &empty, directory.path(), &bins, score),
+            Some("go".to_string())
+        );
+        // No binary for the token: the path layer still serves.
+        assert_eq!(
+            suggest("!./car", &empty, directory.path(), &bins, score),
+            Some("go.toml".to_string())
+        );
+    }
+
+    /// The PATH scan collects files only, sorted and deduped.
+    #[test]
+    fn scan_bins_sorts_and_skips_directories() {
+        let first = tempfile::TempDir::new().unwrap();
+        let second = tempfile::TempDir::new().unwrap();
+        std::fs::write(first.path().join("cargo"), "").unwrap();
+        std::fs::write(first.path().join("git"), "").unwrap();
+        std::fs::create_dir(first.path().join("nested")).unwrap();
+        std::fs::write(second.path().join("git"), "").unwrap();
+        std::fs::write(second.path().join("aria2c"), "").unwrap();
+        let bins = scan_bins(vec![
+            first.path().to_path_buf(),
+            second.path().to_path_buf(),
+        ]);
+        assert_eq!(bins, vec!["aria2c", "cargo", "git"]);
     }
 }

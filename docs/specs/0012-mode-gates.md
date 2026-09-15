@@ -8,8 +8,8 @@
 
 `Mode` (build/plan/ask, Tab-cycled) is write-only: nothing reads it, so
 plan/ask promise restraint they do not deliver. A user in plan mode gets
-the same tool execution as build mode. Warp's modes are soft prompts;
-r105 is local so it can enforce for real.
+the same tool execution as build mode. Comparable tools keep modes as
+soft prompts; r105 is local so it can enforce for real.
 
 ## Proposal
 

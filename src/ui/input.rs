@@ -17,7 +17,12 @@ impl UiApp {
             return Ok(());
         }
         if key.code == KeyCode::Esc {
-            if matches!(self.overlay, Overlay::Approval) {
+            if self.hist_depth.is_some() {
+                // A history walk owns Esc: restore the draft, cancel the
+                // walk, and leave any ghost/cancel handling alone.
+                self.end_history_walk(false);
+                self.set_status("Draft restored".into());
+            } else if matches!(self.overlay, Overlay::Approval) {
                 // Dismissing the card must decide it, or the paused
                 // round would hang busy forever.
                 self.resolve_approval(ApprovalVerdict::Deny);
@@ -386,6 +391,7 @@ impl UiApp {
         if value.is_empty() {
             return Ok(());
         }
+        self.end_history_walk(true);
         // `#` asks for cheap local routing before any model call: shell
         // shapes prefill `!`, agent shapes send, the rest stays editable.
         // `submit_classified` owns the composer from here on.
@@ -663,6 +669,7 @@ impl UiApp {
     }
 
     pub(crate) fn insert_text(&mut self, value: &str) {
+        self.end_history_walk(true);
         self.input.insert_str(self.cursor, value);
         self.cursor += value.len();
     }
@@ -671,6 +678,7 @@ impl UiApp {
         if self.cursor == 0 {
             return;
         }
+        self.end_history_walk(true);
         let start = previous_boundary(&self.input, self.cursor);
         self.input.drain(start..self.cursor);
         self.cursor = start;
@@ -680,30 +688,70 @@ impl UiApp {
         if self.cursor >= self.input.len() {
             return;
         }
+        self.end_history_walk(true);
         let end = next_boundary(&self.input, self.cursor);
         self.input.drain(self.cursor..end);
     }
 
     pub(crate) fn history_previous(&mut self) {
-        if self.state.history.is_empty() {
+        let history = self.user_history();
+        if history.is_empty() {
             return;
         }
-        let value = self
-            .state
-            .history
-            .iter()
-            .rev()
-            .find(|message| message.role == "user")
-            .map(|m| m.content.clone());
-        if let Some(value) = value {
-            self.input = value;
+        let depth = match self.hist_depth {
+            None => {
+                // First ↑ stashes the live draft: ↓ past the newest
+                // restores it, like a shell.
+                self.draft_stash = self.input.clone();
+                1
+            }
+            Some(depth) => (depth + 1).min(history.len()),
+        };
+        self.hist_depth = Some(depth);
+        self.input = history[history.len() - depth].clone();
+        self.cursor = self.input.len();
+        self.ghost_text = None;
+    }
+
+    pub(crate) fn history_next(&mut self) {
+        let Some(depth) = self.hist_depth else {
+            return;
+        };
+        let history = self.user_history();
+        if depth > 1 {
+            let next = depth - 1;
+            self.hist_depth = Some(next);
+            self.input = history[history.len() - next].clone();
+        } else {
+            self.hist_depth = None;
+            self.input = std::mem::take(&mut self.draft_stash);
+        }
+        self.cursor = self.input.len();
+        self.ghost_text = None;
+    }
+
+    /// End the ↑/↓ walk. `adopt` keeps the previewed text as the new
+    /// draft (any real edit, submit, or ghost accept means the user took
+    /// it); `false` restores the stash (Esc cancels the walk).
+    pub(crate) fn end_history_walk(&mut self, adopt: bool) {
+        if self.hist_depth.take().is_none() {
+            return;
+        }
+        if adopt {
+            self.draft_stash.clear();
+        } else {
+            self.input = std::mem::take(&mut self.draft_stash);
             self.cursor = self.input.len();
         }
     }
 
-    pub(crate) fn history_next(&mut self) {
-        self.input.clear();
-        self.cursor = 0;
+    fn user_history(&self) -> Vec<String> {
+        self.state
+            .history
+            .iter()
+            .filter(|message| message.role == "user")
+            .map(|message| message.content.clone())
+            .collect()
     }
 
     /// Replace the `@token` before the cursor with the selected pick.
