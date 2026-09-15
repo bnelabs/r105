@@ -228,23 +228,24 @@ impl UiApp {
     pub(crate) fn command_state(&mut self) {
         let connection = self.backend.connection();
         self.push_system(&format!(
-            "mode={}\nprovider={}\nbackend={}\nurl={}\nmodel={}\nquality={}\nprofile={}\nreasoning={}\nthinking={}\nbell={}\npermissions={}\nsandbox={}",
+            "Mode: {} · Model: {} ({})\nBackend: {} · {}\nPermissions: {} · Sandbox: {} · Approvals: {}\nThinking: {} · Reasoning: {} · Bell: {}\nQuality: {} · Profile: {}",
             self.mode.as_str(),
+            self.state.model,
             connection.display_name(),
             connection.backend,
             connection.base_url,
-            self.state.model,
-            self.state.quality.as_deref().unwrap_or("auto"),
-            self.state.profile.as_deref().unwrap_or("auto"),
-            self.state.reasoning_effort,
+            self.state.permission_posture,
+            self.sandbox.selected_name(),
+            self.policy.summary(),
             if self.state.show_thinking {
                 "shown"
             } else {
                 "hidden"
             },
+            self.state.reasoning_effort,
             if self.attention_bell { "on" } else { "off" },
-            self.state.permission_posture,
-            self.sandbox.selected_name(),
+            self.state.quality.as_deref().unwrap_or("auto"),
+            self.state.profile.as_deref().unwrap_or("auto"),
         ));
     }
 

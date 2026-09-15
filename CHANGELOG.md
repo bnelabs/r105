@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `/help` is grouped (Essentials, Modes & guardrails, Ask & answer,
+  Files & context, Transcript, Providers & plugins) with a shorter keys
+  block and a `/help <command>` tip, instead of one 50-row wall.
+- `/state` renders labeled lines (mode, model, backend, permissions,
+  approvals, thinking, quality) instead of a raw `key=value` dump, and
+  includes the approval policy summary.
+- The transcript pane lost its `transcript` title; the conversation
+  needs no label.
+
+### Fixed
+- Stray "limbo" text on screen: TUI runs now log to `<config>/r105.log`
+  instead of stderr, so tracing warnings can no longer scribble rows
+  ratatui never repaints. Headless subcommands keep stderr logging.
+
 ## [2.1.0] — 2026-09-15
 
 ### Added

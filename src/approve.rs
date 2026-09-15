@@ -27,6 +27,14 @@ impl Action {
             other => bail!("invalid approval level '{other}' (want allow|ask|deny)"),
         }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Ask => "ask",
+            Self::Deny => "deny",
+        }
+    }
 }
 
 /// Policy outcome for a single tool call.
@@ -139,6 +147,29 @@ impl Policy {
             mcp: Action::Deny,
             plugin: Action::Deny,
             ..Self::default()
+        }
+    }
+
+    /// One-liner for `/state`: non-allow levels only, e.g.
+    /// `exec:ask write:ask`, or `all allowed` when nothing gates.
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        for (name, level) in [
+            ("exec", self.exec),
+            ("write", self.write),
+            ("read", self.read),
+            ("network", self.network),
+            ("mcp", self.mcp),
+            ("plugin", self.plugin),
+        ] {
+            if level != Action::Allow {
+                parts.push(format!("{name}:{}", level.as_str()));
+            }
+        }
+        if parts.is_empty() {
+            "all allowed".to_string()
+        } else {
+            parts.join(" ")
         }
     }
 
@@ -351,6 +382,18 @@ mod tests {
             ..Config::default()
         };
         assert!(Policy::from_config(&config).is_err());
+    }
+
+    /// `/state` shows non-allow levels compactly.
+    #[test]
+    fn approval_summary_lists_gates() {
+        assert_eq!(Policy::default().summary(), "all allowed");
+        let mut config = Config::default();
+        let policy = Policy::from_config(&config).unwrap();
+        assert_eq!(policy.summary(), "exec:ask write:ask mcp:ask plugin:ask");
+        config.approval_exec = "deny".to_string();
+        let policy = Policy::from_config(&config).unwrap();
+        assert!(policy.summary().contains("exec:deny"));
     }
 
     #[test]
