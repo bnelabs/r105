@@ -1,6 +1,6 @@
 # 0007: Plugin before/after_tool hooks
 
-- Status: proposed
+- Status: landed
 - Author: r105
 - Scope: `src/plugin.rs` (manifest, invoke, hook runners),
   `src/tool.rs` (`execute`)

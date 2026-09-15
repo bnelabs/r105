@@ -1,6 +1,6 @@
 # 0004: Per-section transcript expand
 
-- Status: proposed
+- Status: landed
 - Author: r105
 - Scope: `src/model.rs` (`Message`), `src/session.rs` (`parse_message`),
   `src/ui.rs` (transcript render, `/expand`)
