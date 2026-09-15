@@ -39,6 +39,7 @@ use crate::{
     backend::{Backend, BackendEvent, Connection},
     command::{self, Mode, ParsedCommand},
     config::{Config, ConfigPaths},
+    custom::{self, CustomCommand},
     export,
     model::{ChatResult, ChatState, Message, Usage},
     provider::{self, Preset},
@@ -58,6 +59,9 @@ enum UiEvent {
         summary: String,
         recent: Vec<Message>,
     },
+    /// A `/sh` draft round-trip finished: prefill the composer with the
+    /// proposed `!command` (`Ok`) or report why drafting failed (`Err`).
+    ShellDraft(Result<String, String>),
     ModelsLoaded {
         backend: Backend,
         models: Vec<ModelInfo>,
@@ -220,6 +224,17 @@ struct UiApp {
     at_selected: usize,
     at_cache_key: String,
     at_cache_items: Vec<String>,
+    /// Markdown-backed custom commands (`/name` from `commands/*.md`),
+    /// reloaded on `/config reload`, `/commands reload`, and workspace
+    /// switches so new files never need a restart.
+    custom_commands: Vec<CustomCommand>,
+    /// First-argument value completion (`/theme <Tab>`): same input-keyed
+    /// cache discipline as the `@` menu.
+    arg_selected: usize,
+    arg_cache_key: String,
+    arg_cache_items: Vec<String>,
+    /// Model ids from the last `/models` refresh, backing `/model <Tab>`.
+    known_models: Vec<String>,
     editor_requested: bool,
 }
 
@@ -262,6 +277,17 @@ impl UiApp {
         // workspace facts are read first.
         let git_branch = git_branch_for(&state.workspace);
         let skills_available = count_skills(&config.skills_dir);
+        let custom_commands = custom::load_commands(
+            &commands_dir(&paths),
+            &project_commands_dir(&state.workspace),
+        );
+        if !custom_commands.is_empty() {
+            status.push_str(&format!(
+                " · {} custom command{} (/commands)",
+                custom_commands.len(),
+                if custom_commands.len() == 1 { "" } else { "s" }
+            ));
+        }
         Self {
             backend,
             state,
@@ -308,6 +334,11 @@ impl UiApp {
             at_selected: 0,
             at_cache_key: String::new(),
             at_cache_items: Vec::new(),
+            custom_commands,
+            arg_selected: 0,
+            arg_cache_key: String::new(),
+            arg_cache_items: Vec::new(),
+            known_models: Vec::new(),
             editor_requested: false,
         }
     }
@@ -471,6 +502,7 @@ impl UiApp {
                             .iter()
                             .position(|model| model.id == active)
                             .unwrap_or(0);
+                        self.known_models = models.iter().map(|model| model.id.clone()).collect();
                         self.overlay = Overlay::Models {
                             items: models,
                             selected,
@@ -480,6 +512,21 @@ impl UiApp {
                     }
                 }
                 UiEvent::Notice(notice) => self.push_system(&notice),
+                UiEvent::ShellDraft(outcome) => match outcome {
+                    Ok(command) if self.input.is_empty() => {
+                        self.input = format!("!{command}");
+                        self.cursor = self.input.len();
+                        self.status =
+                            "Review the proposed command · Enter to run · Esc clears".into();
+                    }
+                    Ok(command) => {
+                        self.push_system(&format!(
+                            "Proposed shell command (composer was busy, run it with !):\n{command}"
+                        ));
+                        self.status = "Draft landed as a transcript note".into();
+                    }
+                    Err(error) => self.status = error,
+                },
             }
         }
     }
@@ -758,6 +805,10 @@ impl UiApp {
             self.accept_at_complete();
             return Ok(());
         }
+        if key.code == KeyCode::Tab && self.arg_menu_open() {
+            self.accept_arg_complete();
+            return Ok(());
+        }
         if key.code == KeyCode::Tab {
             self.mode = match self.mode {
                 Mode::Build => Mode::Plan,
@@ -774,6 +825,17 @@ impl UiApp {
                     self.at_selected = self.at_selected.saturating_sub(1);
                 } else {
                     self.at_selected = (self.at_selected + 1).min(count - 1);
+                }
+            }
+            return Ok(());
+        }
+        if self.arg_menu_active() && matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            let count = self.arg_cache_items.len();
+            if count > 0 {
+                if key.code == KeyCode::Up {
+                    self.arg_selected = self.arg_selected.saturating_sub(1);
+                } else {
+                    self.arg_selected = (self.arg_selected + 1).min(count - 1);
                 }
             }
             return Ok(());
@@ -1033,7 +1095,10 @@ impl UiApp {
         if value.is_empty() {
             return Ok(());
         }
-        if self.palette_active() && command::command(&value).is_none() {
+        if self.palette_active()
+            && command::command(&value).is_none()
+            && !self.is_custom_command(&value)
+        {
             if let Some(item) = self.palette_items().get(self.palette_selected) {
                 self.input = format!("{} ", item.name);
                 self.cursor = self.input.len();
@@ -1043,6 +1108,7 @@ impl UiApp {
         self.input.clear();
         self.cursor = 0;
         self.at_cache_key.clear();
+        self.arg_cache_key.clear();
         if let Some(shell) = value.strip_prefix('!') {
             let shell = shell.trim().to_string();
             if shell.is_empty() {
@@ -1254,6 +1320,23 @@ impl UiApp {
         self.skills_available = count_skills(&self.state.skills_dir);
     }
 
+    /// Reload Markdown-backed custom commands from the global and project
+    /// directories. Built-in collisions are dropped here (built-ins win) and
+    /// counted so `/commands` can report the shadowing instead of hiding it.
+    fn refresh_custom_commands(&mut self) -> usize {
+        let loaded = custom::load_commands(
+            &commands_dir(&self.paths),
+            &project_commands_dir(&self.state.workspace),
+        );
+        let shadowed = loaded
+            .iter()
+            .filter(|command| command::command(&format!("/{}", command.name)).is_some())
+            .count();
+        self.custom_commands = loaded;
+        self.arg_cache_key.clear();
+        shadowed
+    }
+
     /// Remappable Ctrl actions. `keybindings` maps action names (`cancel`,
     /// `details`, `tasks`, `history`, `redraw`) to `ctrl+<letter>`; anything
     /// else falls back to the built-in default from `KEY_ACTIONS`.
@@ -1273,7 +1356,7 @@ impl UiApp {
 
     async fn handle_command(&mut self, parsed: ParsedCommand) -> Result<()> {
         match parsed.name.as_str() {
-            "/" | "/help" => self.push_system(&command::help_text()),
+            "/" | "/help" => self.command_help(&parsed.args),
             "/state" => self.command_state(),
             "/connect" | "/provider" => self.command_connect(&parsed.args),
             "/models" => self.start_model_list(),
@@ -1376,10 +1459,93 @@ impl UiApp {
             }
             "/thinking" => self.command_thinking(&parsed.args),
             "/attention" => self.command_attention(&parsed.args),
+            "/commands" => self.command_custom_commands(&parsed.args),
+            "/sh" => self.command_shell_draft(&parsed.args),
             "/exit" => self.quit = true,
-            _ => self.status = format!("Unknown command {}; type /help", parsed.name),
+            _ => {
+                if let Some(custom) = self.find_custom_command(&parsed.name) {
+                    let expanded = custom::substitute_args(&custom.content, &parsed.args);
+                    self.submit_prompt(expanded);
+                    // `submit_prompt` sets Sending/Steering/Queued status;
+                    // keep it and prefix the expansion attribution.
+                    let outcome = std::mem::take(&mut self.status);
+                    self.status = format!(
+                        "Expanded /{} ({}) · {}",
+                        custom.name, custom.source, outcome
+                    );
+                } else if let Some(hit) = command::suggest(&parsed.name, &self.custom_commands) {
+                    self.status = format!("Unknown command {}; did you mean {hit}?", parsed.name);
+                } else {
+                    self.status = format!("Unknown command {}; type /help", parsed.name);
+                }
+            }
         }
         Ok(())
+    }
+
+    /// `/help [command]`: full dump by default, or one entry's usage,
+    /// description, and (for customs) argument hint plus source file.
+    fn command_help(&mut self, args: &[String]) {
+        let Some(topic) = args.first() else {
+            self.push_system(&command::help_text_with(&self.custom_commands));
+            return;
+        };
+        if let Some(item) = command::command(topic) {
+            self.push_system(&format!("{}\n  {}", item.usage, item.description));
+            return;
+        }
+        if let Some(custom) = self.find_custom_command(topic) {
+            let mut output = format!("/{}\n  {}", custom.name, custom.description);
+            if let Some(hint) = &custom.argument_hint {
+                output.push_str(&format!("\n  arguments: {hint}"));
+            }
+            output.push_str(&format!(
+                "\n  source: {} ({})",
+                custom.source,
+                custom.path.display()
+            ));
+            self.push_system(&output);
+            return;
+        }
+        self.push_system(&command::help_text_with(&self.custom_commands));
+    }
+
+    /// `/commands [reload]`: list loaded Markdown commands with scope, or
+    /// reload both scopes first. Shadowed files (built-in wins) are
+    /// reported so nothing is silently ignored.
+    fn command_custom_commands(&mut self, args: &[String]) {
+        if args.first().is_some_and(|action| action == "reload") {
+            let shadowed = self.refresh_custom_commands();
+            self.status = if shadowed == 0 {
+                format!("Reloaded {} custom command(s)", self.custom_commands.len())
+            } else {
+                format!(
+                    "Reloaded {} custom command(s); {shadowed} shadowed by built-ins",
+                    self.custom_commands.len()
+                )
+            };
+        }
+        if self.custom_commands.is_empty() {
+            self.push_system(&format!(
+                "No custom commands. Drop name.md files in\n  {}\n  {}",
+                commands_dir(&self.paths).display(),
+                project_commands_dir(&self.state.workspace).display()
+            ));
+            return;
+        }
+        let mut lines = vec!["Custom commands".to_string(), String::new()];
+        for command in &self.custom_commands {
+            let shadow = if command::command(&format!("/{}", command.name)).is_some() {
+                " (shadowed by built-in)"
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "  /{:<18} {} ({}){shadow}",
+                command.name, command.description, command.source
+            ));
+        }
+        self.push_system(&lines.join("\n"));
     }
 
     fn command_state(&mut self) {
@@ -1405,6 +1571,54 @@ impl UiApp {
             self.sandbox.selected_name(),
             bridge,
         ));
+    }
+
+    /// `/sh <plain words>`: ask the model for one shell command and prefill
+    /// the composer with `!<command>` for review. Nothing runs without an
+    /// explicit Enter, so the existing `!` posture gates and sandbox path
+    /// apply unchanged. The draft is a cheap history-free one-shot and never
+    /// touches the transcript or the busy/queue machinery.
+    fn command_shell_draft(&mut self, args: &[String]) {
+        let request = args.join(" ");
+        if request.is_empty() {
+            self.status = "Usage: /sh <describe the shell command>".into();
+            return;
+        }
+        if self.state.permission_posture == "off" {
+            self.status = "Shell drafts are disabled by permission posture 'off'".into();
+            return;
+        }
+        if self.busy {
+            self.status = "Busy — draft shell commands when idle".into();
+            return;
+        }
+        let shell = if cfg!(windows) {
+            "Windows cmd.exe (run via `cmd /C`)"
+        } else {
+            "POSIX sh (run via `sh -c`)"
+        };
+        let prompt = format!(
+            "Translate the request into ONE shell command for {} on {}.\n\
+             Output ONLY the command: no fences, no surrounding quotes, no explanation, single line.\n\
+             Request: {request}",
+            shell,
+            std::env::consts::OS,
+        );
+        let backend = self.backend.clone();
+        let mut state = self.state.clone();
+        state.history.clear();
+        let sender = self.tx.clone();
+        self.status = "Drafting shell command…".into();
+        tokio::spawn(async move {
+            let outcome = match backend.chat(&state, &prompt, &[]).await {
+                Ok(result) => match clean_shell_draft(&result.content) {
+                    Some(command) => Ok(command),
+                    None => Err("The model returned no usable command".to_string()),
+                },
+                Err(error) => Err(format!("Shell draft failed: {error:#}")),
+            };
+            let _ = sender.send(UiEvent::ShellDraft(outcome));
+        });
     }
 
     fn command_history(&mut self) {
@@ -1595,6 +1809,7 @@ impl UiApp {
             ""
         };
         self.refresh_skills();
+        self.refresh_custom_commands();
         self.refresh_git_branch();
         self.status = format!("Config reloaded{connection_note}{mouse_note}");
     }
@@ -2130,6 +2345,7 @@ impl UiApp {
             } else {
                 self.state.workspace = path;
                 self.refresh_git_branch();
+                self.refresh_custom_commands();
                 self.status = format!("Workspace: {}", self.state.workspace.display());
             }
         } else {
@@ -2449,8 +2665,24 @@ impl UiApp {
             && !self.input.chars().any(char::is_whitespace)
     }
 
-    fn palette_items(&self) -> Vec<&'static command::CommandSpec> {
-        command::filtered(self.input.trim())
+    fn palette_items(&self) -> Vec<command::PaletteItem> {
+        command::palette_items(self.input.trim(), &self.custom_commands)
+    }
+
+    /// Exact `/name` match against loaded custom commands (input is
+    /// already lowercased by the parser; names are stored lowercased).
+    fn is_custom_command(&self, value: &str) -> bool {
+        self.custom_commands
+            .iter()
+            .any(|command| format!("/{}", command.name) == value.to_ascii_lowercase())
+    }
+
+    fn find_custom_command(&self, name: &str) -> Option<CustomCommand> {
+        let name = name.strip_prefix('/').unwrap_or(name).to_ascii_lowercase();
+        self.custom_commands
+            .iter()
+            .find(|command| command.name == name)
+            .cloned()
     }
 
     /// The `@path` token immediately before the cursor, if any. The `@`
@@ -2526,6 +2758,162 @@ impl UiApp {
         self.at_cache_key.clear();
         self.at_cache_items.clear();
         self.at_selected = 0;
+        true
+    }
+
+    /// Value completion for a command's argument (`/theme dr<Tab>`). Only
+    /// the argument right after the command (or one subcommand deeper for
+    /// `/skill` and `/session`) completes; anything more complex stays
+    /// manual. Requires the cursor at the end of a single-line input so
+    /// replacement is a plain suffix swap.
+    fn arg_menu_items(&mut self) -> Vec<String> {
+        if !matches!(self.overlay, Overlay::None)
+            || self.palette_active()
+            || self.cursor != self.input.len()
+            || self.input.contains('\n')
+            || self.at_token().is_some()
+        {
+            return Vec::new();
+        }
+        let trailing_space = self.input.ends_with(char::is_whitespace);
+        let mut words: Vec<&str> = self.input.split_whitespace().collect();
+        if words.is_empty() || !words[0].starts_with('/') {
+            return Vec::new();
+        }
+        // `/cmd ` (trailing space) means an empty token is being completed.
+        if trailing_space {
+            words.push("");
+        }
+        if words.len() != 2 && words.len() != 3 {
+            return Vec::new();
+        }
+        let key = format!("{}:{}", self.input, self.cursor);
+        if key == self.arg_cache_key {
+            return self.arg_cache_items.clone();
+        }
+        let token = words.last().unwrap_or(&"").to_ascii_lowercase();
+        let mut candidates = self.arg_candidates(words[0], words.get(1));
+        candidates.retain(|candidate| candidate.to_ascii_lowercase().starts_with(&token));
+        candidates.truncate(8);
+        self.arg_cache_key = key;
+        self.arg_selected = 0;
+        self.arg_cache_items = candidates.clone();
+        candidates
+    }
+
+    /// Candidate values for the argument under the cursor. `first` is the
+    /// already-typed first argument when completing the second position.
+    fn arg_candidates(&self, command: &str, first: Option<&&str>) -> Vec<String> {
+        let command = command.to_ascii_lowercase();
+        // Second position: names of skills and sessions behind their
+        // subcommands.
+        if let Some(first) = first.filter(|_| self.arg_position() == 2) {
+            match (command.as_str(), first.to_ascii_lowercase().as_str()) {
+                ("/skill", "use" | "show" | "drop") => return self.skill_names(),
+                ("/session", "load" | "delete" | "diff") => {
+                    return session::list(&self.paths)
+                        .iter()
+                        .map(|item| item.name.clone())
+                        .collect();
+                }
+                _ => return Vec::new(),
+            }
+        }
+        match command.as_str() {
+            "/model" => self.known_models.clone(),
+            "/preview" => complete_files(&self.state.workspace, &self.arg_token()),
+            "/connect" => {
+                let mut values: Vec<String> = command::static_arg_values("/connect")
+                    .unwrap_or_default()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                values.extend(provider::PRESETS.iter().map(|preset| preset.id.to_string()));
+                values.sort();
+                values.dedup();
+                values
+            }
+            _ => command::static_arg_values(command.as_str())
+                .unwrap_or_default()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
+
+    /// Which argument position the cursor completes: 1 for `/cmd <tok>`,
+    /// 2 for `/cmd <fixed> <tok>`.
+    fn arg_position(&self) -> usize {
+        let words = self.input.split_whitespace().count();
+        if self.input.ends_with(char::is_whitespace) {
+            words
+        } else {
+            words.saturating_sub(1)
+        }
+    }
+
+    /// The partial token after the last space (empty when the input ends
+    /// with a space).
+    fn arg_token(&self) -> String {
+        if self.input.ends_with(char::is_whitespace) {
+            return String::new();
+        }
+        self.input
+            .split_whitespace()
+            .last()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// Sorted skill stems (`review` for `review.md`), mirroring `/skills`.
+    fn skill_names(&self) -> Vec<String> {
+        let mut names = std::fs::read_dir(&self.state.skills_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                (entry.path().extension().and_then(|value| value.to_str()) == Some("md")).then(
+                    || {
+                        entry
+                            .path()
+                            .file_stem()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn arg_menu_open(&mut self) -> bool {
+        !self.arg_menu_items().is_empty()
+    }
+
+    fn arg_menu_active(&mut self) -> bool {
+        !self.arg_cache_key.is_empty()
+            && !self.arg_cache_items.is_empty()
+            && format!("{}:{}", self.input, self.cursor) == self.arg_cache_key
+    }
+
+    /// Replace the partial argument after the last space with the selected
+    /// pick plus a trailing space so typing resumes naturally.
+    fn accept_arg_complete(&mut self) -> bool {
+        let items = self.arg_cache_items.clone();
+        let Some(pick) = items.get(self.arg_selected).cloned() else {
+            return false;
+        };
+        let Some(space) = self.input.rfind(' ') else {
+            return false;
+        };
+        self.input.replace_range(space + 1.., &format!("{pick} "));
+        self.cursor = self.input.len();
+        self.arg_cache_key.clear();
+        self.arg_cache_items.clear();
+        self.arg_selected = 0;
         true
     }
 
@@ -2647,10 +3035,14 @@ impl UiApp {
             0
         };
         let file_items = self.at_menu_items();
-        let file_height = if file_items.is_empty() {
+        let arg_items = self.arg_menu_items();
+        // The `@file` and argument-value menus never co-show (the latter
+        // requires no `@` token), so they share one chunk.
+        let complete_rows = file_items.len().max(arg_items.len());
+        let file_height = if complete_rows == 0 {
             0
         } else {
-            file_items.len().min(8) as u16 + 2
+            complete_rows.min(8) as u16 + 2
         };
         if !palette.is_empty() {
             self.palette_selected = self.palette_selected.min(palette.len() - 1);
@@ -2680,7 +3072,11 @@ impl UiApp {
             self.draw_palette(frame, chunks[2], &palette);
         }
         if file_height > 0 {
-            self.draw_file_complete(frame, chunks[3], &file_items);
+            if !file_items.is_empty() {
+                self.draw_file_complete(frame, chunks[3], &file_items);
+            } else {
+                self.draw_arg_complete(frame, chunks[3], &arg_items);
+            }
         }
         self.draw_composer(frame, chunks[4]);
         self.draw_footer(frame, chunks[5]);
@@ -2859,6 +3255,35 @@ impl UiApp {
         );
     }
 
+    fn draw_arg_complete(&mut self, frame: &mut Frame<'_>, area: Rect, items: &[String]) {
+        let viewport = area.height.saturating_sub(2) as usize;
+        let scroll = command::ensure_visible(self.arg_selected, 0, viewport, items.len());
+        let selection = selection_style(&self.state.theme);
+        let rows = items
+            .iter()
+            .skip(scroll)
+            .take(viewport)
+            .enumerate()
+            .map(|(offset, item)| {
+                let index = scroll + offset;
+                let style = if index == self.arg_selected {
+                    selection
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                Line::from(Span::styled(format!(" {item}"), style))
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(rows).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" values · Tab accept · ↑↓ choose "),
+            ),
+            area,
+        );
+    }
+
     fn draw_settings(&self, frame: &mut Frame<'_>, area: Rect, selected: usize) {
         let rows = self.settings_rows();
         let height = (rows.len() as u16 + 4).min(area.height.max(1));
@@ -2888,12 +3313,7 @@ impl UiApp {
         );
     }
 
-    fn draw_palette(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        items: &[&'static command::CommandSpec],
-    ) {
+    fn draw_palette(&mut self, frame: &mut Frame<'_>, area: Rect, items: &[command::PaletteItem]) {
         let viewport = area.height.saturating_sub(2) as usize;
         let scroll = command::ensure_visible(
             self.palette_selected,
@@ -2915,8 +3335,14 @@ impl UiApp {
                 } else {
                     Style::default().fg(Color::White)
                 };
+                // `*` flags Markdown-backed rows, matching `/help`.
+                let name = if item.custom {
+                    format!("{}*", item.name)
+                } else {
+                    item.name.clone()
+                };
                 Line::from(Span::styled(
-                    format!(" {:<18} {}", item.name, item.description),
+                    format!(" {name:<18} {}", item.description),
                     style,
                 ))
             })
@@ -2925,7 +3351,7 @@ impl UiApp {
             Paragraph::new(rows).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" commands · ↑↓ choose · Enter accept "),
+                    .title(" commands · ↑↓ choose · Enter accept · * custom "),
             ),
             area,
         );
@@ -2994,7 +3420,7 @@ impl UiApp {
             ),
             Span::raw("  "),
             Span::styled(
-                "Tab mode · /help · @file · !cmd",
+                "Tab mode · /help · @file · !cmd · /sh",
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
@@ -3249,6 +3675,18 @@ fn complete_files(workspace: &Path, query: &str) -> Vec<String> {
     scored.into_iter().map(|(_, path)| path).collect()
 }
 
+/// Reduce a `/sh` model reply to one runnable line: drop ```` ``` ````
+/// fences, skip blanks, strip a leading `$ ` prompt echo. `None` when
+/// nothing usable remains.
+fn clean_shell_draft(output: &str) -> Option<String> {
+    let line = output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("```"))?;
+    let line = line.strip_prefix("$ ").unwrap_or(line).trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
 /// Reasoning-only replies arrive wrapped by the backend; the wrapper always
 /// covers the whole message, so ordinary model text is never misread.
 fn thinking_body(content: &str) -> Option<&str> {
@@ -3347,6 +3785,17 @@ fn git_branch_for(workspace: &Path) -> Option<String> {
     }
     let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!branch.is_empty() && branch != "HEAD").then_some(branch)
+}
+
+/// Global custom-command directory: `commands/` under the config root,
+/// next to `skills/` and `sessions/`.
+fn commands_dir(paths: &ConfigPaths) -> PathBuf {
+    paths.config_dir.join("commands")
+}
+
+/// Project custom-command directory inside the active workspace.
+fn project_commands_dir(workspace: &Path) -> PathBuf {
+    workspace.join(".r105").join("commands")
 }
 
 fn count_skills(dir: &Path) -> usize {
@@ -3677,6 +4126,118 @@ mod tests {
         assert!(filename > substring && substring > fuzzy);
         assert!(score_file_candidate("src/main.rs", "zzz").is_none());
         assert!(score_file_candidate("anything", "").is_some());
+    }
+
+    #[test]
+    fn shell_draft_cleaner_reduces_to_one_line() {
+        assert_eq!(
+            clean_shell_draft("```sh\nrg -n TODO src\n```\n"),
+            Some("rg -n TODO src".to_string())
+        );
+        assert_eq!(clean_shell_draft("$ ls -la"), Some("ls -la".to_string()));
+        assert_eq!(clean_shell_draft("```\n```"), None);
+        assert_eq!(clean_shell_draft("   \n  "), None);
+    }
+
+    /// A live `UiApp` without I/O: the backend points at a closed
+    /// loopback port (never dialed in these tests), the workspace and
+    /// skills live in temp dirs, and config discovery only reads env.
+    fn test_app() -> (UiApp, tempfile::TempDir, tempfile::TempDir) {
+        let workspace = tempfile::TempDir::new().expect("workspace");
+        let skills = tempfile::TempDir::new().expect("skills");
+        let mut config = Config::default();
+        config.skills_dir = skills.path().to_path_buf();
+        let paths = ConfigPaths::discover();
+        let state = ChatState::from_config(&config, workspace.path().to_path_buf());
+        let connection = provider::resolve_connection(None, None, Some("http://127.0.0.1:9"));
+        let backend = Backend::new(connection, 5).expect("backend");
+        (
+            UiApp::new(backend, state, paths, config, false),
+            workspace,
+            skills,
+        )
+    }
+
+    fn test_custom(name: &str) -> CustomCommand {
+        CustomCommand {
+            name: name.into(),
+            description: "Test command".into(),
+            argument_hint: None,
+            content: "Do $1".into(),
+            source: "user".into(),
+            path: PathBuf::from("/tmp/test.md"),
+        }
+    }
+
+    #[test]
+    fn arg_menu_completes_static_values_and_accepts() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "/theme dr".into();
+        app.cursor = app.input.len();
+        assert_eq!(app.arg_menu_items(), vec!["dracula".to_string()]);
+        assert!(app.accept_arg_complete());
+        assert_eq!(app.input, "/theme dracula ");
+    }
+
+    #[test]
+    fn arg_menu_lists_all_values_on_empty_token() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "/reasoning ".into();
+        app.cursor = app.input.len();
+        let items = app.arg_menu_items();
+        assert_eq!(items.len(), 5);
+        assert!(items.contains(&"low".to_string()));
+    }
+
+    #[test]
+    fn arg_menu_completes_skill_names_in_second_position() {
+        let (mut app, _workspace, skills) = test_app();
+        std::fs::write(skills.path().join("review.md"), "Review $1").unwrap();
+        app.input = "/skill use ".into();
+        app.cursor = app.input.len();
+        assert_eq!(app.arg_menu_items(), vec!["review".to_string()]);
+    }
+
+    #[test]
+    fn arg_menu_stays_shut_for_plain_text() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "just typing".into();
+        app.cursor = app.input.len();
+        assert!(app.arg_menu_items().is_empty());
+    }
+
+    #[test]
+    fn palette_lists_custom_commands_with_marker() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.custom_commands = vec![test_custom("review")];
+        app.input = "/rev".into();
+        let items = app.palette_items();
+        let found = items
+            .iter()
+            .find(|item| item.name == "/review")
+            .expect("custom row");
+        assert!(found.custom);
+    }
+
+    #[tokio::test]
+    async fn custom_command_dispatch_expands_and_submits() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.custom_commands = vec![test_custom("review")];
+        let parsed = command::parse("/review scope").expect("parses");
+        app.handle_command(parsed).await.expect("dispatches");
+        assert_eq!(app.active_user.as_deref(), Some("Do scope"));
+        assert_eq!(
+            app.status,
+            "Expanded /review (user) · Sending in build mode…"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_command_suggests_closest_match() {
+        let (mut app, _workspace, _skills) = test_app();
+        let parsed = command::parse("/modell").expect("parses");
+        app.handle_command(parsed).await.expect("dispatches");
+        assert_eq!(app.status, "Unknown command /modell; did you mean /model?");
     }
 
     #[test]

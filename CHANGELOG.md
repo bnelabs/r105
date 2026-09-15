@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- Markdown-backed custom slash commands: `name.md` files in
+  `~/.config/r105/commands/` (global) or `<workspace>/.r105/commands/`
+  (project) become `/name` commands with `$1`/`$@`/`${N:-default}`
+  argument substitution, palette listing, `/help`, and `/commands`
+  management. Built-ins win name collisions and shadowing is reported.
+- First-argument value completion (`/theme <Tab>`, `/skill use <Tab>`,
+  `/session load <Tab>`, …) with a Tab-accept popup.
+- Did-you-mean suggestions for unknown slash commands.
+- `/sh <request>` drafts one shell command from plain words via the
+  model and prefills the composer with `!command` for review; nothing
+  runs without an explicit Enter.
 
 ## [1.2.0] — 2026-09-14
 
