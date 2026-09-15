@@ -535,7 +535,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn saves_and_loads_python_compatible_shape() {
+    fn saves_and_loads_stable_shape() {
         let root = tempdir().unwrap();
         let paths = ConfigPaths {
             home: root.path().to_path_buf(),

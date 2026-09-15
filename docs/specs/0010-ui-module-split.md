@@ -1,6 +1,6 @@
 # 0010: Split `src/ui.rs` into `src/ui/` modules
 
-- Status: proposed
+- Status: landed
 - Author: r105
 - Scope: `src/ui.rs` → `src/ui/{mod,input,commands,complete,transcript,render}.rs`
 
