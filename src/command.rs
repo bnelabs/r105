@@ -201,19 +201,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "set local tool permission posture",
     },
     CommandSpec {
-        name: "/approve",
-        usage: "/approve execute_python",
-        description: "approve Python bridge execution for this run",
-    },
-    CommandSpec {
         name: "/preview",
         usage: "/preview <filename>",
         description: "preview a workspace file",
-    },
-    CommandSpec {
-        name: "/bridge",
-        usage: "/bridge",
-        description: "show optional Python bridge status",
     },
     CommandSpec {
         name: "/copy",
@@ -434,7 +424,6 @@ pub fn static_arg_values(name: &str) -> Option<&'static [&'static str]> {
         "/plugin" => Some(&["list", "reload"]),
         "/skill" => Some(&["use", "show", "drop", "clear"]),
         "/config" => Some(&["show", "reload"]),
-        "/approve" => Some(&["execute_python"]),
         "/connect" => Some(&["status", "show", "url", "custom"]),
         _ => None,
     }

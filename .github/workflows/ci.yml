@@ -40,11 +40,6 @@ jobs:
           cargo run --locked -- config-schema --output "$RUNNER_TEMP/r105-config-schema.json"
           test -s "$RUNNER_TEMP/r105-config-schema.json"
 
-      - name: Check optional Python bridge reference
-        run: |
-          python3 -m py_compile bridge/r105_python_bridge.py
-          cargo run --locked -- bridge --command "python3 bridge/r105_python_bridge.py"
-
   smoke:
     # The release workflow ships binaries for Linux, macOS, and Windows. Keep
     # a native build and CLI smoke test on the two non-Linux runner families.

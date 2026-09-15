@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Removed
+- The Python compatibility layer: `execute_python` tool,
+  `src/python_bridge.rs`, the `bridge/` reference script, `/approve`
+  and `/bridge` commands, the `r105 bridge` subcommand, and the
+  `python_bridge_command` / `auto_approve_execute_python` config keys.
+  Stale keys warn as unknown keys. `execute_rust` remains the sandboxed
+  code-execution tool.
 
 ## [1.4.0] — 2026-09-15
 

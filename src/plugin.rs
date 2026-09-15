@@ -2,8 +2,7 @@
 //!
 //! A plugin is a JSON manifest in the configured plugins directory. The
 //! executable receives one JSON request on stdin and returns one JSON object
-//! on stdout. Python source files are not loaded as plugins; legacy Python
-//! execution uses the separately configured compatibility bridge instead.
+//! on stdout. Python source files are not loaded as plugins.
 
 use std::{fs, path::Path};
 

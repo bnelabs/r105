@@ -10,7 +10,6 @@ mod mcp;
 mod model;
 mod plugin;
 mod provider;
-mod python_bridge;
 mod sandbox;
 mod security;
 mod session;
@@ -75,7 +74,7 @@ struct Cli {
     /// Override the backend request timeout in seconds.
     #[arg(long)]
     timeout: Option<u64>,
-    /// Compatibility flag: select full access and approve Python execution for this UI run.
+    /// Select full access for this UI run without prompting.
     #[arg(long)]
     yes: bool,
     #[command(subcommand)]
@@ -101,12 +100,6 @@ enum Command {
     ConfigSchema {
         #[arg(long)]
         output: Option<std::path::PathBuf>,
-    },
-    /// Show the optional external Python compatibility bridge.
-    Bridge {
-        /// Override the configured bridge command for this check.
-        #[arg(long)]
-        command: Option<String>,
     },
 }
 
@@ -136,18 +129,6 @@ async fn main() -> Result<()> {
 
     let paths = ConfigPaths::discover();
     let mut config = Config::load(&paths)?;
-    let python_approved = cli.yes || config.auto_approve_execute_python;
-    if let Some(Command::Bridge { command }) = &cli.command {
-        println!(
-            "{}",
-            python_bridge::status(
-                command
-                    .as_deref()
-                    .or(config.python_bridge_command.as_deref())
-            )
-        );
-        return Ok(());
-    }
     if let Some(plugins_dir) = cli.plugins_dir.clone() {
         config.plugins_dir = plugins_dir;
     }
@@ -221,7 +202,7 @@ async fn main() -> Result<()> {
             println!("{}", result.content);
             eprintln!("[wall={:.2}s]", result.wall_seconds);
         }
-        Command::Chat => ui::run(backend, state, paths, config, python_approved).await?,
+        Command::Chat => ui::run(backend, state, paths, config).await?,
         Command::Health => println!(
             "{}",
             serde_json::to_string_pretty(&backend.health().await?)?
@@ -251,7 +232,6 @@ async fn main() -> Result<()> {
             }
         }
         Command::ConfigSchema { .. } => unreachable!(),
-        Command::Bridge { .. } => unreachable!(),
     }
     Ok(())
 }
