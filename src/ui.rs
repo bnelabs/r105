@@ -168,6 +168,27 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
     terminal.show_cursor().context("showing terminal cursor")
 }
 
+/// Severity of the footer status line. The line is a single superseding
+/// slot (a new note always replaces the old one); the tone only colors
+/// it so failures stop looking like idle notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum StatusTone {
+    #[default]
+    Muted,
+    Success,
+    Error,
+}
+
+impl StatusTone {
+    fn color(self) -> Color {
+        match self {
+            StatusTone::Muted => Color::White,
+            StatusTone::Success => Color::Green,
+            StatusTone::Error => Color::Red,
+        }
+    }
+}
+
 struct UiApp {
     backend: Backend,
     state: ChatState,
@@ -185,12 +206,16 @@ struct UiApp {
     busy: bool,
     streaming: String,
     status: String,
+    status_tone: StatusTone,
     /// When the active request started, for the slow-start hint. Cold model
     /// loads look exactly like a hung request until the first token lands.
     request_started: Option<Instant>,
     awaiting_first_token: bool,
     slow_hint_shown: bool,
     queue: VecDeque<(String, Option<String>)>,
+    /// Recently dispatched slash commands, most recent first (cap 8), so
+    /// the palette can float repeated commands above fuzzy order.
+    recent_commands: VecDeque<String>,
     /// File context resolved from `@refs`, pushed as a system message next
     /// to the user message once the backend answers.
     pending_context: Option<String>,
@@ -305,10 +330,12 @@ impl UiApp {
             busy: false,
             streaming: String::new(),
             status,
+            status_tone: StatusTone::Muted,
             request_started: None,
             awaiting_first_token: false,
             slow_hint_shown: false,
             queue: VecDeque::new(),
+            recent_commands: VecDeque::new(),
             pending_context: None,
             redo_stack: Vec::new(),
             drop_next_restore: false,
@@ -360,7 +387,7 @@ impl UiApp {
             if self.editor_requested {
                 self.editor_requested = false;
                 if let Err(error) = self.run_editor(terminal).await {
-                    self.status = format!("Editor failed: {error:#}");
+                    self.set_error(format!("Editor failed: {error:#}"));
                 }
             }
             if self.quit {
@@ -393,7 +420,7 @@ impl UiApp {
                         Some(Ok(Event::Mouse(mouse))) => self.handle_mouse(mouse),
                         Some(Ok(_)) => {}
                         Some(Err(error)) => {
-                            self.status = format!("input error: {error}");
+                            self.set_error(format!("input error: {error}"));
                         }
                         None => {
                             self.quit = true;
@@ -412,10 +439,10 @@ impl UiApp {
                 UiEvent::Backend(BackendEvent::Token(token)) => {
                     self.streaming.push_str(&token);
                     self.awaiting_first_token = false;
-                    self.status = "Generating…".into();
+                    self.set_status("Generating…".into());
                     self.follow_transcript = true;
                 }
-                UiEvent::Backend(BackendEvent::Status(status)) => self.status = status,
+                UiEvent::Backend(BackendEvent::Status(status)) => self.set_status(status),
                 UiEvent::ChatDone(result) => self.chat_done(result),
                 UiEvent::ChatError(error) => {
                     self.streaming.clear();
@@ -436,7 +463,7 @@ impl UiApp {
                         self.input = prompt;
                         self.cursor = self.input.len();
                     }
-                    self.status = format!("Request failed: {error} · /retry to try again");
+                    self.set_error(format!("Request failed: {error} · /retry to try again"));
                     let settled = self.queue.is_empty() && !cancelled;
                     self.start_next_queued();
                     if settled {
@@ -453,11 +480,11 @@ impl UiApp {
                     }
                     let names =
                         tool_names(&results.iter().map(|r| r.name.clone()).collect::<Vec<_>>());
-                    self.status = format!(
+                    self.set_status(format!(
                         "{} tool result(s) [{}] received; continuing…",
                         results.len(),
                         names
-                    );
+                    ));
                     self.start_continue();
                 }
                 UiEvent::Compacted { summary, recent } => {
@@ -469,14 +496,14 @@ impl UiApp {
                     self.busy = false;
                     self.cancellation = None;
                     self.follow_transcript = true;
-                    self.status = "Context compacted".into();
+                    self.set_ok("Context compacted".into());
                     self.start_next_queued();
                 }
                 UiEvent::ModelsLoaded { backend, models } => {
                     self.backend = backend;
                     self.pending_connection = None;
                     if models.is_empty() {
-                        self.status = "Connected; provider returned no model list".into();
+                        self.set_status("Connected; provider returned no model list".into());
                         self.persist_connection(None);
                     } else {
                         let cold = models
@@ -488,7 +515,7 @@ impl UiApp {
                                     .is_some_and(|status| status != "loaded")
                             })
                             .count();
-                        self.status = if cold > 0 {
+                        self.set_status(if cold > 0 {
                             format!(
                                 "Connected; choose a model ({} available, {} unloaded — first use loads them)",
                                 models.len(),
@@ -496,7 +523,7 @@ impl UiApp {
                             )
                         } else {
                             format!("Connected; choose a model ({} available)", models.len())
-                        };
+                        });
                         let active = self.state.model.clone();
                         let selected = models
                             .iter()
@@ -523,9 +550,9 @@ impl UiApp {
                         self.push_system(&format!(
                             "Proposed shell command (composer was busy, run it with !):\n{command}"
                         ));
-                        self.status = "Draft landed as a transcript note".into();
+                        self.set_ok("Draft landed as a transcript note".into());
                     }
-                    Err(error) => self.status = error,
+                    Err(error) => self.set_error(error),
                 },
             }
         }
@@ -563,14 +590,14 @@ impl UiApp {
                 .iter()
                 .map(|c| c.function.name.clone())
                 .collect();
-            self.status = format!(
+            self.set_status(format!(
                 "Running {} tool call(s) [{}]…",
                 result.tool_calls.len(),
                 tool_names(&names)
-            );
+            ));
             let Some(cancellation) = self.cancellation.clone() else {
                 self.busy = false;
-                self.status = "Tool execution aborted: missing cancellation token".into();
+                self.set_error("Tool execution aborted: missing cancellation token".into());
                 self.start_next_queued();
                 return;
             };
@@ -608,11 +635,11 @@ impl UiApp {
                     .collect();
                 self.busy = false;
                 self.cancellation = None;
-                self.status = format!(
+                self.set_status(format!(
                     "Tool-round limit ({MAX_TOOL_ROUNDS}) reached; {} call(s) [{}] not executed",
                     result.tool_calls.len(),
                     tool_names(&names)
-                );
+                ));
                 self.push_system(&format!(
                     "Tool-round limit ({MAX_TOOL_ROUNDS}) reached. The model requested further tool calls that were not executed. Refine the prompt or continue manually."
                 ));
@@ -629,7 +656,7 @@ impl UiApp {
             } else {
                 self.busy = false;
                 self.cancellation = None;
-                self.status = format!("Done in {:.2}s", result.wall_seconds);
+                self.set_ok(format!("Done in {:.2}s", result.wall_seconds));
                 let settled = self.queue.is_empty();
                 self.start_next_queued();
                 if settled {
@@ -652,16 +679,16 @@ impl UiApp {
             Instant::now(),
         ) {
             self.slow_hint_shown = true;
-            self.status = format!(
+            self.set_status(format!(
                 "Still waiting for the first token (>{SLOW_START_SECONDS}s) — the server may be loading the model; Esc cancels"
-            );
+            ));
         }
     }
 
     fn start_prompt(&mut self, prompt: String, context: Option<String>) {
         if self.busy {
             self.queue.push_back((prompt, context));
-            self.status = format!("Queued prompt ({} waiting)", self.queue.len());
+            self.set_status(format!("Queued prompt ({} waiting)", self.queue.len()));
             return;
         }
         self.busy = true;
@@ -674,7 +701,7 @@ impl UiApp {
         self.state.last_usage = Usage::default();
         self.tool_round = 0;
         self.streaming.clear();
-        self.status = format!("Sending in {} mode…", self.mode.as_str());
+        self.set_status(format!("Sending in {} mode…", self.mode.as_str()));
         let cancellation = CancellationToken::new();
         self.cancellation = Some(cancellation.clone());
         let backend = self.backend.clone();
@@ -706,7 +733,7 @@ impl UiApp {
     fn start_continue(&mut self) {
         let Some(cancellation) = self.cancellation.clone() else {
             self.busy = false;
-            self.status = "Done; continuation unavailable (no active request)".into();
+            self.set_error("Done; continuation unavailable (no active request)".into());
             self.start_next_queued();
             return;
         };
@@ -771,11 +798,11 @@ impl UiApp {
         }
         if self.action_key("details", &key) {
             self.show_details = !self.show_details;
-            self.status = if self.show_details {
+            self.set_status(if self.show_details {
                 "Details expanded".into()
             } else {
                 "Details collapsed".into()
-            };
+            });
             return Ok(());
         }
         if self.action_key("tasks", &key) {
@@ -792,13 +819,13 @@ impl UiApp {
             return Ok(());
         }
         if self.action_key("history", &key) {
-            self.status = "History search: type /session search <term>".into();
+            self.set_status("History search: type /session search <term>".into());
             return Ok(());
         }
         if self.action_key("redraw", &key) {
             self.transcript_scroll = 0;
             self.follow_transcript = true;
-            self.status = "Redrawn".into();
+            self.set_status("Redrawn".into());
             return Ok(());
         }
         if key.code == KeyCode::Tab && self.at_menu_open() {
@@ -815,7 +842,7 @@ impl UiApp {
                 Mode::Plan => Mode::Ask,
                 Mode::Ask => Mode::Build,
             };
-            self.status = format!("Mode: {}", self.mode.as_str());
+            self.set_ok(format!("Mode: {}", self.mode.as_str()));
             return Ok(());
         }
         if self.at_menu_active() && matches!(key.code, KeyCode::Up | KeyCode::Down) {
@@ -945,7 +972,7 @@ impl UiApp {
                             self.state.model = model.id.clone();
                             let model = model.id.clone();
                             self.persist_connection(Some(&model));
-                            self.status = format!("Model selected: {model}");
+                            self.set_ok(format!("Model selected: {model}"));
                         }
                         keep = false;
                     }
@@ -968,7 +995,7 @@ impl UiApp {
                     self.input.clear();
                     self.cursor = 0;
                     if value.is_empty() {
-                        self.status = "API key was not entered".into();
+                        self.set_error("API key was not entered".into());
                     } else {
                         self.start_provider(provider, Some(value));
                     }
@@ -998,7 +1025,9 @@ impl UiApp {
                     if provider::valid_url(&value) {
                         self.start_provider(provider, Some(value));
                     } else {
-                        self.status = "Enter an http:// or https:// URL without credentials".into();
+                        self.set_status(
+                            "Enter an http:// or https:// URL without credentials".into(),
+                        );
                         self.overlay = Overlay::CustomUrl { provider };
                     }
                 }
@@ -1056,7 +1085,7 @@ impl UiApp {
                         let theme = THEMES[selected].to_string();
                         self.state.theme = theme.clone();
                         self.persist_config(|config| config.theme = theme.clone());
-                        self.status = format!("Theme: {theme}");
+                        self.set_ok(format!("Theme: {theme}"));
                         keep = false;
                     }
                     KeyCode::Esc => {
@@ -1112,7 +1141,7 @@ impl UiApp {
         if let Some(shell) = value.strip_prefix('!') {
             let shell = shell.trim().to_string();
             if shell.is_empty() {
-                self.status = "Usage: !<shell command>".into();
+                self.set_status("Usage: !<shell command>".into());
                 return Ok(());
             }
             self.redo_stack.clear();
@@ -1142,7 +1171,10 @@ impl UiApp {
             }
         }
         if !unknown.is_empty() {
-            self.status = format!("Unknown @ref(s) sent literally: {}", unknown.join(", "));
+            self.set_error(format!(
+                "Unknown @ref(s) sent literally: {}",
+                unknown.join(", ")
+            ));
         }
         let context = if blocks.is_empty() {
             None
@@ -1158,7 +1190,10 @@ impl UiApp {
             }
             self.drop_next_restore = true;
             self.queue.push_front((value, context));
-            self.status = format!("Steering… ({} queued behind)", self.queue.len() - 1);
+            self.set_status(format!(
+                "Steering… ({} queued behind)",
+                self.queue.len() - 1
+            ));
             return;
         }
         self.start_prompt(value, context);
@@ -1204,7 +1239,7 @@ impl UiApp {
     /// conversation so the next turn can use it.
     fn run_shell_command(&mut self, command: String) {
         if self.state.permission_posture == "off" {
-            self.status = "Shell (!) is disabled by permission posture 'off'".into();
+            self.set_error("Shell (!) is disabled by permission posture 'off'".into());
             return;
         }
         let workspace = self.state.workspace.clone();
@@ -1214,7 +1249,7 @@ impl UiApp {
         let cancellation = self.cancellation.clone().unwrap_or_default();
         let sender = self.tx.clone();
         let preview: String = command.chars().take(60).collect();
-        self.status = format!("Running shell: {preview}");
+        self.set_status(format!("Running shell: {preview}"));
         tokio::spawn(async move {
             let (program, args) = if cfg!(windows) {
                 ("cmd", vec!["/C".to_string(), command.clone()])
@@ -1285,10 +1320,10 @@ impl UiApp {
         self.input = content.trim_end_matches('\n').to_string();
         self.cursor = self.input.len();
         self.at_cache_key.clear();
-        self.status = format!(
+        self.set_status(format!(
             "Draft from {program} ({} chars)",
             self.input.chars().count()
-        );
+        ));
         Ok(())
     }
 
@@ -1355,6 +1390,11 @@ impl UiApp {
     }
 
     async fn handle_command(&mut self, parsed: ParsedCommand) -> Result<()> {
+        // Recency feeds the palette boost; typos are excluded so a
+        // one-off misspelling never floats above real commands.
+        if command::command(&parsed.name).is_some() || self.is_custom_command(&parsed.name) {
+            self.note_recent(&parsed.name);
+        }
         match parsed.name.as_str() {
             "/" | "/help" => self.command_help(&parsed.args),
             "/state" => self.command_state(),
@@ -1365,7 +1405,7 @@ impl UiApp {
                     self.state.model = model.clone();
                     let model = model.clone();
                     self.persist_connection(Some(&model));
-                    self.status = format!("Model: {model}");
+                    self.set_ok(format!("Model: {model}"));
                 } else {
                     self.start_model_list();
                 }
@@ -1376,15 +1416,15 @@ impl UiApp {
             "/history" => self.command_history(),
             "/plan" => {
                 self.mode = Mode::Plan;
-                self.status = "Mode: plan".into();
+                self.set_ok("Mode: plan".into());
             }
             "/build" => {
                 self.mode = Mode::Build;
-                self.status = "Mode: build".into();
+                self.set_ok("Mode: build".into());
             }
             "/ask" => {
                 self.mode = Mode::Ask;
-                self.status = "Mode: ask".into();
+                self.set_ok("Mode: ask".into());
             }
             "/skills" => self.command_skills(),
             "/skill" => self.command_skill(&parsed.args),
@@ -1409,10 +1449,10 @@ impl UiApp {
                     .map(|value| value != "off")
                     .unwrap_or(!self.state.cache_prompt);
                 let enabled = self.state.cache_prompt;
-                self.status = format!(
+                self.set_ok(format!(
                     "llama.cpp prompt caching: {}",
                     if enabled { "on" } else { "off" }
-                );
+                ));
                 self.persist_config(|config| config.cache_prompt = enabled);
             }
             "/config" => self.command_config(&parsed.args).await,
@@ -1420,7 +1460,7 @@ impl UiApp {
                 self.state.history.clear();
                 self.streaming.clear();
                 self.redo_stack.clear();
-                self.status = "Transcript cleared".into();
+                self.set_ok("Transcript cleared".into());
             }
             "/workspace" => self.command_workspace(&parsed.args),
             "/session" => self.command_session(&parsed.args),
@@ -1455,7 +1495,7 @@ impl UiApp {
             "/editor" => self.command_editor(),
             "/settings" => {
                 self.overlay = Overlay::Settings { selected: 0 };
-                self.status = "Settings · ↑↓ move · ←/→ change · Esc close".into();
+                self.set_status("Settings · ↑↓ move · ←/→ change · Esc close".into());
             }
             "/thinking" => self.command_thinking(&parsed.args),
             "/attention" => self.command_attention(&parsed.args),
@@ -1469,14 +1509,17 @@ impl UiApp {
                     // `submit_prompt` sets Sending/Steering/Queued status;
                     // keep it and prefix the expansion attribution.
                     let outcome = std::mem::take(&mut self.status);
-                    self.status = format!(
+                    self.set_status(format!(
                         "Expanded /{} ({}) · {}",
                         custom.name, custom.source, outcome
-                    );
+                    ));
                 } else if let Some(hit) = command::suggest(&parsed.name, &self.custom_commands) {
-                    self.status = format!("Unknown command {}; did you mean {hit}?", parsed.name);
+                    self.set_error(format!(
+                        "Unknown command {}; did you mean {hit}?",
+                        parsed.name
+                    ));
                 } else {
-                    self.status = format!("Unknown command {}; type /help", parsed.name);
+                    self.set_error(format!("Unknown command {}; type /help", parsed.name));
                 }
             }
         }
@@ -1516,14 +1559,14 @@ impl UiApp {
     fn command_custom_commands(&mut self, args: &[String]) {
         if args.first().is_some_and(|action| action == "reload") {
             let shadowed = self.refresh_custom_commands();
-            self.status = if shadowed == 0 {
+            self.set_ok(if shadowed == 0 {
                 format!("Reloaded {} custom command(s)", self.custom_commands.len())
             } else {
                 format!(
                     "Reloaded {} custom command(s); {shadowed} shadowed by built-ins",
                     self.custom_commands.len()
                 )
-            };
+            });
         }
         if self.custom_commands.is_empty() {
             self.push_system(&format!(
@@ -1581,15 +1624,15 @@ impl UiApp {
     fn command_shell_draft(&mut self, args: &[String]) {
         let request = args.join(" ");
         if request.is_empty() {
-            self.status = "Usage: /sh <describe the shell command>".into();
+            self.set_status("Usage: /sh <describe the shell command>".into());
             return;
         }
         if self.state.permission_posture == "off" {
-            self.status = "Shell drafts are disabled by permission posture 'off'".into();
+            self.set_error("Shell drafts are disabled by permission posture 'off'".into());
             return;
         }
         if self.busy {
-            self.status = "Busy — draft shell commands when idle".into();
+            self.set_status("Busy — draft shell commands when idle".into());
             return;
         }
         let shell = if cfg!(windows) {
@@ -1608,7 +1651,7 @@ impl UiApp {
         let mut state = self.state.clone();
         state.history.clear();
         let sender = self.tx.clone();
-        self.status = "Drafting shell command…".into();
+        self.set_status("Drafting shell command…".into());
         tokio::spawn(async move {
             let outcome = match backend.chat(&state, &prompt, &[]).await {
                 Ok(result) => match clean_shell_draft(&result.content) {
@@ -1655,12 +1698,12 @@ impl UiApp {
         };
         let value = value.to_ascii_lowercase();
         if !VALID.contains(&value.as_str()) {
-            self.status = format!("Unknown quality; choose {}", VALID.join(", "));
+            self.set_error(format!("Unknown quality; choose {}", VALID.join(", ")));
             return;
         }
         self.state.quality = Some(value.clone());
         self.persist_config(|config| config.quality = Some(value.clone()));
-        self.status = format!("Quality: {value}");
+        self.set_ok(format!("Quality: {value}"));
     }
 
     fn command_profile(&mut self, args: &[String]) {
@@ -1676,43 +1719,46 @@ impl UiApp {
         let Some(value) = args.first() else {
             self.state.profile = None;
             self.persist_config(|config| config.profile = None);
-            self.status = "Router profile: auto".into();
+            self.set_ok("Router profile: auto".into());
             return;
         };
         let value = value.to_ascii_lowercase();
         if value == "auto" {
             self.state.profile = None;
             self.persist_config(|config| config.profile = None);
-            self.status = "Router profile: auto".into();
+            self.set_ok("Router profile: auto".into());
         } else if VALID.contains(&value.as_str()) {
             self.state.profile = Some(value.clone());
             self.persist_config(|config| config.profile = Some(value.clone()));
-            self.status = format!("Router profile: {value}");
+            self.set_ok(format!("Router profile: {value}"));
         } else {
-            self.status = format!("Unknown profile; choose auto, {}", VALID.join(", "));
+            self.set_error(format!(
+                "Unknown profile; choose auto, {}",
+                VALID.join(", ")
+            ));
         }
     }
 
     fn command_json(&mut self, args: &[String]) {
         self.state.json_mode = toggle_value(args.first(), self.state.json_mode);
-        self.status = format!(
+        self.set_ok(format!(
             "JSON response mode: {}",
             if self.state.json_mode { "on" } else { "off" }
-        );
+        ));
     }
 
     fn command_max(&mut self, args: &[String]) {
         let Some(value) = args.first() else {
             self.state.max_tokens = None;
-            self.status = "Maximum completion tokens: auto".into();
+            self.set_ok("Maximum completion tokens: auto".into());
             return;
         };
         match value.parse::<u32>() {
             Ok(value) if value > 0 => {
                 self.state.max_tokens = Some(value);
-                self.status = format!("Maximum completion tokens: {value}");
+                self.set_ok(format!("Maximum completion tokens: {value}"));
             }
-            _ => self.status = "Usage: /max <positive token count>".into(),
+            _ => self.set_status("Usage: /max <positive token count>".into()),
         }
     }
 
@@ -1721,19 +1767,19 @@ impl UiApp {
         let config = match Config::load(&self.paths) {
             Ok(config) => config,
             Err(error) => {
-                self.status = format!("Config read failed: {error:#}");
+                self.set_error(format!("Config read failed: {error:#}"));
                 return;
             }
         };
         if action == "show" {
             match serde_json::to_string_pretty(&config) {
                 Ok(value) => self.push_system(&value),
-                Err(error) => self.status = format!("Config formatting failed: {error}"),
+                Err(error) => self.set_error(format!("Config formatting failed: {error}")),
             }
             return;
         }
         if action != "reload" {
-            self.status = "Usage: /config show|reload".into();
+            self.set_status("Usage: /config show|reload".into());
             return;
         }
 
@@ -1763,7 +1809,7 @@ impl UiApp {
                         connection_changed = true;
                     }
                     Err(error) => {
-                        self.status = format!("Config connection rejected: {error}");
+                        self.set_error(format!("Config connection rejected: {error}"));
                         return;
                     }
                 }
@@ -1811,17 +1857,17 @@ impl UiApp {
         self.refresh_skills();
         self.refresh_custom_commands();
         self.refresh_git_branch();
-        self.status = format!("Config reloaded{connection_note}{mouse_note}");
+        self.set_ok(format!("Config reloaded{connection_note}{mouse_note}"));
     }
 
     fn command_autocompact(&mut self, args: &[String]) {
         self.state.auto_compact = toggle_value(args.first(), self.state.auto_compact);
         let enabled = self.state.auto_compact;
         self.persist_config(|config| config.auto_compact = enabled);
-        self.status = format!(
+        self.set_ok(format!(
             "Automatic compaction: {}",
             if enabled { "on" } else { "off" }
-        );
+        ));
     }
 
     fn command_reasoning(&mut self, args: &[String]) {
@@ -1832,12 +1878,15 @@ impl UiApp {
         };
         let value = value.to_ascii_lowercase();
         if !VALID.contains(&value.as_str()) {
-            self.status = format!("Unknown reasoning effort; choose {}", VALID.join(", "));
+            self.set_error(format!(
+                "Unknown reasoning effort; choose {}",
+                VALID.join(", ")
+            ));
             return;
         }
         self.state.reasoning_effort = value.clone();
         self.persist_config(|config| config.reasoning_effort = value.clone());
-        self.status = format!("Reasoning effort: {value}");
+        self.set_ok(format!("Reasoning effort: {value}"));
     }
 
     fn command_permissions(&mut self, args: &[String]) {
@@ -1852,12 +1901,15 @@ impl UiApp {
         };
         let value = value.to_ascii_lowercase();
         if !VALID.contains(&value.as_str()) {
-            self.status = format!("Unknown permission posture; choose {}", VALID.join(", "));
+            self.set_error(format!(
+                "Unknown permission posture; choose {}",
+                VALID.join(", ")
+            ));
             return;
         }
         self.state.permission_posture = value.clone();
         self.persist_config(|config| config.permission_posture = value.clone());
-        self.status = format!("Permission posture: {value}");
+        self.set_ok(format!("Permission posture: {value}"));
     }
 
     fn command_approve(&mut self, args: &[String]) {
@@ -1865,22 +1917,22 @@ impl UiApp {
             args.first().map(String::as_str),
             Some("execute_python" | "python")
         ) {
-            self.status = "Usage: /approve execute_python".into();
+            self.set_status("Usage: /approve execute_python".into());
             return;
         }
         self.python_approved = true;
-        self.status = "Python bridge approved for this session".into();
+        self.set_ok("Python bridge approved for this session".into());
     }
 
     fn command_preview(&mut self, args: &[String]) {
         let Some(requested) = args.first() else {
-            self.status = "Usage: /preview <filename>".into();
+            self.set_status("Usage: /preview <filename>".into());
             return;
         };
         let path = match safe_path(&self.state.workspace, requested) {
             Ok(path) => path,
             Err(error) => {
-                self.status = format!("Preview path rejected: {error}");
+                self.set_error(format!("Preview path rejected: {error}"));
                 return;
             }
         };
@@ -1889,47 +1941,54 @@ impl UiApp {
                 "--- {requested} ---\n{}",
                 content.chars().take(2_000).collect::<String>()
             )),
-            Err(error) => self.status = format!("Preview failed: {error}"),
+            Err(error) => self.set_error(format!("Preview failed: {error}")),
         }
     }
 
     fn command_copy(&mut self, args: &[String]) {
         if self.last_response.is_empty() {
-            self.status = "There is no response to copy".into();
+            self.set_error("There is no response to copy".into());
             return;
         }
         let Some(requested) = args.first() else {
-            self.status = if copy_to_clipboard(&self.last_response) {
-                format!("Copied {} characters", self.last_response.chars().count())
+            if copy_to_clipboard(&self.last_response) {
+                self.set_ok(format!(
+                    "Copied {} characters",
+                    self.last_response.chars().count()
+                ));
             } else {
-                "Clipboard unavailable (try pbcopy, wl-copy, xclip, or clip)".into()
-            };
+                self.set_error(
+                    "Clipboard unavailable (try pbcopy, wl-copy, xclip, or clip)".into(),
+                );
+            }
             return;
         };
         let index: usize = match requested.parse() {
             Ok(number) if number >= 1 => number,
             _ => {
-                self.status = "Usage: /copy [n] (nth fenced code block)".into();
+                self.set_status("Usage: /copy [n] (nth fenced code block)".into());
                 return;
             }
         };
         let blocks = code_blocks(&self.last_response);
         match blocks.get(index - 1) {
             Some(block) => {
-                self.status = if copy_to_clipboard(block) {
-                    format!(
+                if copy_to_clipboard(block) {
+                    self.set_ok(format!(
                         "Copied code block {index} ({} characters)",
                         block.chars().count()
-                    )
+                    ));
                 } else {
-                    "Clipboard unavailable (try pbcopy, wl-copy, xclip, or clip)".into()
-                };
+                    self.set_error(
+                        "Clipboard unavailable (try pbcopy, wl-copy, xclip, or clip)".into(),
+                    );
+                }
             }
             None => {
-                self.status = format!(
+                self.set_error(format!(
                     "Code block {index} not found ({} fenced block(s) in last response)",
                     blocks.len()
-                );
+                ));
             }
         }
     }
@@ -1942,20 +2001,22 @@ impl UiApp {
             Ok(mut config) => {
                 update(&mut config);
                 if let Err(error) = config.save(&self.paths) {
-                    self.status = format!("Setting changed, but config save failed: {error}");
+                    self.set_error(format!("Setting changed, but config save failed: {error}"));
                 }
             }
-            Err(error) => self.status = format!("Setting changed, but config read failed: {error}"),
+            Err(error) => {
+                self.set_error(format!("Setting changed, but config read failed: {error}"))
+            }
         }
     }
 
     fn command_compact(&mut self) {
         if self.busy {
-            self.status = "Finish the active request before compacting".into();
+            self.set_error("Finish the active request before compacting".into());
             return;
         }
         if self.state.history.len() < 4 {
-            self.status = "There is not enough conversation to compact yet".into();
+            self.set_error("There is not enough conversation to compact yet".into());
             return;
         }
         self.start_compaction(false);
@@ -1963,7 +2024,7 @@ impl UiApp {
 
     fn command_retry(&mut self) {
         if self.busy {
-            self.status = "Finish the active request before retrying".into();
+            self.set_error("Finish the active request before retrying".into());
             return;
         }
         let Some(prompt) = self.last_failed_prompt.clone().or_else(|| {
@@ -1973,7 +2034,7 @@ impl UiApp {
                 Some(self.input.trim().to_string())
             }
         }) else {
-            self.status = "Nothing to retry".into();
+            self.set_error("Nothing to retry".into());
             return;
         };
         self.last_failed_prompt = None;
@@ -1984,7 +2045,7 @@ impl UiApp {
 
     fn start_compaction(&mut self, automatic: bool) {
         if self.state.history.len() < 4 {
-            self.status = "There is not enough conversation to compact yet".into();
+            self.set_error("There is not enough conversation to compact yet".into());
             return;
         }
         let keep = (self.state.history.len() / 3).max(1);
@@ -2010,11 +2071,11 @@ impl UiApp {
         self.awaiting_first_token = true;
         self.slow_hint_shown = false;
         self.cancellation = Some(CancellationToken::new());
-        self.status = if automatic {
+        self.set_status(if automatic {
             "Context near its limit; compacting…".into()
         } else {
             "Compacting context…".into()
-        };
+        });
         tokio::spawn(async move {
             match backend.chat(&state, &prompt, &[]).await {
                 Ok(result) => {
@@ -2059,16 +2120,16 @@ impl UiApp {
         match args.first().map(String::as_str) {
             Some("use") => {
                 let Some(name) = args.get(1).map(String::as_str) else {
-                    self.status = "Usage: /skill use <name>".into();
+                    self.set_status("Usage: /skill use <name>".into());
                     return;
                 };
                 let Some(name) = skill_name(name) else {
-                    self.status = "Skill names must be local Markdown filenames".into();
+                    self.set_error("Skill names must be local Markdown filenames".into());
                     return;
                 };
                 let path = self.state.skills_dir.join(format!("{name}.md"));
                 if !path.is_file() {
-                    self.status = format!("Skill not found: {}", path.display());
+                    self.set_error(format!("Skill not found: {}", path.display()));
                 } else if !self.state.active_skills.contains(&name) {
                     self.state.active_skills.push(name.clone());
                     let params = args
@@ -2080,42 +2141,42 @@ impl UiApp {
                     if !params.is_empty() {
                         self.state.skill_params.insert(name.clone(), params);
                     }
-                    self.status = format!("Skill active: {name}");
+                    self.set_ok(format!("Skill active: {name}"));
                 } else {
-                    self.status = format!("Skill already active: {name}");
+                    self.set_status(format!("Skill already active: {name}"));
                 }
             }
             Some("show") => {
                 let Some(name) = args.get(1).and_then(|value| skill_name(value)) else {
-                    self.status = "Usage: /skill show <name>".into();
+                    self.set_status("Usage: /skill show <name>".into());
                     return;
                 };
                 let path = self.state.skills_dir.join(format!("{name}.md"));
                 match std::fs::read_to_string(&path) {
                     Ok(content) => self.push_system(&format!("Skill: {name}\n\n{content}")),
-                    Err(error) => self.status = format!("Skill read failed: {error}"),
+                    Err(error) => self.set_error(format!("Skill read failed: {error}")),
                 }
             }
             Some("drop") => {
                 let Some(name) = args.get(1).and_then(|value| skill_name(value)) else {
-                    self.status = "Usage: /skill drop <name>".into();
+                    self.set_status("Usage: /skill drop <name>".into());
                     return;
                 };
                 let before = self.state.active_skills.len();
                 self.state.active_skills.retain(|item| item != &name);
                 self.state.skill_params.remove(&name);
-                self.status = if before == self.state.active_skills.len() {
-                    format!("Skill was not active: {name}")
+                if before == self.state.active_skills.len() {
+                    self.set_status(format!("Skill was not active: {name}"));
                 } else {
-                    format!("Skill inactive: {name}")
-                };
+                    self.set_ok(format!("Skill inactive: {name}"));
+                }
             }
             Some("clear") => {
                 self.state.active_skills.clear();
-                self.status = "All skills cleared".into();
+                self.set_ok("All skills cleared".into());
             }
             _ => {
-                self.status = "Usage: /skill use|show|drop|clear <name>".into();
+                self.set_status("Usage: /skill use|show|drop|clear <name>".into());
             }
         }
     }
@@ -2127,7 +2188,7 @@ impl UiApp {
                     selected: 0,
                     scroll: 0,
                 };
-                self.status = "Choose a provider; credentials stay in memory".into();
+                self.set_status("Choose a provider; credentials stay in memory".into());
             }
             Some("status") | Some("show") => {
                 let connection = self.backend.connection();
@@ -2144,7 +2205,7 @@ impl UiApp {
                     if provider::valid_url(url) {
                         self.start_provider("custom".into(), Some(url.clone()));
                     } else {
-                        self.status = "Invalid custom URL".into();
+                        self.set_error("Invalid custom URL".into());
                     }
                 } else {
                     self.open_url_overlay("custom".into());
@@ -2169,7 +2230,7 @@ impl UiApp {
     fn open_url_overlay(&mut self, provider: String) {
         self.input.clear();
         self.cursor = 0;
-        self.status = match provider::preset(&provider) {
+        self.set_status(match provider::preset(&provider) {
             Some(preset) if preset.base_url.is_some() => {
                 format!(
                     "Enter {} base URL; Enter uses the local default",
@@ -2177,7 +2238,7 @@ impl UiApp {
                 )
             }
             _ => "Enter an OpenAI-compatible http(s) base URL".into(),
-        };
+        });
         self.overlay = Overlay::CustomUrl { provider };
     }
 
@@ -2185,10 +2246,10 @@ impl UiApp {
         match args.first().map(String::as_str) {
             Some("reconnect") => {
                 let server = args.get(1).cloned();
-                self.status = match server.as_deref() {
+                self.set_status(match server.as_deref() {
                     Some(name) => format!("Reconnecting MCP server {name}…"),
                     None => "Reconnecting MCP servers…".into(),
-                };
+                });
                 let sender = self.tx.clone();
                 tokio::spawn(async move {
                     let notice = match crate::mcp::reconnect(server.as_deref()).await {
@@ -2208,7 +2269,9 @@ impl UiApp {
                 self.push_system(&serde_json::to_string_pretty(&crate::mcp::status())?);
             }
             Some(other) => {
-                self.status = format!("Usage: /mcp list|tools|reconnect [server] (got {other})");
+                self.set_status(format!(
+                    "Usage: /mcp list|tools|reconnect [server] (got {other})"
+                ));
             }
         }
         Ok(())
@@ -2216,7 +2279,7 @@ impl UiApp {
 
     fn start_provider(&mut self, id: String, entered: Option<String>) {
         let Some(preset) = provider::preset(&id) else {
-            self.status = format!("Unknown provider '{id}'");
+            self.set_error(format!("Unknown provider '{id}'"));
             return;
         };
         let entered_url = entered
@@ -2227,16 +2290,16 @@ impl UiApp {
             self.overlay = Overlay::ApiKey {
                 provider: preset.id.to_string(),
             };
-            self.status = format!(
+            self.set_status(format!(
                 "{} requires {} (the key stays in memory)",
                 preset.label,
                 preset.api_key_env.unwrap_or("an API key")
-            );
+            ));
             return;
         }
         if preset.id == "custom" {
             if entered_url.is_none() {
-                self.status = "Custom connections require a valid URL".into();
+                self.set_status("Custom connections require a valid URL".into());
                 return;
             }
         } else if entered_url.is_none()
@@ -2246,7 +2309,7 @@ impl UiApp {
         }
         match self.backend.with_connection(connection.clone()) {
             Ok(candidate) => {
-                self.status = format!("Checking {} and loading models…", preset.label);
+                self.set_status(format!("Checking {} and loading models…", preset.label));
                 self.pending_connection = Some(connection);
                 let sender = self.tx.clone();
                 tokio::spawn(async move {
@@ -2265,14 +2328,14 @@ impl UiApp {
                     }
                 });
             }
-            Err(error) => self.status = format!("connection failed: {error}"),
+            Err(error) => self.set_error(format!("connection failed: {error}")),
         }
     }
 
     fn start_model_list(&mut self) {
         let backend = self.backend.clone();
         let sender = self.tx.clone();
-        self.status = "Refreshing model list…".into();
+        self.set_status("Refreshing model list…".into());
         tokio::spawn(async move {
             match backend.list_models().await {
                 Ok(value) => {
@@ -2293,7 +2356,7 @@ impl UiApp {
     fn start_health(&mut self) {
         let backend = self.backend.clone();
         let sender = self.tx.clone();
-        self.status = "Checking backend…".into();
+        self.set_status("Checking backend…".into());
         tokio::spawn(async move {
             let notice = match backend.health().await {
                 Ok(value) => {
@@ -2308,7 +2371,7 @@ impl UiApp {
     fn start_profiles(&mut self) {
         let backend = self.backend.clone();
         let sender = self.tx.clone();
-        self.status = "Loading router profiles…".into();
+        self.set_status("Loading router profiles…".into());
         tokio::spawn(async move {
             let notice = match backend.profiles().await {
                 Ok(value) => {
@@ -2322,7 +2385,7 @@ impl UiApp {
 
     fn persist_connection(&mut self, model: Option<&String>) {
         let Ok(mut config) = Config::load(&self.paths) else {
-            self.status = "connected, but could not read config to persist connection".into();
+            self.set_error("connected, but could not read config to persist connection".into());
             return;
         };
         let connection = self.backend.connection();
@@ -2333,7 +2396,7 @@ impl UiApp {
             config.model = Some(model.clone());
         }
         if let Err(error) = config.save(&self.paths) {
-            self.status = format!("connected, but could not save config: {error}");
+            self.set_error(format!("connected, but could not save config: {error}"));
         }
     }
 
@@ -2341,12 +2404,12 @@ impl UiApp {
         if let Some(path) = args.first() {
             let path = PathBuf::from(path).expanduser();
             if let Err(error) = std::fs::create_dir_all(&path) {
-                self.status = format!("workspace error: {error}");
+                self.set_error(format!("workspace error: {error}"));
             } else {
                 self.state.workspace = path;
                 self.refresh_git_branch();
                 self.refresh_custom_commands();
-                self.status = format!("Workspace: {}", self.state.workspace.display());
+                self.set_ok(format!("Workspace: {}", self.state.workspace.display()));
             }
         } else {
             self.push_system(&format!("Workspace: {}", self.state.workspace.display()));
@@ -2358,8 +2421,8 @@ impl UiApp {
             Some("save") => {
                 let name = args.get(1).map(String::as_str).unwrap_or("default");
                 match session::save(&self.paths, name, &self.state) {
-                    Ok(path) => self.status = format!("Saved {}", path.display()),
-                    Err(error) => self.status = format!("Session save failed: {error}"),
+                    Ok(path) => self.set_ok(format!("Saved {}", path.display())),
+                    Err(error) => self.set_error(format!("Session save failed: {error}")),
                 }
             }
             Some("load") => {
@@ -2368,9 +2431,9 @@ impl UiApp {
                     Ok(count) => {
                         self.redo_stack.clear();
                         self.follow_transcript = true;
-                        self.status = format!("Loaded {name} ({count} messages)");
+                        self.set_ok(format!("Loaded {name} ({count} messages)"));
                     }
-                    Err(error) => self.status = format!("Session load failed: {error}"),
+                    Err(error) => self.set_error(format!("Session load failed: {error}")),
                 }
             }
             Some("list") => {
@@ -2386,41 +2449,41 @@ impl UiApp {
             }
             Some("delete") => {
                 let name = args.get(1).map(String::as_str).unwrap_or_default();
-                self.status = match session::delete(&self.paths, name) {
-                    Ok(true) => format!("Deleted session {name}"),
-                    Ok(false) => format!("Session not found: {name}"),
-                    Err(error) => format!("Session delete failed: {error}"),
-                };
+                match session::delete(&self.paths, name) {
+                    Ok(true) => self.set_ok(format!("Deleted session {name}")),
+                    Ok(false) => self.set_error(format!("Session not found: {name}")),
+                    Err(error) => self.set_error(format!("Session delete failed: {error}")),
+                }
             }
             Some("diff") => {
                 let name = args.get(1).map(String::as_str).unwrap_or("default");
                 match session::diff(&self.paths, name, &self.state) {
                     Ok(value) => self.push_system(&value),
-                    Err(error) => self.status = format!("Session diff failed: {error}"),
+                    Err(error) => self.set_error(format!("Session diff failed: {error}")),
                 }
             }
             Some("fork") => {
                 let Some(name) = args.get(1).map(String::as_str) else {
-                    self.status = "Usage: /session fork <name>".into();
+                    self.set_status("Usage: /session fork <name>".into());
                     return;
                 };
                 match session::save(&self.paths, name, &self.state) {
                     Ok(path) => {
-                        self.status = format!(
+                        self.set_ok(format!(
                             "Forked current session as {name} ({}); keep working here or /session load {name}",
                             path.display()
-                        );
+                        ));
                     }
-                    Err(error) => self.status = format!("Session fork failed: {error}"),
+                    Err(error) => self.set_error(format!("Session fork failed: {error}")),
                 }
             }
-            _ => self.status = "Usage: /session save|load|list|search|delete|diff|fork".into(),
+            _ => self.set_status("Usage: /session save|load|list|search|delete|diff|fork".into()),
         }
     }
 
     fn command_undo(&mut self) {
         if self.busy {
-            self.status = "Finish the active request before undoing".into();
+            self.set_error("Finish the active request before undoing".into());
             return;
         }
         let Some(index) = self
@@ -2429,13 +2492,13 @@ impl UiApp {
             .iter()
             .rposition(|message| message.role == "user")
         else {
-            self.status = "Nothing to undo".into();
+            self.set_error("Nothing to undo".into());
             return;
         };
         let removed: Vec<Message> = self.state.history.drain(index..).collect();
         let prompt = removed.first().map(|item| item.content.clone());
         let Some(prompt) = prompt else {
-            self.status = "Nothing to undo".into();
+            self.set_error("Nothing to undo".into());
             return;
         };
         let count = removed.len();
@@ -2444,29 +2507,31 @@ impl UiApp {
         self.cursor = self.input.len();
         self.at_cache_key.clear();
         self.follow_transcript = true;
-        self.status = format!("Undid {count} message(s); prompt restored · /redo to re-apply");
+        self.set_ok(format!(
+            "Undid {count} message(s); prompt restored · /redo to re-apply"
+        ));
     }
 
     fn command_redo(&mut self) {
         if self.busy {
-            self.status = "Finish the active request before redoing".into();
+            self.set_error("Finish the active request before redoing".into());
             return;
         }
         let Some(entry) = self.redo_stack.pop() else {
-            self.status = "Nothing to redo".into();
+            self.set_error("Nothing to redo".into());
             return;
         };
         let count = entry.messages.len();
         self.state.history.extend(entry.messages);
         self.follow_transcript = true;
-        self.status = format!("Redid {count} message(s)");
+        self.set_ok(format!("Redid {count} message(s)"));
     }
 
     /// Any new user-authored turn invalidates the redo stack.
     fn command_editor(&mut self) {
         let editor = std::env::var("EDITOR").unwrap_or_default();
         if editor.trim().is_empty() {
-            self.status = "Set $EDITOR to compose prompts externally (e.g. EDITOR=nvim)".into();
+            self.set_status("Set $EDITOR to compose prompts externally (e.g. EDITOR=nvim)".into());
             return;
         }
         self.editor_requested = true;
@@ -2476,17 +2541,20 @@ impl UiApp {
         self.state.show_thinking = toggle_value(args.first(), self.state.show_thinking);
         let enabled = self.state.show_thinking;
         self.persist_config(|config| config.show_thinking = enabled);
-        self.status = format!(
+        self.set_ok(format!(
             "Thinking blocks: {} (display only; effort via /reasoning)",
             if enabled { "shown" } else { "hidden" }
-        );
+        ));
     }
 
     fn command_attention(&mut self, args: &[String]) {
         self.attention_bell = toggle_value(args.first(), self.attention_bell);
         let enabled = self.attention_bell;
         self.persist_config(|config| config.attention_bell = enabled);
-        self.status = format!("Completion bell: {}", if enabled { "on" } else { "off" });
+        self.set_ok(format!(
+            "Completion bell: {}",
+            if enabled { "on" } else { "off" }
+        ));
     }
 
     fn command_export(&mut self, args: &[String]) {
@@ -2498,7 +2566,7 @@ impl UiApp {
             "html" => "html",
             "pdf" => "pdf",
             _ => {
-                self.status = format!("Unsupported export format: {format}");
+                self.set_status(format!("Unsupported export format: {format}"));
                 return;
             }
         };
@@ -2513,14 +2581,14 @@ impl UiApp {
             match safe_path(&self.state.workspace, &path.to_string_lossy()) {
                 Ok(path) => path,
                 Err(error) => {
-                    self.status = format!("Export path rejected: {error}");
+                    self.set_error(format!("Export path rejected: {error}"));
                     return;
                 }
             }
         };
         match export::write(&self.state, format, &path) {
-            Ok(()) => self.status = format!("Exported {}", path.display()),
-            Err(error) => self.status = format!("Export failed: {error}"),
+            Ok(()) => self.set_ok(format!("Exported {}", path.display())),
+            Err(error) => self.set_error(format!("Export failed: {error}")),
         }
     }
 
@@ -2529,9 +2597,9 @@ impl UiApp {
             if THEMES.contains(&theme.as_str()) {
                 self.state.theme = theme.clone();
                 self.persist_config(|config| config.theme = theme.clone());
-                self.status = format!("Theme: {theme}");
+                self.set_ok(format!("Theme: {theme}"));
             } else {
-                self.status = format!("Unknown theme; choose {}", THEMES.join(", "));
+                self.set_error(format!("Unknown theme; choose {}", THEMES.join(", ")));
             }
             return;
         }
@@ -2543,7 +2611,7 @@ impl UiApp {
             selected,
             original: self.state.theme.clone(),
         };
-        self.status = "Choose a theme — preview is live, Enter keeps it, Esc reverts".into();
+        self.set_status("Choose a theme — preview is live, Enter keeps it, Esc reverts".into());
     }
 
     fn workspace_map(&self) -> String {
@@ -2600,18 +2668,49 @@ impl UiApp {
     }
 
     fn push_system(&mut self, content: &str) {
+        // Fold consecutive duplicates: reconnect loops and repeated
+        // fallback warnings collapse into one line with a ×N suffix
+        // instead of scrolling the transcript with identical notes.
+        if let Some(last) = self.state.history.last_mut()
+            && last.role == "system"
+        {
+            let (base, count) = split_repeat_suffix(&last.content);
+            if base == content {
+                last.content = format!("{content} (×{})", count + 1);
+                self.follow_transcript = true;
+                return;
+            }
+        }
         self.state
             .history
             .push(Message::system(content.to_string()));
         self.follow_transcript = true;
     }
 
+    /// Neutral status note (muted tone).
+    fn set_status(&mut self, text: String) {
+        self.status = text;
+        self.status_tone = StatusTone::Muted;
+    }
+
+    /// Completed-action confirmation (green tone).
+    fn set_ok(&mut self, text: String) {
+        self.status = text;
+        self.status_tone = StatusTone::Success;
+    }
+
+    /// Failure or blocked-action notice (red tone).
+    fn set_error(&mut self, text: String) {
+        self.status = text;
+        self.status_tone = StatusTone::Error;
+    }
+
     fn cancel_work(&mut self, status: &str) {
         if let Some(token) = &self.cancellation {
             token.cancel();
-            self.status = status.into();
+            self.set_status(status.into());
         } else if !self.busy {
-            self.status = status.into();
+            self.set_status(status.into());
         }
     }
 
@@ -2666,7 +2765,58 @@ impl UiApp {
     }
 
     fn palette_items(&self) -> Vec<command::PaletteItem> {
-        command::palette_items(self.input.trim(), &self.custom_commands)
+        let mut items = command::palette_items(self.input.trim(), &self.custom_commands);
+        // Recency is the primary sort key (stable: fuzzy order survives
+        // within a tier), mirroring Warp's (Priority, MatchKind, score).
+        // The fuzzy tiers in `command::palette_items` already encode
+        // exact > prefix > substring, so only recency is added here.
+        items.sort_by_key(|item| {
+            let name = item.name.to_ascii_lowercase();
+            self.recent_commands
+                .iter()
+                .position(|recent| *recent == name)
+                .unwrap_or(usize::MAX)
+        });
+        for item in &mut items {
+            self.decorate_palette_item(item);
+        }
+        items
+    }
+
+    /// Remember a dispatched slash command for palette recency boosting.
+    /// Unknown names (typos) are never recorded — only real dispatches.
+    fn note_recent(&mut self, name: &str) {
+        let name = name.to_ascii_lowercase();
+        self.recent_commands.retain(|item| *item != name);
+        self.recent_commands.push_front(name);
+        self.recent_commands.truncate(8);
+    }
+
+    /// Append the live value to stateful palette rows (`/theme` shows
+    /// `· now dracula`). The active mode command gets `· active` instead.
+    /// Rows without readable state keep their plain description.
+    fn decorate_palette_item(&self, item: &mut command::PaletteItem) {
+        let mode = self.mode.as_str();
+        let badge = match item.name.as_str() {
+            "/theme" => Some(format!("now {}", self.state.theme)),
+            "/model" => Some(format!("now {}", self.state.model)),
+            "/quality" => Some(format!(
+                "now {}",
+                self.state.quality.as_deref().unwrap_or("auto")
+            )),
+            "/profile" => Some(format!(
+                "now {}",
+                self.state.profile.as_deref().unwrap_or("auto")
+            )),
+            "/reasoning" => Some(format!("now {}", self.state.reasoning_effort)),
+            "/plan" if mode == "plan" => Some("active".to_string()),
+            "/build" if mode == "build" => Some("active".to_string()),
+            "/ask" if mode == "ask" => Some("active".to_string()),
+            _ => None,
+        };
+        if let Some(badge) = badge {
+            item.description = format!("{} · {badge}", item.description);
+        }
     }
 
     /// Exact `/name` match against loaded custom commands (input is
@@ -2964,7 +3114,7 @@ impl UiApp {
                 let theme = THEMES[next].to_string();
                 self.state.theme = theme.clone();
                 self.persist_config(|config| config.theme = theme.clone());
-                self.status = format!("Theme: {theme}");
+                self.set_ok(format!("Theme: {theme}"));
             }
             1 => {
                 const VALID: [&str; 4] = ["full-access", "restricted", "sandboxed", "off"];
@@ -2980,7 +3130,7 @@ impl UiApp {
                 let value = VALID[next].to_string();
                 self.state.permission_posture = value.clone();
                 self.persist_config(|config| config.permission_posture = value.clone());
-                self.status = format!("Permission posture: {value}");
+                self.set_ok(format!("Permission posture: {value}"));
             }
             2 => {
                 const VALID: [&str; 5] = ["auto", "off", "low", "medium", "high"];
@@ -2996,31 +3146,34 @@ impl UiApp {
                 let value = VALID[next].to_string();
                 self.state.reasoning_effort = value.clone();
                 self.persist_config(|config| config.reasoning_effort = value.clone());
-                self.status = format!("Reasoning effort: {value}");
+                self.set_ok(format!("Reasoning effort: {value}"));
             }
             3 => {
                 self.state.auto_compact = !self.state.auto_compact;
                 let enabled = self.state.auto_compact;
                 self.persist_config(|config| config.auto_compact = enabled);
-                self.status = format!(
+                self.set_status(format!(
                     "Automatic compaction: {}",
                     if enabled { "on" } else { "off" }
-                );
+                ));
             }
             4 => {
                 self.state.show_thinking = !self.state.show_thinking;
                 let enabled = self.state.show_thinking;
                 self.persist_config(|config| config.show_thinking = enabled);
-                self.status = format!(
+                self.set_ok(format!(
                     "Thinking blocks: {}",
                     if enabled { "shown" } else { "hidden" }
-                );
+                ));
             }
             5 => {
                 self.attention_bell = !self.attention_bell;
                 let enabled = self.attention_bell;
                 self.persist_config(|config| config.attention_bell = enabled);
-                self.status = format!("Completion bell: {}", if enabled { "on" } else { "off" });
+                self.set_ok(format!(
+                    "Completion bell: {}",
+                    if enabled { "on" } else { "off" }
+                ));
             }
             _ => {}
         }
@@ -3400,7 +3553,7 @@ impl UiApp {
         let first = Line::from(vec![
             Span::styled(
                 format!(" {} ", self.status),
-                Style::default().fg(Color::White),
+                Style::default().fg(self.status_tone.color()),
             ),
             Span::raw("  "),
             Span::styled(session_tokens, Style::default().fg(Color::DarkGray)),
@@ -3695,6 +3848,21 @@ fn thinking_body(content: &str) -> Option<&str> {
         .strip_prefix("<thinking>")
         .and_then(|rest| rest.strip_suffix("</thinking>"))
         .map(str::trim)
+}
+
+/// Split a trailing ` (×N)` repeat suffix folded by [`UiApp::push_system`].
+/// Returns the base text and the repeat count (1 when no suffix).
+fn split_repeat_suffix(content: &str) -> (&str, usize) {
+    if let Some(start) = content.rfind(" (×") {
+        // " (" is two ASCII bytes and × is two UTF-8 bytes, so both cut
+        // points are char boundaries; the guards keep this total.
+        if content.ends_with(')')
+            && let Ok(count) = content[start + 4..content.len() - 1].parse::<usize>()
+        {
+            return (&content[..start], count);
+        }
+    }
+    (content, 1)
 }
 
 fn push_thinking_lines(lines: &mut Vec<Line>, body: &str, show: bool, expanded: bool) {
@@ -4169,6 +4337,179 @@ mod tests {
             source: "user".into(),
             path: PathBuf::from("/tmp/test.md"),
         }
+    }
+
+    /// Draw one frame headlessly and return each row with trailing
+    /// whitespace trimmed. Tests mutate `UiApp` state directly and assert
+    /// on the joined rows; cell styles stay reachable through a retained
+    /// terminal when a color assertion is needed (see `render_terminal`).
+    fn render_lines(app: &mut UiApp, width: u16, height: u16) -> Vec<String> {
+        render_terminal(app, width, height)
+            .backend()
+            .buffer()
+            .content()
+            .chunks(width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Same as [`render_lines`] but keeps the terminal so tests can
+    /// inspect cell styles (status tone, selection highlight).
+    fn render_terminal(
+        app: &mut UiApp,
+        width: u16,
+        height: u16,
+    ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| app.draw(frame)).expect("draw");
+        terminal
+    }
+
+    #[test]
+    fn harness_renders_status_and_composer_text() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.status = "Hello status".into();
+        app.input = "hello world".into();
+        app.cursor = app.input.len();
+        let joined = render_lines(&mut app, 80, 24).join("\n");
+        assert!(
+            joined.contains("Hello status"),
+            "status line missing:\n{joined}"
+        );
+        assert!(
+            joined.contains("> hello world"),
+            "composer text missing:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn status_error_renders_red() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.set_error("Error demo".to_string());
+        assert_eq!(app.status_tone, StatusTone::Error);
+        app.set_ok("Ok demo".to_string());
+        assert_eq!(app.status_tone, StatusTone::Success);
+        app.set_error("Error demo".to_string());
+        let terminal = render_terminal(&mut app, 80, 24);
+        let buffer = terminal.backend().buffer();
+        // Footer takes the last two rows; the status span starts at x=0
+        // of the first footer row with one leading space, so x=2 is the
+        // second status character.
+        let cell = &buffer.content()[22 * 80 + 2];
+        assert_eq!(cell.symbol(), "r");
+        assert_eq!(cell.fg, Color::Red);
+    }
+
+    fn system_notes(app: &UiApp) -> Vec<String> {
+        app.state
+            .history
+            .iter()
+            .filter(|message| message.role == "system")
+            .map(|message| message.content.clone())
+            .collect()
+    }
+
+    #[test]
+    fn push_system_folds_consecutive_duplicates() {
+        let (mut app, _workspace, _skills) = test_app();
+        let before = system_notes(&app).len();
+        app.push_system("Same note");
+        app.push_system("Same note");
+        app.push_system("Same note");
+        let folded = system_notes(&app);
+        assert_eq!(folded.len(), before + 1);
+        assert_eq!(folded[before], "Same note (×3)");
+        // A different note breaks the run; the earlier text returns plain.
+        app.push_system("Other note");
+        app.push_system("Same note");
+        let after = system_notes(&app);
+        assert_eq!(
+            after[before..],
+            vec!["Same note (×3)", "Other note", "Same note"]
+        );
+    }
+
+    #[test]
+    fn split_repeat_suffix_parses_counts() {
+        assert_eq!(split_repeat_suffix("plain"), ("plain", 1));
+        assert_eq!(split_repeat_suffix("note (×2)"), ("note", 2));
+        assert_eq!(split_repeat_suffix("note (×12)"), ("note", 12));
+        // Malformed tails are left alone rather than mis-folded.
+        assert_eq!(split_repeat_suffix("note (×)"), ("note (×)", 1));
+        assert_eq!(split_repeat_suffix("note (×x)"), ("note (×x)", 1));
+    }
+
+    #[test]
+    fn harness_renders_palette_rows_for_slash_query() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "/the".into();
+        app.cursor = app.input.len();
+        let joined = render_lines(&mut app, 80, 24).join("\n");
+        assert!(joined.contains("/theme"), "palette row missing:\n{joined}");
+        assert!(
+            joined.contains("commands ·"),
+            "palette frame missing:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn palette_recency_boosts_repeated_command() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "/".into();
+        app.cursor = app.input.len();
+        let before: Vec<String> = app
+            .palette_items()
+            .into_iter()
+            .map(|item| item.name)
+            .collect();
+        assert!(before.iter().any(|name| name == "/tokens"));
+        app.note_recent("/tokens");
+        // A typo is never recorded, so it cannot pollute the boost.
+        app.note_recent("/tokns");
+        let after: Vec<String> = app
+            .palette_items()
+            .into_iter()
+            .map(|item| item.name)
+            .collect();
+        assert_eq!(after[0], "/tokens");
+        assert!(!after.contains(&"/tokns".to_string()));
+    }
+
+    #[test]
+    fn palette_shows_live_theme_badge() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.theme = "dracula".to_string();
+        app.input = "/the".into();
+        app.cursor = app.input.len();
+        let theme = app
+            .palette_items()
+            .into_iter()
+            .find(|item| item.name == "/theme")
+            .expect("theme row");
+        assert!(
+            theme.description.contains("now dracula"),
+            "badge missing: {}",
+            theme.description
+        );
+        // The `/build` row carries `· active` in the default build mode.
+        app.input = "/".into();
+        let build = app
+            .palette_items()
+            .into_iter()
+            .find(|item| item.name == "/build")
+            .expect("build row");
+        assert!(
+            build.description.contains("active"),
+            "mode badge missing: {}",
+            build.description
+        );
     }
 
     #[test]
