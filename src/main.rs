@@ -109,16 +109,30 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "r105=warn".into()),
-        )
-        .with_target(false)
-        .compact()
-        .init();
-
     let cli = Cli::parse();
+    let paths = ConfigPaths::discover();
+    // The alternate-screen TUI owns every terminal cell: any stderr
+    // write mid-run (a tracing warn, today from MCP) scribbles rows
+    // ratatui never repaints, stranding "limbo" text. TUI runs log to
+    // a file; headless subcommands keep stderr.
+    let tui = matches!(&cli.command, None | Some(Command::Chat));
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "r105=warn".into());
+    if tui {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .compact()
+            .with_writer(tui_writer(&paths.config_dir.join("r105.log")))
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .compact()
+            .init();
+    }
+
     if let Some(Command::ConfigSchema { output }) = &cli.command {
         let schema = Config::schema();
         let rendered = serde_json::to_string_pretty(&schema)? + "\n";
@@ -131,7 +145,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let paths = ConfigPaths::discover();
     let mut config = Config::load(&paths)?;
     if let Some(plugins_dir) = cli.plugins_dir.clone() {
         config.plugins_dir = plugins_dir;
@@ -238,4 +251,74 @@ async fn main() -> Result<()> {
         Command::ConfigSchema { .. } => unreachable!(),
     }
     Ok(())
+}
+
+/// Append-only log writer for TUI runs. An unopenable file degrades to
+/// dropping logs — never to stderr, which would corrupt the screen.
+fn tui_writer(path: &std::path::Path) -> tracing_subscriber::fmt::writer::BoxMakeWriter {
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
+
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        Ok(file) => BoxMakeWriter::new(FileMakeWriter {
+            file: std::sync::Arc::new(std::sync::Mutex::new(file)),
+        }),
+        Err(_) => BoxMakeWriter::new(std::io::sink),
+    }
+}
+
+#[derive(Clone)]
+struct FileMakeWriter {
+    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+}
+
+struct FileWriterGuard<'a> {
+    guard: std::sync::MutexGuard<'a, std::fs::File>,
+}
+
+impl std::io::Write for FileWriterGuard<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.guard.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.guard.flush()
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::writer::MakeWriter<'a> for FileMakeWriter {
+    type Writer = FileWriterGuard<'a>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        FileWriterGuard {
+            guard: self
+                .file
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber::fmt::writer::MakeWriter as _;
+
+    #[test]
+    fn tui_log_writer_appends_to_file() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("r105.log");
+        let writer = tui_writer(&path);
+        writer.make_writer().write_all(b"hello log\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello log\n");
+        // An unopenable path degrades to a silent sink, never panics.
+        let sink = tui_writer(std::path::Path::new("/proc/nowhere/r105.log"));
+        sink.make_writer().write_all(b"dropped\n").unwrap();
+    }
 }

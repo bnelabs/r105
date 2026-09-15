@@ -1215,6 +1215,49 @@ mod tests {
         assert!(!app.busy);
     }
 
+    /// Shrinking widgets must not leave stale glyphs: draw with content,
+    /// clear it, draw again on the same terminal, and prove the old text
+    /// is gone.
+    #[test]
+    fn redraw_clears_shrunk_transcript() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.history.push(Message::user("old leftover line"));
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| app.draw(frame)).expect("first draw");
+        app.state.history.clear();
+        terminal.draw(|frame| app.draw(frame)).expect("second draw");
+        let buffer = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+        }
+        assert!(
+            !text.contains("old leftover"),
+            "stale glyphs survived redraw"
+        );
+    }
+
+    /// `/state` renders short labeled lines, never a raw dump.
+    #[test]
+    fn state_renders_labeled_lines() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.command_state();
+        let content = app
+            .state
+            .history
+            .last()
+            .expect("state note")
+            .content
+            .clone();
+        assert!(content.starts_with("Mode: "), "{content}");
+        assert!(content.contains("Approvals: "), "{content}");
+        assert!(!content.contains("mode="), "{content}");
+        assert!(content.lines().count() <= 6, "{content}");
+    }
+
     #[test]
     fn status_error_renders_red() {
         let (mut app, _workspace, _skills) = test_app();
