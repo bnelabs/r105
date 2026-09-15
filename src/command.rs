@@ -241,6 +241,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "re-apply the last undone exchange",
     },
     CommandSpec {
+        name: "/rewind",
+        usage: "/rewind [turns]",
+        description: "drop recent turns after a checkpoint backup",
+    },
+    CommandSpec {
+        name: "/expand",
+        usage: "/expand [n|all|none]",
+        description: "expand or collapse one transcript section",
+    },
+    CommandSpec {
         name: "/editor",
         usage: "/editor",
         description: "compose the prompt in $EDITOR",
@@ -415,7 +425,10 @@ pub fn static_arg_values(name: &str) -> Option<&'static [&'static str]> {
             "tool_agent",
             "creative",
         ]),
-        "/session" => Some(&["save", "load", "list", "search", "delete", "diff", "fork"]),
+        "/session" => Some(&[
+            "save", "load", "list", "search", "delete", "diff", "fork", "tree",
+        ]),
+        "/expand" => Some(&["all", "none"]),
         "/export" => Some(&["markdown", "text", "json", "html", "md", "txt", "pdf"]),
         "/mcp" => Some(&["list", "tools", "reconnect"]),
         "/plugin" => Some(&["list", "reload"]),
@@ -425,6 +438,136 @@ pub fn static_arg_values(name: &str) -> Option<&'static [&'static str]> {
         "/connect" => Some(&["status", "show", "url", "custom"]),
         _ => None,
     }
+}
+
+/// Routing verdict for `#`-prefixed input. Cheap gates only — keyword
+/// lists, a shell-syntax scan, one installed-binary probe — so the
+/// common cases never cost a model round trip. Misclassification is
+/// cheap by design: Shell only prefills `!` for confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    Shell,
+    Agent,
+    Ambiguous,
+}
+
+/// First tokens that are always shell invocations, never prose.
+const SHELL_ONE_OFFS: &[&str] = &[
+    "ls",
+    "cd",
+    "pwd",
+    "cat",
+    "cp",
+    "mv",
+    "rm",
+    "mkdir",
+    "rmdir",
+    "touch",
+    "chmod",
+    "chown",
+    "ln",
+    "find",
+    "grep",
+    "rg",
+    "sed",
+    "awk",
+    "head",
+    "tail",
+    "less",
+    "more",
+    "echo",
+    "which",
+    "man",
+    "sudo",
+    "su",
+    "ssh",
+    "scp",
+    "rsync",
+    "tar",
+    "zip",
+    "unzip",
+    "git",
+    "cargo",
+    "npm",
+    "pip",
+    "pip3",
+    "brew",
+    "docker",
+    "make",
+    "cmake",
+    "ps",
+    "kill",
+    "killall",
+    "top",
+    "htop",
+    "df",
+    "du",
+    "env",
+    "curl",
+    "wget",
+    "python",
+    "python3",
+    "node",
+    "deno",
+    "ruby",
+    "go",
+    "rustc",
+    "lsblk",
+    "lsof",
+    "jobs",
+    "fg",
+    "bg",
+    "history",
+    "alias",
+    "unalias",
+    "clear",
+    "exit",
+    "logout",
+    "passwd",
+    "ping",
+    "traceroute",
+    "dig",
+    "nslookup",
+    "ifconfig",
+    "ip",
+];
+
+/// Characters that mark shell syntax rather than prose. Deliberately
+/// narrow: `-` (hyphenated words) and `=` (prose comparisons) are
+/// excluded so plain English rarely trips the gate.
+fn has_shell_syntax(text: &str) -> bool {
+    text.contains(['|', '&', '>', '<', '$', '`', '\\', ';'])
+        || text.contains("&&")
+        || text.contains("||")
+}
+
+pub fn classify_input(text: &str) -> Route {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Route::Ambiguous;
+    }
+    if has_shell_syntax(trimmed) {
+        return Route::Shell;
+    }
+    let mut words = trimmed.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    let single = words.next().is_none();
+    if first.starts_with("./") || first.starts_with('/') || first.starts_with("~/") {
+        return Route::Shell;
+    }
+    if SHELL_ONE_OFFS.contains(&first.to_ascii_lowercase().as_str()) {
+        return Route::Shell;
+    }
+    // An installed binary as the only word is an invocation, not prose
+    // ("vim"). Multi-word input skips this probe: /usr/bin/write exists,
+    // but "write a test" is still a prompt.
+    if single && which::which(first).is_ok() {
+        return Route::Shell;
+    }
+    if trimmed.ends_with('?') || !single {
+        return Route::Agent;
+    }
+    Route::Ambiguous
 }
 
 fn fuzzy_score(candidate: &str, query: &str) -> Option<i32> {
@@ -594,6 +737,31 @@ mod tests {
         ] {
             assert!(command(name).is_some(), "{name} is registered");
         }
+    }
+
+    #[test]
+    fn classify_routes_shell_agent_ambiguous() {
+        use super::{Route, classify_input};
+
+        // One-off binaries and shell syntax route to shell.
+        assert_eq!(classify_input("ls -la"), Route::Shell);
+        assert_eq!(classify_input("git status"), Route::Shell);
+        assert_eq!(classify_input("cat foo | grep bar"), Route::Shell);
+        assert_eq!(classify_input("echo hi && echo bye"), Route::Shell);
+        assert_eq!(classify_input("./run.sh --fast"), Route::Shell);
+        assert_eq!(classify_input("/usr/bin/env"), Route::Shell);
+        // Prose (especially questions) routes to the agent, even when a
+        // system binary shares the first word (/usr/bin/write exists).
+        assert_eq!(
+            classify_input("what is the capital of France?"),
+            Route::Agent
+        );
+        assert_eq!(classify_input("write a test for the parser"), Route::Agent);
+        assert_eq!(classify_input("refactor this function"), Route::Agent);
+        // A lone unknown word and blanks stay ambiguous.
+        assert_eq!(classify_input("tests"), Route::Ambiguous);
+        assert_eq!(classify_input(""), Route::Ambiguous);
+        assert_eq!(classify_input("   "), Route::Ambiguous);
     }
 
     #[test]

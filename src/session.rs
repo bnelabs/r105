@@ -1,6 +1,7 @@
 //! Versioned, atomic session persistence compatible with r105 0.8.x files.
 
 use std::{
+    collections::{BTreeMap, HashSet},
     fs,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -24,6 +25,9 @@ struct SessionFile {
     state: SavedState,
     message_count: usize,
     saved_at: String,
+    /// Source session for forks and checkpoints; absent in older files.
+    #[serde(default)]
+    parent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,9 +51,22 @@ pub struct SessionInfo {
     pub saved_at: String,
     pub message_count: usize,
     pub preview: String,
+    /// Source session when this file is a fork or checkpoint.
+    pub parent: Option<String>,
 }
 
 pub fn save(paths: &ConfigPaths, name: &str, state: &ChatState) -> Result<PathBuf> {
+    save_with_parent(paths, name, state, None)
+}
+
+/// Save with an explicit parent link (forks, checkpoints). The manual
+/// loader ignores the key, so files with parents still load anywhere.
+pub fn save_with_parent(
+    paths: &ConfigPaths,
+    name: &str,
+    state: &ChatState,
+    parent: Option<&str>,
+) -> Result<PathBuf> {
     let path = session_path(paths, name)?;
     let file = SessionFile {
         version: SESSION_FORMAT_VERSION,
@@ -68,6 +85,10 @@ pub fn save(paths: &ConfigPaths, name: &str, state: &ChatState) -> Result<PathBu
         },
         message_count: state.history.len(),
         saved_at: now_string(),
+        parent: parent
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string),
     };
     atomic_write_json(&path, &file)?;
     Ok(path)
@@ -185,6 +206,7 @@ pub fn list(paths: &ConfigPaths) -> Vec<SessionInfo> {
                     .unwrap_or_else(|| "unknown".into()),
                 message_count: history.len(),
                 preview: preview.chars().take(80).collect(),
+                parent: optional_string(value.get("parent")),
             })
         })
         .collect::<Vec<_>>();
@@ -238,6 +260,61 @@ pub fn delete(paths: &ConfigPaths, name: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Timestamped backup before history-destroying commands (rewind,
+/// compact, clear). Checkpoints live in the sessions dir so
+/// `/session load <name>` restores them with the existing code path;
+/// only the newest 10 survive so automatic backups never fill the disk.
+pub fn save_checkpoint(
+    paths: &ConfigPaths,
+    state: &ChatState,
+    reason: &str,
+    parent: Option<&str>,
+) -> Result<String> {
+    let epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    let clean: String = reason
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .collect();
+    let clean = if clean.is_empty() {
+        "manual".to_string()
+    } else {
+        clean
+    };
+    let mut name = format!("checkpoint-{clean}-{epoch}");
+    let mut suffix = 1;
+    while session_path(paths, &name)?.exists() {
+        suffix += 1;
+        // Zero-padded so lexicographic order stays chronological when
+        // several checkpoints share one epoch second.
+        name = format!("checkpoint-{clean}-{epoch}-{suffix:03}");
+    }
+    save_with_parent(paths, &name, state, parent)?;
+    prune_checkpoints(paths, 10);
+    Ok(name)
+}
+
+fn prune_checkpoints(paths: &ConfigPaths, keep: usize) {
+    let Ok(entries) = fs::read_dir(&paths.sessions_dir) else {
+        return;
+    };
+    let mut checkpoints: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let stem = entry.path().file_stem()?.to_string_lossy().to_string();
+            stem.starts_with("checkpoint-").then_some(stem)
+        })
+        .collect();
+    checkpoints.sort();
+    if checkpoints.len() > keep {
+        for stale in checkpoints.drain(..checkpoints.len() - keep) {
+            let _ = delete(paths, &stale);
+        }
+    }
+}
+
 pub fn diff(paths: &ConfigPaths, name: &str, state: &ChatState) -> Result<String> {
     let path = session_path(paths, name)?;
     let value: Value = serde_json::from_str(&fs::read_to_string(path)?)?;
@@ -250,6 +327,99 @@ pub fn diff(paths: &ConfigPaths, name: &str, state: &ChatState) -> Result<String
         "diff vs saved session '{name}':\n  messages: {:+} ({saved} saved -> {current} current)",
         current as i64 - saved as i64
     ))
+}
+
+/// Indented parent-chain view of saved sessions with the 80-char preview
+/// per node. Roots (no parent, or a parent that no longer exists) come
+/// first; anything unreachable (cycles, however constructed) renders as
+/// its own root so the command always terminates with full coverage.
+pub fn tree(paths: &ConfigPaths) -> String {
+    let items = list(paths);
+    if items.is_empty() {
+        return "No saved sessions".to_string();
+    }
+    let known: HashSet<&str> = items.iter().map(|item| item.name.as_str()).collect();
+    let mut children: BTreeMap<Option<&str>, Vec<&SessionInfo>> = BTreeMap::new();
+    for item in &items {
+        let key = item
+            .parent
+            .as_deref()
+            .filter(|parent| known.contains(parent));
+        children.entry(key).or_default().push(item);
+    }
+    for group in children.values_mut() {
+        group.sort_by(|left, right| {
+            left.saved_at
+                .cmp(&right.saved_at)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+    }
+    let mut lines = vec!["Sessions".to_string()];
+    let mut visited: HashSet<&str> = HashSet::new();
+    if let Some(roots) = children.remove(&None) {
+        for root in roots {
+            render_tree_node(root, &children, &mut visited, 0, &mut lines);
+        }
+    }
+    let mut rest: Vec<&SessionInfo> = items
+        .iter()
+        .filter(|item| !visited.contains(item.name.as_str()))
+        .collect();
+    rest.sort_by(|left, right| left.name.cmp(&right.name));
+    for item in rest {
+        render_tree_node(item, &children, &mut visited, 0, &mut lines);
+    }
+    lines.join("\n")
+}
+
+fn render_tree_node<'a>(
+    node: &'a SessionInfo,
+    children: &BTreeMap<Option<&'a str>, Vec<&'a SessionInfo>>,
+    visited: &mut HashSet<&'a str>,
+    depth: usize,
+    lines: &mut Vec<String>,
+) {
+    // A repeated name means a parent cycle; the first occurrence already
+    // shows the subtree, so the repeat is dropped silently.
+    if !visited.insert(node.name.as_str()) {
+        return;
+    }
+    lines.push(format!(
+        "{}{}  {}",
+        "  ".repeat(depth),
+        node.name,
+        node.preview
+    ));
+    if let Some(kids) = children.get(&Some(node.name.as_str())) {
+        for kid in kids {
+            render_tree_node(kid, children, visited, depth + 1, lines);
+        }
+    }
+}
+
+/// Drop trailing tool messages whose call has no matching assistant
+/// tool-call in the kept prefix. Truncating at a turn boundary can
+/// strand results from an interrupted tool round; only provably
+/// stranded results are removed, everything else is kept verbatim.
+pub fn repair_prefix(mut messages: Vec<Message>) -> Vec<Message> {
+    loop {
+        let stranded = match messages.last() {
+            Some(last) if last.role == "tool" => match &last.tool_call_id {
+                Some(call_id) if !call_id.is_empty() => {
+                    !messages[..messages.len() - 1].iter().any(|message| {
+                        message.role == "assistant"
+                            && message.tool_calls.iter().any(|call| call.id == *call_id)
+                    })
+                }
+                _ => false,
+            },
+            _ => false,
+        };
+        if !stranded {
+            return messages;
+        }
+        messages.pop();
+    }
 }
 
 fn session_path(paths: &ConfigPaths, name: &str) -> Result<PathBuf> {
@@ -305,6 +475,11 @@ fn parse_message(value: &Value) -> Option<Message> {
     Some(Message {
         role,
         content,
+        id: object
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         tool_calls,
         tool_call_id: optional_string(object.get("tool_call_id")),
         name: optional_string(object.get("name")),
@@ -398,5 +573,131 @@ mod tests {
         assert!(parse_message(&value).is_none());
         let value = serde_json::json!({"role": "user", "content": "hi"});
         assert_eq!(parse_message(&value).unwrap().role, "user");
+    }
+
+    #[test]
+    fn message_ids_survive_round_trip_and_default_empty() {
+        let root = tempdir().unwrap();
+        let paths = ConfigPaths {
+            home: root.path().to_path_buf(),
+            config_dir: root.path().join("config"),
+            config_file: root.path().join("config/config.json"),
+            sessions_dir: root.path().join("config/sessions"),
+            plugins_dir: root.path().join("config/plugins"),
+        };
+        let mut state = ChatState {
+            workspace: root.path().to_path_buf(),
+            ..ChatState::from_config(&crate::config::Config::default(), root.path().to_path_buf())
+        };
+        let mut tagged = Message::user("tagged");
+        tagged.id = "m7".to_string();
+        state.history.push(tagged);
+        save(&paths, "ids", &state).unwrap();
+        state.history.clear();
+        assert_eq!(load(&paths, "ids", &mut state).unwrap(), 1);
+        assert_eq!(state.history[0].id, "m7");
+        // Files written before IDs existed load with an empty ID.
+        let legacy = serde_json::json!({"role": "tool", "content": "out"});
+        assert_eq!(parse_message(&legacy).unwrap().id, "");
+    }
+
+    #[test]
+    fn save_checkpoint_prunes_to_ten() {
+        let root = tempdir().unwrap();
+        let paths = ConfigPaths {
+            home: root.path().to_path_buf(),
+            config_dir: root.path().join("config"),
+            config_file: root.path().join("config/config.json"),
+            sessions_dir: root.path().join("config/sessions"),
+            plugins_dir: root.path().join("config/plugins"),
+        };
+        let state = ChatState {
+            workspace: root.path().to_path_buf(),
+            ..ChatState::from_config(&crate::config::Config::default(), root.path().to_path_buf())
+        };
+        let mut first = String::new();
+        for _ in 0..12 {
+            let name = save_checkpoint(&paths, &state, "test", None).unwrap();
+            assert!(name.starts_with("checkpoint-test-"));
+            if first.is_empty() {
+                first = name;
+            }
+        }
+        let kept: Vec<String> = list(&paths)
+            .into_iter()
+            .map(|item| item.name)
+            .filter(|name| name.starts_with("checkpoint-"))
+            .collect();
+        assert_eq!(kept.len(), 10);
+        // The oldest backup (no numeric suffix) was pruned first.
+        assert!(!kept.contains(&first));
+    }
+
+    #[test]
+    fn repair_prefix_drops_stranded_tool_results() {
+        use crate::model::{FunctionCall, ToolCall};
+
+        let call = |id: &str| ToolCall {
+            id: id.to_string(),
+            type_: "function".to_string(),
+            function: FunctionCall {
+                name: "read_file".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        let history = vec![
+            Message::user("u1"),
+            Message::assistant_with_tools("a1", vec![call("c1")]),
+            Message::tool("c1", "r1"),
+            // Interrupted round: the call never made it into the prefix.
+            Message::tool("c2", "r2"),
+        ];
+        let repaired = repair_prefix(history);
+        assert_eq!(repaired.len(), 3);
+        assert_eq!(repaired[2].content, "r1");
+        // Intact prefixes pass through untouched.
+        let intact = vec![
+            Message::user("u1"),
+            Message::assistant_with_tools("a1", vec![call("c1")]),
+            Message::tool("c1", "r1"),
+        ];
+        assert_eq!(repair_prefix(intact).len(), 3);
+    }
+
+    #[test]
+    fn tree_renders_parent_chains() {
+        let root = tempdir().unwrap();
+        let paths = ConfigPaths {
+            home: root.path().to_path_buf(),
+            config_dir: root.path().join("config"),
+            config_file: root.path().join("config/config.json"),
+            sessions_dir: root.path().join("config/sessions"),
+            plugins_dir: root.path().join("config/plugins"),
+        };
+        let mut state = ChatState {
+            workspace: root.path().to_path_buf(),
+            ..ChatState::from_config(&crate::config::Config::default(), root.path().to_path_buf())
+        };
+        state.history.push(Message::user("root work"));
+        save(&paths, "root", &state).unwrap();
+        save_with_parent(&paths, "child", &state, Some("root")).unwrap();
+        let rendered = tree(&paths);
+        let root_line = rendered.lines().find(|line| line.contains("root")).unwrap();
+        let child_line = rendered
+            .lines()
+            .find(|line| line.contains("child"))
+            .unwrap();
+        assert!(
+            !root_line.starts_with(' '),
+            "root must not indent:\n{rendered}"
+        );
+        assert!(
+            child_line.starts_with("  child"),
+            "child must indent:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("root work"),
+            "preview missing:\n{rendered}"
+        );
     }
 }
