@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-09-15
+
 ### Added
 - Enforced working modes: plan allows reads and web research but refuses
   writes and execution, ask answers without tools (`todo_write` excepted
