@@ -263,8 +263,7 @@ impl UiApp {
         }
         let block = Block::default()
             .borders(Borders::LEFT | Borders::RIGHT)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(" transcript ");
+            .border_style(Style::default().fg(Color::DarkGray));
         frame.render_widget(
             Paragraph::new(lines)
                 .block(block)

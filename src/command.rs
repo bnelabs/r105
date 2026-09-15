@@ -632,13 +632,88 @@ pub fn ensure_visible(selected: usize, scroll: usize, viewport: usize, len: usiz
     desired.min(max_scroll)
 }
 
+/// Help groups: (header, command names). Every built-in must appear in
+/// exactly one group — `help_groups_cover_all_commands` enforces it so
+/// new commands cannot silently fall out of `/help`.
+const HELP_GROUPS: &[(&str, &[&str])] = &[
+    (
+        "Essentials",
+        &[
+            "/", "/help", "/state", "/connect", "/models", "/model", "/health", "/exit",
+        ],
+    ),
+    (
+        "Modes & guardrails",
+        &["/build", "/plan", "/ask", "/permissions", "/settings"],
+    ),
+    (
+        "Ask & answer",
+        &[
+            "/sh",
+            "/retry",
+            "/tasks",
+            "/thinking",
+            "/reasoning",
+            "/quality",
+            "/json",
+            "/max",
+            "/cache-prompt",
+            "/autocompact",
+            "/attention",
+            "/completion",
+        ],
+    ),
+    (
+        "Files & context",
+        &[
+            "/skills",
+            "/skill",
+            "/commands",
+            "/workspace",
+            "/map",
+            "/preview",
+            "/diff",
+            "/copy",
+            "/editor",
+            "/history",
+        ],
+    ),
+    (
+        "Transcript",
+        &[
+            "/clear", "/compact", "/tokens", "/undo", "/redo", "/rewind", "/expand", "/export",
+            "/session",
+        ],
+    ),
+    (
+        "Providers & plugins",
+        &[
+            "/profiles",
+            "/profile",
+            "/provider",
+            "/mcp",
+            "/plugin",
+            "/theme",
+            "/config",
+        ],
+    ),
+];
+
 /// Full help dump plus a custom-commands section when any are loaded.
 /// `*` marks file-defined rows, matching the palette marker.
 /// Pass an empty slice for the built-ins-only dump.
 pub fn help_text_with(customs: &[crate::custom::CustomCommand]) -> String {
-    let mut output = String::from("Commands\n\n");
-    for item in COMMANDS {
-        output.push_str(&format!("  {:<42} {}\n", item.usage, item.description));
+    let mut output = String::new();
+    for (header, names) in HELP_GROUPS {
+        output.push_str(header);
+        output.push('\n');
+        for name in *names {
+            let Some(item) = command(name) else {
+                continue;
+            };
+            output.push_str(&format!("  {:<24} {}\n", item.usage, item.description));
+        }
+        output.push('\n');
     }
     let mut customs: Vec<&crate::custom::CustomCommand> = customs
         .iter()
@@ -655,7 +730,7 @@ pub fn help_text_with(customs: &[crate::custom::CustomCommand]) -> String {
         }
     }
     output.push_str(
-        "\nKeys\n  Enter send (steer while busy)   Alt/Shift+Enter newline   Tab ghost/mode/complete   Esc dismiss/cancel\n  Ctrl+C quit/cancel   Ctrl+X cancel   Ctrl+O details   Ctrl+T tasks   Ctrl+R history hint   y/a/n approval card\n  Up/Down history or file picks   @file attach file context   !cmd run shell into context   /sh draft shell from words\n",
+        "Keys\n  Enter send · Alt/Shift+Enter newline · Tab ghost/mode/complete · Esc dismiss/cancel · ↑↓ history/pick\n  Ctrl+C quit · Ctrl+X cancel · Ctrl+O details · Ctrl+T tasks · Ctrl+R history · y/a/n approve card · @file attach · !cmd shell · /sh draft\n\nTip: /help <command> shows one command.\n",
     );
     output
 }
@@ -695,6 +770,35 @@ fn shell_words(input: &str) -> impl Iterator<Item = String> + '_ {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_groups_cover_all_commands() {
+        use std::collections::BTreeSet;
+
+        let grouped: BTreeSet<&str> = HELP_GROUPS
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
+        let registered: BTreeSet<&str> = COMMANDS.iter().map(|item| item.name).collect();
+        assert_eq!(grouped, registered, "help groups drifted from COMMANDS");
+    }
+
+    #[test]
+    fn help_text_is_grouped_with_tip() {
+        let help = help_text_with(&[]);
+        for header in [
+            "Essentials",
+            "Modes & guardrails",
+            "Ask & answer",
+            "Files & context",
+            "Transcript",
+            "Providers & plugins",
+        ] {
+            assert!(help.contains(header), "missing group {header}");
+        }
+        assert!(help.contains("/model"), "commands missing");
+        assert!(help.contains("/help <command>"), "tip missing");
+    }
 
     #[test]
     fn parses_quoted_arguments() {
