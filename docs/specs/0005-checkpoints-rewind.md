@@ -1,6 +1,6 @@
 # 0005: Checkpoints and rewind
 
-- Status: proposed
+- Status: landed
 - Author: r105
 - Scope: `src/session.rs` (`save_checkpoint`), `src/ui.rs`
   (`/rewind`, `/compact`, `/clear`)

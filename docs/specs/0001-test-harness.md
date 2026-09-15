@@ -1,6 +1,6 @@
 # 0001: Render-to-lines test harness
 
-- Status: proposed
+- Status: landed
 - Author: r105
 - Scope: `src/ui.rs` tests module only
 
