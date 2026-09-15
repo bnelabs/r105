@@ -116,6 +116,21 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "summarize older conversation context",
     },
     CommandSpec {
+        name: "/filter",
+        usage: "/filter <block> <pattern> [--regex] [--case] [--invert] [--context N]",
+        description: "filter a transcript block by text",
+    },
+    CommandSpec {
+        name: "/block",
+        usage: "/block <block>",
+        description: "show transcript block details",
+    },
+    CommandSpec {
+        name: "/rerun",
+        usage: "/rerun <block>",
+        description: "rerun a previous user prompt",
+    },
+    CommandSpec {
         name: "/tokens",
         usage: "/tokens",
         description: "show context usage and estimate confidence",
@@ -682,7 +697,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
         "Transcript",
         &[
             "/clear", "/compact", "/tokens", "/undo", "/redo", "/rewind", "/expand", "/export",
-            "/session",
+            "/filter", "/block", "/rerun", "/session",
         ],
     ),
     (

@@ -222,9 +222,20 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
   ask answers without tools; the session file remembers the mode.
 - Start a `!` shell line or `/sh` draft and pause: the cascade suggests
   the rest dimmed — shell-history frequency first (same-directory runs
-  win), path top-hit second. No weights, no server, microseconds. Tab
-  accepts (continuations chain), Esc dismisses until the next edit.
+  win), command names (builtins plus PATH executables) second, path
+  top-hit last. No weights, no server, microseconds. Tab accepts
+  (continuations chain), Esc dismisses until the next edit.
   `/completion` shows history counts or clears them.
+- Up and Down at an empty-argument composer walk earlier user turns like
+  a shell: first Up stashes the live draft, Down past the newest
+  restores it, Esc restores, any edit adopts. The composer title shows
+  the walk while it is active.
+- Every transcript message is an addressable block (`#n` in its
+  header): `/filter <n> <pattern>` narrows long output (`--regex`,
+  `--case`, `--invert`, `--context N`, clear with the shown command),
+  `/block [n]` lists or describes blocks, `/rerun [n]` resubmits an
+  earlier prompt or `!` line, and `/copy out [n]` copies a block
+  (filtered view when a filter is set).
 - Destructive tools pause on an approval card (`y` once, `a` always this
   run, `n` deny) unless the per-category policy (`approval_exec`,
   `approval_write`, …) or `command_allowlist`/`command_denylist` says
@@ -289,11 +300,15 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /map | Show a compact workspace map |
 | /diff | Show the Git workspace diff |
 | /copy [n] | Copy the last response or its nth code block |
+| /copy out [n] | Copy a transcript block (filtered view when filtered) |
+| /filter <block> <pattern> | Narrow one block's output (regex/case/invert/context flags) |
+| /block [n] | List transcript blocks or describe one |
+| /rerun [n] | Resubmit an earlier prompt or `!` shell line |
 | /tasks | Show active and queued work |
 | /retry | Retry the last failed prompt |
 | /undo | Remove the last exchange and restore its prompt |
 | /redo | Re-apply the last undone exchange |
-| /expand [n\|all\|none] | Expand or collapse transcript sections |
+| /expand [n\|#block\|all\|none] | Expand or collapse transcript sections |
 | /rewind [n] | Restore an earlier checkpoint (current work is backed up first) |
 | /exit | Save autosave and quit |
 

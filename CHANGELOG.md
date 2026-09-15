@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Addressable transcript blocks: every message is addressable as `#n`.
+  `/filter <block> <pattern>` narrows a block's output (substring,
+  `--regex`, `--case`, `--invert`, `--context N`) with a dim trailer
+  showing hidden lines and the clear command; `/block [n]` lists or
+  describes blocks; `/rerun [n]` resubmits an earlier prompt or `!`
+  line (`/` commands prefill instead of replaying); `/copy out [n]`
+  copies a block verbatim; `/expand` accepts `#n` addresses.
+- Shell-command ghost layer: `!` lines now complete the command name
+  from shell builtins and PATH executables (30s cache) between the
+  history-frequency and path layers.
+- Composer history walk like a terminal: ↑/↓ preview earlier user
+  turns, first ↑ stashes the live draft, ↓ past the newest restores it,
+  Esc restores, any edit adopts. The composer title shows the walk.
+- Empty-composer coaching hint (`prompt · ! shell · / commands ·
+  # route · ↑ history`) — display only, never part of the input.
+
 ### Changed
 - `/help` is grouped (Essentials, Modes & guardrails, Ask & answer,
   Files & context, Transcript, Providers & plugins) with a shorter keys
@@ -16,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   includes the approval policy summary.
 - The transcript pane lost its `transcript` title; the conversation
   needs no label.
+- Ghost completion yields to open menus (palette, `@` files, argument
+  values) instead of fighting them for Tab.
 
 ### Fixed
 - Stray "limbo" text on screen: TUI runs now log to `<config>/r105.log`
@@ -25,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.1.0] — 2026-09-15
 
 ### Added
-- Warp-style completion cascade replacing the sidecar model: `!` and
+- Shell-history completion cascade replacing the sidecar model: `!` and
   `/sh` ghosts resolve from shell-history frequency (cwd-weighted,
   persisted as `shell_history.json`, capped by `completion_history_max`)
   then path top-hit. The debounce/dim/Tab/Esc shell is unchanged; the

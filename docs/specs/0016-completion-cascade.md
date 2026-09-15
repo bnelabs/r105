@@ -1,4 +1,4 @@
-# 0016: Warp-style completion cascade
+# 0016: Shell-history completion cascade
 
 - Status: landed
 - Author: r105
@@ -6,10 +6,10 @@
 
 ## Problem
 
-Ghost-text runs on a 531MB sidecar model to complete shell lines Warp
-answers from history and a signature table with zero weights. The
-neural source is disproportionate: slow to provision, heavy resident,
-and weaker than frequency on repetitive terminal work.
+Ghost-text runs on a 531MB sidecar model to complete shell lines that
+history and a signature table can answer with zero weights. The neural
+source is disproportionate: slow to provision, heavy resident, and
+weaker than frequency on repetitive terminal work.
 
 ## Proposal
 
@@ -31,7 +31,7 @@ and weaker than frequency on repetitive terminal work.
 
 ## Non-goals
 
-Backend-assist ghost (matches Warp TUI, which has no AI ghost);
+Backend-assist ghost (the TUI deliberately has no AI ghost);
 signature DB for flags (later spec); history sync across machines.
 
 ## Acceptance

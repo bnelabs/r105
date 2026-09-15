@@ -1,4 +1,4 @@
-//! UiApp ghost text: synchronous Warp-style cascade scheduling.
+//! UiApp ghost text: synchronous completion-cascade scheduling.
 //!
 //! The tick owns scheduling: input changes invalidate the shown ghost,
 //! qualifying input debounces into an instant history/path lookup (no
@@ -15,6 +15,8 @@ impl UiApp {
     }
 
     /// 45ms-tick scheduler: invalidate on edit, debounce, resolve.
+    /// Menus own the composer while open: the tick clears any ghost and
+    /// resolves nothing (single-owner rule, spec 0018).
     pub(crate) fn tick_ghost(&mut self) {
         if !self.completion_on {
             return;
@@ -25,6 +27,10 @@ impl UiApp {
             self.ghost_text = None;
             self.ghost_dismissed = None;
         }
+        if self.menu_wants_input() || self.hist_depth.is_some() {
+            self.ghost_text = None;
+            return;
+        }
         if self.ghost_text.is_some() || !matches!(self.overlay, Overlay::None) || self.busy {
             return;
         }
@@ -34,13 +40,25 @@ impl UiApp {
         if self.ghost_dismissed.as_deref() == Some(self.input.as_str()) {
             return;
         }
+        self.refresh_bin_cache();
         let cwd = self.state.workspace.clone();
         self.ghost_text = crate::suggest::suggest(
             &self.input,
             &self.shell_history,
             &cwd,
+            &self.bin_cache,
             super::complete::score_file_candidate,
         );
+    }
+
+    /// PATH executables feed the command-name ghost layer. The scan is
+    /// cheap but not per-keystroke free, so it refreshes on a TTL.
+    fn refresh_bin_cache(&mut self) {
+        const TTL: Duration = Duration::from_secs(30);
+        if self.bin_cache_at.is_none_or(|at| at.elapsed() >= TTL) {
+            self.bin_cache = crate::suggest::scan_path_bins();
+            self.bin_cache_at = Some(Instant::now());
+        }
     }
 
     /// Accept the visible ghost when the cursor is at the end of input.
