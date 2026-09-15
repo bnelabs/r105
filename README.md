@@ -191,7 +191,6 @@ In the TUI, open `/connect` and choose `llama.cpp`. The menu asks for the base U
 | TOGETHER_API_KEY | Together AI key |
 | R105_CONFIG_DIR | Alternate configuration directory |
 | R105_STRICT_CONFIG | Fail on unknown config keys when set to 1 |
-| R105_PYTHON_BRIDGE | Optional external Python bridge command |
 
 ## TUI workflow
 
@@ -271,9 +270,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /settings | Change theme, permissions, reasoning, and toggles |
 | /editor | Compose the prompt in $EDITOR |
 | /permissions [posture] | Set the local tool permission posture |
-| /approve execute_python | Approve the optional Python bridge for this session |
 | /preview <filename> | Preview a workspace file |
-| /bridge | Show optional Python bridge status |
 | /map | Show a compact workspace map |
 | /diff | Show the Git workspace diff |
 | /copy [n] | Copy the last response or its nth code block |
@@ -292,7 +289,6 @@ The model can use these native tools:
 | Tool | Purpose |
 | --- | --- |
 | execute_rust | Compile and run Rust in the configured sandbox |
-| execute_python | Run Python through the optional external compatibility bridge |
 | write_file | Write a workspace relative file |
 | read_file | Read a workspace relative file |
 | list_files | List a workspace directory |
@@ -313,7 +309,6 @@ r105 is local first, but model generated actions still cross explicit boundaries
 - Web tools accept only HTTP(S), reject embedded credentials, block private and metadata addresses, pin the validated DNS address for the request, and validate every redirect before following it.
 - Arithmetic limits bound expression size, recursion, powers, intermediates, and factorial arguments.
 - execute_rust uses the selected sandbox backend, clears inherited environment variables, uses the workspace as its working directory, bounds runtime and output, and removes temporary artifacts.
-- execute_python is available only through an explicitly configured external bridge and a one-time `/approve execute_python` approval; the Rust binary never embeds Python.
 - auto selects nsjail, bwrap, Docker, or the timeout based fallback. r105 doctor reports the selected backend.
 - full-access, sandboxed, restricted, and off permission postures are represented in config. Native Rust execution is disabled under off.
 - Rust plugins are operator installed executables and are namespaced as plugin_<plugin>_<tool>. They run with a sanitized environment and a 30 second response limit.
@@ -397,7 +392,7 @@ The executable receives one JSON request on stdin and returns one JSON object on
 {"method":"call","tool":"hello","arguments":{"name":"Ada"}}
 ```
 
-Return {"content":"..."} or {"result":"..."}. Plugin tools are exposed to the model as plugin_example_hello. A Python implementation can remain outside the binary by using the optional bridge below.
+Return {"content":"..."} or {"result":"..."}. Plugin tools are exposed to the model as plugin_example_hello.
 
 ### Tool hooks
 
@@ -420,24 +415,6 @@ Before a tool runs (after argument repair), each `before_tool` plugin receives:
 ```
 
 Reply `{"deny": "reason"}` to abort the call with a visible error, or `{"arguments": {...}}` to replace the arguments (rewrites chain across plugins). After the tool runs, each `after_tool` plugin receives `{"method":"after_tool","tool":"...","arguments":{...},"result":...}` and may reply `{"result": ...}` to replace the result. Hook calls have a 5 second limit, and hook transport failures fail the tool visibly (`tool error: … hook …`) instead of silently.
-
-## Optional Python compatibility bridge
-
-Normal r105 installations do not require Python. If an existing workflow still
-needs the legacy `execute_python` tool, configure the repository's stdlib-only
-reference bridge as an external process:
-
-```sh
-chmod +x bridge/r105_python_bridge.py
-export R105_PYTHON_BRIDGE="python3 /path/to/r105/bridge/r105_python_bridge.py"
-r105 bridge
-```
-
-Then approve it for the current TUI process with `/approve execute_python`.
-The Rust side sends one newline-delimited JSON request, keeps the bridge under
-the selected sandbox and timeout, clears inherited secrets, and returns bounded
-stdout/stderr. The bridge is not included in native binary or package assets;
-users may replace it with a compatible executable that implements protocol v1.
 
 ## MCP
 
@@ -477,7 +454,6 @@ The default file is ~/.config/r105/config.json:
   "provider": "llamacpp",
   "url": "http://127.0.0.1:8080/v1",
   "model": "local-model",
-  "python_bridge_command": "python3 /path/to/r105/bridge/r105_python_bridge.py",
   "auto_compact": true,
   "cache_prompt": true,
   "permission_posture": "sandboxed",
@@ -522,7 +498,6 @@ Commands:
   doctor         Diagnose config, sandbox, backend, and workspace
   profiles       Print llama-router profiles
   config-schema  Print or write the config JSON Schema
-  bridge         Check the optional external Python compatibility bridge
 ```
 
 Common options:
@@ -542,7 +517,7 @@ Common options:
 | --json | Request JSON object responses |
 | --session <NAME> | Load a saved session |
 | --timeout <SECONDS> | Backend and tool timeout |
-| --yes | Compatibility flag that selects full access and approves Python execution |
+| --yes | Select full access without prompting |
 
 ## Development
 
@@ -558,14 +533,13 @@ src/
 ├── mcp.rs       native MCP discovery and calls
 ├── model.rs     messages, state, usage
 ├── plugin.rs    executable plugin protocol
-├── python_bridge.rs external Python compatibility protocol
 ├── provider.rs  provider catalog and connection resolution
 ├── sandbox.rs   subprocess boundary
 ├── security.rs  path and web security checks
 ├── session.rs   versioned atomic persistence
 ├── sse.rs       streaming parser and tool call accumulator
 ├── tool.rs      native tools and bounded expression parser
-└── ui.rs        Ratatui harness UI
+└── ui/          Ratatui harness UI (app, input, commands, completion, transcript, render)
 ```
 
 Run the checks before a change:
@@ -581,7 +555,6 @@ A local OpenAI compatible mock can validate the non streaming CLI path. A live b
 
 ## Documentation
 
-- Rust migration: docs/RUST_MIGRATION.md
 - Architecture: ARCHITECTURE.md
 - Skills: docs/SKILLS.md
 - Tools: docs/TOOLS.md
