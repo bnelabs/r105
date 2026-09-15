@@ -217,7 +217,20 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 - /sh turns plain words into a shell command draft for review — Enter runs it, nothing executes unseen.
 - Up and Down keep the selected command inside the visible palette window, including when the list is taller than the terminal.
 - /connect and /models use scrollable provider and model pickers.
-- Tab cycles through build, plan, and ask modes.
+- Tab cycles through build, plan, and ask modes. Modes are enforced:
+  plan allows reads and web research but refuses writes and execution,
+  ask answers without tools; the session file remembers the mode.
+- Start a `!` shell line or `/sh` draft and pause: a local ghost-text
+  sidecar (Qwen2.5-Coder 0.5B via llama-server) suggests the rest dimmed;
+  Tab accepts, Esc dismisses. `/completion` shows status, starts, or
+  stops the sidecar; everything fails silent back to the menus.
+- Destructive tools pause on an approval card (`y` once, `a` always this
+  run, `n` deny) unless the per-category policy (`approval_exec`,
+  `approval_write`, …) or `command_allowlist`/`command_denylist` says
+  otherwise.
+- The model can keep a visible task list (`todo_write` tool, TASKS
+  section, `tasks done/total` in the footer) that collapses like any
+  other section.
 - Type @ to fuzzy-complete a workspace file; Tab accepts, Enter sends with the file attached as context.
 - Start a line with ! to run a shell command in the sandbox; its output joins the conversation context.
 - Start a line with # to classify it first: shell one-liners are prefilled after ! for review, agent prompts are sent as-is, ambiguous input shows a hint in the status line. Nothing executes unseen.
@@ -240,7 +253,8 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /health | Check backend connectivity |
 | /profiles | List llama-router profiles |
 | /profile [name|auto] | Set or clear the llama-router profile |
-| /build, /plan, /ask | Switch working mode |
+| /build, /plan, /ask | Switch working mode (enforced, persisted) |
+| /completion [status\|start\|stop] | Ghost-text sidecar status and control |
 | /history | Show a transcript preview |
 | /skills | List Markdown skills |
 | /skill use <name> [key=value] | Activate a skill |
@@ -298,6 +312,7 @@ The model can use these native tools:
 | system_info | Return basic platform information |
 | web_search | Search public web pages through DuckDuckGo |
 | web_fetch | Fetch public HTTP(S) pages |
+| todo_write | Replace the visible task list (all modes, never needs approval) |
 
 Tool schemas are sent with each request. Tool calls are executed in parallel where possible, and individual failures are returned as tool results so one failure does not discard the rest of the batch.
 
