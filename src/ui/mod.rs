@@ -145,11 +145,10 @@ pub async fn run(
     state: ChatState,
     paths: ConfigPaths,
     config: Config,
-    python_approved: bool,
 ) -> Result<()> {
     let mouse = config.mouse;
     let mut terminal = setup_terminal(mouse)?;
-    let mut app = UiApp::new(backend, state, paths, config, python_approved);
+    let mut app = UiApp::new(backend, state, paths, config);
     let result = app.event_loop(&mut terminal).await;
     restore_terminal(&mut terminal)?;
     // The alternate screen is gone here, so the autosave note is visible.
@@ -259,8 +258,6 @@ struct UiApp {
     pub(crate) cancellation: Option<CancellationToken>,
     pub(crate) pending_connection: Option<Connection>,
     pub(crate) sandbox: Sandbox,
-    pub(crate) python_bridge_command: Option<String>,
-    pub(crate) python_approved: bool,
     pub(crate) last_response: String,
     pub(crate) tx: mpsc::UnboundedSender<UiEvent>,
     pub(crate) rx: mpsc::UnboundedReceiver<UiEvent>,
@@ -298,7 +295,6 @@ impl UiApp {
         state: ChatState,
         paths: ConfigPaths,
         config: Config,
-        python_approved: bool,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let plugins_dir = config.plugins_dir.clone();
@@ -379,8 +375,6 @@ impl UiApp {
             cancellation: None,
             pending_connection: None,
             sandbox,
-            python_bridge_command: config.python_bridge_command.clone(),
-            python_approved: python_approved || config.auto_approve_execute_python,
             last_response: String::new(),
             tx,
             rx,
@@ -639,13 +633,11 @@ impl UiApp {
             let context = ToolContext {
                 workspace: self.state.workspace.clone(),
                 plugins_dir: self.plugins_dir.clone(),
-                python_bridge_command: self.python_bridge_command.clone(),
                 sandbox: self.sandbox.clone(),
                 cancellation,
                 allow_network: self.state.permission_posture != "restricted"
                     && self.state.permission_posture != "off",
                 allow_code: self.state.permission_posture != "off",
-                python_approved: self.python_approved,
             };
             let calls = result.tool_calls;
             let sender = self.tx.clone();
@@ -928,11 +920,7 @@ mod tests {
         let state = ChatState::from_config(&config, workspace.path().to_path_buf());
         let connection = provider::resolve_connection(None, None, Some("http://127.0.0.1:9"));
         let backend = Backend::new(connection, 5).expect("backend");
-        (
-            UiApp::new(backend, state, paths, config, false),
-            workspace,
-            skills,
-        )
+        (UiApp::new(backend, state, paths, config), workspace, skills)
     }
 
     fn test_custom(name: &str) -> CustomCommand {

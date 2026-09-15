@@ -15,9 +15,8 @@ r105 is a Rust terminal AI harness. The binary owns the terminal UI, backend pro
        │    ├── SSRF checked web tools
        │    └── sandboxed Rust execution
        │
-       ├── native executable plugins
-       ├── optional external Python bridge
-       └── MCP stdio or HTTP servers
+        ├── native executable plugins
+        └── MCP stdio or HTTP servers
 ```
 
 ## Module boundaries
@@ -31,13 +30,12 @@ r105 is a Rust terminal AI harness. The binary owns the terminal UI, backend pro
 | backend.rs | OpenAI compatible payloads, health, models, profiles, streaming |
 | sse.rs | split frame parsing and streaming tool call accumulation |
 | model.rs | messages, chat state, usage estimates, skill injection |
-| ui.rs | Ratatui event loop, overlays, palette, transcript, cancellation |
+| ui/ | Ratatui event loop, overlays, palette, transcript, cancellation |
 | command.rs | slash registry, shell word parsing, fuzzy ranking, visible scrolling |
 | tool.rs | native tool schemas, dispatch, parallel tool execution |
 | security.rs | workspace containment, DNS/IP blocklist, input limits |
 | sandbox.rs | nsjail, bubblewrap, Docker, or timeout fallback execution |
 | plugin.rs | executable plugin manifests and JSON stdin/stdout protocol |
-| python_bridge.rs | optional external Python compatibility protocol |
 | mcp.rs | MCP initialize, tools/list, tools/call, and in memory discovery cache |
 | session.rs | versioned session compatibility and atomic persistence |
 | export.rs | Markdown, text, JSON, HTML, and dependency free PDF output |
@@ -114,11 +112,11 @@ The UI writes an __autosave__ session before leaving when the transcript is none
 
 ## Extension protocols
 
-Native plugins are described by JSON files in the configured plugins directory. A plugin executable receives one JSON request on stdin and returns one JSON object on stdout. Tool names are namespaced by plugin. Legacy Python execution is available only through an explicitly configured external bridge using the versioned protocol in `python_bridge.rs`; the application process never embeds Python.
+Native plugins are described by JSON files in the configured plugins directory. A plugin executable receives one JSON request on stdin and returns one JSON object on stdout. Tool names are namespaced by plugin.
 
 MCP servers are configured in config.json. /mcp reconnect performs the initialize handshake and tools/list discovery for one or all configured servers. Discovered schemas stay in memory and are included with the next prompt. Tool calls create a short lived stdio process or HTTP request, depending on transport.
 
-All extension paths are explicit and local. Native plugins and MCP remain Rust hosted, while the optional Python bridge runs as a separately configured subprocess and is approval gated by the UI.
+All extension paths are explicit and local. Native plugins and MCP remain Rust hosted.
 
 ## Release architecture
 

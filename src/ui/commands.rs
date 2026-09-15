@@ -111,11 +111,7 @@ impl UiApp {
             "/autocompact" => self.command_autocompact(&parsed.args),
             "/reasoning" => self.command_reasoning(&parsed.args),
             "/permissions" => self.command_permissions(&parsed.args),
-            "/approve" => self.command_approve(&parsed.args),
             "/preview" => self.command_preview(&parsed.args),
-            "/bridge" => {
-                self.push_system(&python_bridge_status(self.python_bridge_command.as_deref()))
-            }
             "/map" => self.push_system(&self.workspace_map()),
             "/diff" => self.push_system(&self.workspace_diff()),
             "/copy" => {
@@ -233,9 +229,8 @@ impl UiApp {
 
     pub(crate) fn command_state(&mut self) {
         let connection = self.backend.connection();
-        let bridge = python_bridge_status(self.python_bridge_command.as_deref());
         self.push_system(&format!(
-            "mode={}\nprovider={}\nbackend={}\nurl={}\nmodel={}\nquality={}\nprofile={}\nreasoning={}\nthinking={}\nbell={}\npermissions={}\nsandbox={}\n{}",
+            "mode={}\nprovider={}\nbackend={}\nurl={}\nmodel={}\nquality={}\nprofile={}\nreasoning={}\nthinking={}\nbell={}\npermissions={}\nsandbox={}",
             self.mode.as_str(),
             connection.display_name(),
             connection.backend,
@@ -252,7 +247,6 @@ impl UiApp {
             if self.attention_bell { "on" } else { "off" },
             self.state.permission_posture,
             self.sandbox.selected_name(),
-            bridge,
         ));
     }
 
@@ -482,8 +476,6 @@ impl UiApp {
             self.state.context_tokens = tokens;
         }
         self.plugins_dir = config.plugins_dir.clone();
-        self.python_bridge_command = config.python_bridge_command.clone();
-        self.python_approved |= config.auto_approve_execute_python;
         self.sandbox = Sandbox::detect(
             &config.sandbox_backend,
             config.docker_image.clone(),
@@ -550,18 +542,6 @@ impl UiApp {
         self.state.permission_posture = value.clone();
         self.persist_config(|config| config.permission_posture = value.clone());
         self.set_ok(format!("Permission posture: {value}"));
-    }
-
-    pub(crate) fn command_approve(&mut self, args: &[String]) {
-        if !matches!(
-            args.first().map(String::as_str),
-            Some("execute_python" | "python")
-        ) {
-            self.set_status("Usage: /approve execute_python".into());
-            return;
-        }
-        self.python_approved = true;
-        self.set_ok("Python bridge approved for this session".into());
     }
 
     pub(crate) fn command_preview(&mut self, args: &[String]) {
@@ -1645,10 +1625,6 @@ pub(crate) fn provider_label(preset: &Preset) -> String {
         "{}  ·  {}  [{}]",
         preset.label, preset.description, preset.id
     )
-}
-
-pub(crate) fn python_bridge_status(spec: Option<&str>) -> String {
-    crate::python_bridge::status(spec)
 }
 
 pub(crate) fn toggle_value(value: Option<&String>, current: bool) -> bool {

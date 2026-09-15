@@ -9,7 +9,7 @@ use std::{path::Path, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt},
     process::{Child, Command},
     time::timeout,
 };
@@ -116,10 +116,6 @@ impl Sandbox {
         format!("/workspace/{}", relative.display())
     }
 
-    pub fn timeout_seconds(&self) -> u64 {
-        self.timeout.as_secs()
-    }
-
     pub async fn run(
         &self,
         program: &str,
@@ -156,63 +152,6 @@ impl Sandbox {
             _ = cancellation.cancelled() => {
                 bail!("process cancelled");
             }
-            result = timeout(self.timeout, &mut wait) => {
-                match result {
-                    Ok(result) => Ok(result?),
-                    Err(_) => bail!("execution timed out ({}s)", self.timeout.as_secs()),
-                }
-            }
-        }
-    }
-
-    /// Run a subprocess with one bounded request written to stdin.
-    ///
-    /// This is used by the optional Python compatibility bridge and keeps its
-    /// transport inside the same sandbox, timeout, cancellation, and
-    /// environment boundary as native executable tools.
-    pub async fn run_with_input(
-        &self,
-        program: &str,
-        arguments: &[String],
-        workspace: &Path,
-        allow_network: bool,
-        cancellation: &CancellationToken,
-        input: &[u8],
-    ) -> Result<ProcessOutput> {
-        let mut command = self.command(program, arguments, workspace, allow_network)?;
-        command
-            .current_dir(workspace)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", workspace)
-            .env("R105_SANDBOX", self.selected_name());
-        command.kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("starting {program}"))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            tokio::select! {
-                _ = cancellation.cancelled() => bail!("process cancelled"),
-                result = timeout(self.timeout, stdin.write_all(input)) => {
-                    result.context("writing subprocess input")??;
-                }
-            }
-        }
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("subprocess stdout unavailable"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("subprocess stderr unavailable"))?;
-        let wait = wait_for_output(&mut child, stdout, stderr);
-        tokio::pin!(wait);
-        tokio::select! {
-            _ = cancellation.cancelled() => bail!("process cancelled"),
             result = timeout(self.timeout, &mut wait) => {
                 match result {
                     Ok(result) => Ok(result?),
