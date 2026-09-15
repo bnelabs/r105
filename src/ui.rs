@@ -220,6 +220,10 @@ struct UiApp {
     /// (not a chat) failed" flag so `ChatError` reports `/compact to
     /// retry` instead of the chat `/retry` path. Cleared in both arms.
     compact_backup: Option<String>,
+    /// Name of the session this transcript was saved as or loaded from
+    /// (fork sources and checkpoint parents). Forks leave it alone: you
+    /// keep working here, the copy points back at you.
+    current_session: Option<String>,
     /// Next lazy transcript message number (`m<N>` IDs are assigned on
     /// first render so undo/redo/compact never shift section identity).
     next_msg_id: u64,
@@ -352,6 +356,7 @@ impl UiApp {
             queue: VecDeque::new(),
             recent_commands: VecDeque::new(),
             compact_backup: None,
+            current_session: None,
             next_msg_id: 0,
             section_state: HashMap::new(),
             section_order: Vec::new(),
@@ -1144,6 +1149,16 @@ impl UiApp {
         if value.is_empty() {
             return Ok(());
         }
+        // `#` asks for cheap local routing before any model call: shell
+        // shapes prefill `!`, agent shapes send, the rest stays editable.
+        // `submit_classified` owns the composer from here on.
+        if let Some(classified) = value.strip_prefix('#') {
+            self.submit_classified(classified.trim().to_string());
+            self.at_cache_key.clear();
+            self.arg_cache_key.clear();
+            self.cursor = self.input.len();
+            return Ok(());
+        }
         if self.palette_active()
             && command::command(&value).is_none()
             && !self.is_custom_command(&value)
@@ -1175,6 +1190,37 @@ impl UiApp {
         } else {
             self.submit_prompt(value);
             Ok(())
+        }
+    }
+
+    /// `#`-prefixed input: cheap local routing before any model call.
+    /// Shell-shaped input prefills `!` for one-keystroke confirmation
+    /// (never auto-runs); agent-shaped input submits directly; ambiguous
+    /// input stays in the composer with a routing hint. Owns the composer:
+    /// every arm leaves `input` in its final state.
+    fn submit_classified(&mut self, text: String) {
+        if text.is_empty() {
+            self.input.clear();
+            self.set_status("Usage: # <text to classify as shell or prompt>".into());
+            return;
+        }
+        match command::classify_input(&text) {
+            command::Route::Shell => {
+                self.input = format!("!{text}");
+                self.set_status(
+                    "Looks like shell — Enter to run, delete ! to send as a prompt".into(),
+                );
+            }
+            command::Route::Agent => {
+                self.input.clear();
+                self.submit_prompt(text);
+            }
+            command::Route::Ambiguous => {
+                self.input = text;
+                self.set_status(
+                    "Ambiguous — Enter sends to the agent, prefix ! to run shell".into(),
+                );
+            }
         }
     }
 
@@ -1482,7 +1528,12 @@ impl UiApp {
                 let backup = if self.state.history.is_empty() {
                     None
                 } else {
-                    match session::save_checkpoint(&self.paths, &self.state, "clear") {
+                    match session::save_checkpoint(
+                        &self.paths,
+                        &self.state,
+                        "clear",
+                        self.current_session.as_deref(),
+                    ) {
                         Ok(name) => Some(name),
                         Err(error) => {
                             self.set_error(format!(
@@ -2091,7 +2142,12 @@ impl UiApp {
         }
         // Backup first: the summary replaces the transcript, so a bad
         // compaction must stay recoverable via `/session load`.
-        let backup = match session::save_checkpoint(&self.paths, &self.state, "compact") {
+        let backup = match session::save_checkpoint(
+            &self.paths,
+            &self.state,
+            "compact",
+            self.current_session.as_deref(),
+        ) {
             Ok(name) => name,
             Err(error) => {
                 self.set_error(format!("Compact backup failed, transcript kept: {error}"));
@@ -2502,7 +2558,10 @@ impl UiApp {
             Some("save") => {
                 let name = args.get(1).map(String::as_str).unwrap_or("default");
                 match session::save(&self.paths, name, &self.state) {
-                    Ok(path) => self.set_ok(format!("Saved {}", path.display())),
+                    Ok(path) => {
+                        self.current_session = Some(name.to_string());
+                        self.set_ok(format!("Saved {}", path.display()));
+                    }
                     Err(error) => self.set_error(format!("Session save failed: {error}")),
                 }
             }
@@ -2513,6 +2572,7 @@ impl UiApp {
                         self.redo_stack.clear();
                         self.reseed_msg_ids();
                         self.prune_sections();
+                        self.current_session = Some(name.to_string());
                         self.follow_transcript = true;
                         self.set_ok(format!("Loaded {name} ({count} messages)"));
                     }
@@ -2547,10 +2607,45 @@ impl UiApp {
             }
             Some("fork") => {
                 let Some(name) = args.get(1).map(String::as_str) else {
-                    self.set_status("Usage: /session fork <name>".into());
+                    self.set_status("Usage: /session fork <name> [turns]".into());
                     return;
                 };
-                match session::save(&self.paths, name, &self.state) {
+                // The fork records where it came from; the working session
+                // stays current (you keep working here either way).
+                let parent = self.current_session.clone();
+                if let Some(turns) = args.get(2) {
+                    // Snapping fork: keep the first N user turns only. The
+                    // cut lands on a user boundary by construction, and
+                    // `repair_prefix` drops anything still stranded.
+                    let turns = turns.parse::<usize>().unwrap_or(0);
+                    if turns == 0 {
+                        self.set_error("Usage: /session fork <name> [turns]".into());
+                        return;
+                    }
+                    let mut seen = 0;
+                    let mut end = self.state.history.len();
+                    for (position, message) in self.state.history.iter().enumerate() {
+                        if message.role == "user" {
+                            seen += 1;
+                            if seen == turns + 1 {
+                                end = position;
+                                break;
+                            }
+                        }
+                    }
+                    let mut forked = self.state.clone();
+                    forked.history = session::repair_prefix(forked.history[..end].to_vec());
+                    let kept = forked.history.len();
+                    match session::save_with_parent(&self.paths, name, &forked, parent.as_deref()) {
+                        Ok(path) => self.set_ok(format!(
+                            "Forked first {turns} turn(s) as {name} ({kept} messages, {})",
+                            path.display()
+                        )),
+                        Err(error) => self.set_error(format!("Session fork failed: {error}")),
+                    }
+                    return;
+                }
+                match session::save_with_parent(&self.paths, name, &self.state, parent.as_deref()) {
                     Ok(path) => {
                         self.set_ok(format!(
                             "Forked current session as {name} ({}); keep working here or /session load {name}",
@@ -2560,7 +2655,11 @@ impl UiApp {
                     Err(error) => self.set_error(format!("Session fork failed: {error}")),
                 }
             }
-            _ => self.set_status("Usage: /session save|load|list|search|delete|diff|fork".into()),
+            Some("tree") => {
+                self.push_system(&session::tree(&self.paths));
+            }
+            _ => self
+                .set_status("Usage: /session save|load|list|search|delete|diff|fork|tree".into()),
         }
     }
 
@@ -2603,7 +2702,12 @@ impl UiApp {
             return;
         };
         // Backup first: without it a rewind is unrecoverable.
-        let backup = match session::save_checkpoint(&self.paths, &self.state, "rewind") {
+        let backup = match session::save_checkpoint(
+            &self.paths,
+            &self.state,
+            "rewind",
+            self.current_session.as_deref(),
+        ) {
             Ok(name) => name,
             Err(error) => {
                 self.set_error(format!("Rewind backup failed, transcript kept: {error}"));
@@ -4951,6 +5055,72 @@ mod tests {
         assert!(app.apply_compaction("summary text".to_string(), recent));
         assert_eq!(app.state.history.len(), 3);
         assert!(app.state.history[0].content.contains("summary text"));
+    }
+
+    #[test]
+    fn fork_with_turns_snaps_to_boundary() {
+        use crate::model::{FunctionCall, ToolCall};
+
+        let (mut app, _workspace, _skills) = test_app();
+        let sessions = tempfile::TempDir::new().expect("sessions");
+        app.paths = test_paths(sessions.path());
+        let call = ToolCall {
+            id: "c1".to_string(),
+            type_: "function".to_string(),
+            function: FunctionCall {
+                name: "read_file".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        app.state.history.push(Message::user("first"));
+        app.state
+            .history
+            .push(Message::assistant_with_tools("answer", vec![call]));
+        app.state.history.push(Message::tool("c1", "result"));
+        app.state.history.push(Message::user("second"));
+        app.state
+            .history
+            .push(Message::assistant_with_tools("later", vec![]));
+        app.command_session(&["fork".to_string(), "child".to_string(), "1".to_string()]);
+        assert!(app.status.contains("Forked first 1 turn(s) as child"));
+        let mut forked = app.state.clone();
+        forked.history.clear();
+        let count = session::load(&app.paths, "child", &mut forked).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(forked.history[2].content, "result");
+        // The fork records its source (none yet: nothing saved or loaded).
+        let info = session::list(&app.paths)
+            .into_iter()
+            .find(|item| item.name == "child")
+            .expect("forked session");
+        assert_eq!(info.parent, None);
+    }
+
+    #[test]
+    fn hash_prefix_prefills_shell_for_ls() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.submit_classified("ls -la".to_string());
+        assert_eq!(app.input, "!ls -la");
+        assert!(
+            app.status.contains("Looks like shell"),
+            "status: {}",
+            app.status
+        );
+        app.submit_classified("tests".to_string());
+        assert_eq!(app.input, "tests");
+        assert!(app.status.contains("Ambiguous"), "status: {}", app.status);
+        app.submit_classified(String::new());
+        assert!(app.input.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hash_prefix_submits_question_to_agent() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "#what is this?".to_string();
+        app.submit_classified("what is this?".to_string());
+        // The prompt left the composer for the (test-backend) request path.
+        assert!(app.input.is_empty());
+        assert!(app.busy);
     }
 
     #[test]
