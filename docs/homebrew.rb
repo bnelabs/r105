@@ -7,20 +7,20 @@ class R105 < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/bnelabs/r105/releases/download/v2.1.0/r105-macos-arm64.tar.gz"
-      sha256 "1ec0a112717be37319f18186ab8bf98db4fc99a889d19e7ec5f96dfe7591d2be"
+      sha256 "c9acd4811dccde035edb98f35101ac5f42f0742690e8b61163e290381b03b923"
     else
       url "https://github.com/bnelabs/r105/releases/download/v2.1.0/r105-macos-x86_64.tar.gz"
-      sha256 "e453d2e5a62bbff3880867e681ad55753debdb8b5454203bfa42fd062873cd61"
+      sha256 "b9ac15c4563aacc0d7f3b502cbaa1f0c6da901391b070f04f93a9f35a5700001"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/bnelabs/r105/releases/download/v2.1.0/r105-linux-aarch64.tar.gz"
-      sha256 "7b1df3d0b8df12f2cd899c5b6e478069b5f64627af2760ffa1ccbe9d4f881712"
+      sha256 "0087a03828d9d23c07e814c018cbed54bdbc923cba602f7ef739ab768719980b"
     else
       url "https://github.com/bnelabs/r105/releases/download/v2.1.0/r105-linux-x86_64.tar.gz"
-      sha256 "fbc04942166baf9682de8bc52fd48cfc4fdffe99f2dbae644c2504d702fd4ac8"
+      sha256 "4a71d3a370543204a746f2db7c848cad40d83eb19eb6e00637f5d497f67ec55d"
     end
   end
 
