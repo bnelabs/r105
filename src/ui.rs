@@ -6,7 +6,7 @@
 //! picker shares the same visible-window calculation.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io::{self, Write, stdout},
     path::{Path, PathBuf},
     process::{Command as OsCommand, Stdio},
@@ -216,6 +216,21 @@ struct UiApp {
     /// Recently dispatched slash commands, most recent first (cap 8), so
     /// the palette can float repeated commands above fuzzy order.
     recent_commands: VecDeque<String>,
+    /// In-flight compaction backup name: doubles as the "a compaction
+    /// (not a chat) failed" flag so `ChatError` reports `/compact to
+    /// retry` instead of the chat `/retry` path. Cleared in both arms.
+    compact_backup: Option<String>,
+    /// Next lazy transcript message number (`m<N>` IDs are assigned on
+    /// first render so undo/redo/compact never shift section identity).
+    next_msg_id: u64,
+    /// Per-section expand overrides keyed by message ID; entries exist
+    /// only where the user diverged from the global defaults.
+    section_state: HashMap<String, bool>,
+    /// Message IDs of the sections in gutter order, rebuilt every draw
+    /// so `/expand n` resolves against what is currently visible. The
+    /// bool is the section's global default (tool output follows
+    /// `show_details`, thinking follows `thinking_default_expanded`).
+    section_order: Vec<(String, bool)>,
     /// File context resolved from `@refs`, pushed as a system message next
     /// to the user message once the backend answers.
     pending_context: Option<String>,
@@ -336,6 +351,10 @@ impl UiApp {
             slow_hint_shown: false,
             queue: VecDeque::new(),
             recent_commands: VecDeque::new(),
+            compact_backup: None,
+            next_msg_id: 0,
+            section_state: HashMap::new(),
+            section_order: Vec::new(),
             pending_context: None,
             redo_stack: Vec::new(),
             drop_next_restore: false,
@@ -463,7 +482,14 @@ impl UiApp {
                         self.input = prompt;
                         self.cursor = self.input.len();
                     }
-                    self.set_error(format!("Request failed: {error} · /retry to try again"));
+                    // A failed compaction retries via `/compact` (history is
+                    // intact), not via the chat `/retry` path.
+                    let compact_failed = self.compact_backup.take().is_some();
+                    self.set_error(if compact_failed {
+                        format!("Compaction failed: {error} · /compact to retry")
+                    } else {
+                        format!("Request failed: {error} · /retry to try again")
+                    });
                     let settled = self.queue.is_empty() && !cancelled;
                     self.start_next_queued();
                     if settled {
@@ -489,15 +515,9 @@ impl UiApp {
                 }
                 UiEvent::Compacted { summary, recent } => {
                     self.awaiting_first_token = false;
-                    self.state.history =
-                        vec![Message::system(format!("Conversation summary:\n{summary}"))];
-                    self.state.history.extend(recent);
-                    self.state.last_usage = Usage::default();
-                    self.busy = false;
-                    self.cancellation = None;
-                    self.follow_transcript = true;
-                    self.set_ok("Context compacted".into());
-                    self.start_next_queued();
+                    if self.apply_compaction(summary, recent) {
+                        self.start_next_queued();
+                    }
                 }
                 UiEvent::ModelsLoaded { backend, models } => {
                     self.backend = backend;
@@ -1457,10 +1477,29 @@ impl UiApp {
             }
             "/config" => self.command_config(&parsed.args).await,
             "/clear" => {
+                // Backup first: a cleared transcript is otherwise gone.
+                // A failed backup aborts the clear so nothing is lost.
+                let backup = if self.state.history.is_empty() {
+                    None
+                } else {
+                    match session::save_checkpoint(&self.paths, &self.state, "clear") {
+                        Ok(name) => Some(name),
+                        Err(error) => {
+                            self.set_error(format!(
+                                "Clear backup failed, transcript kept: {error}"
+                            ));
+                            return Ok(());
+                        }
+                    }
+                };
                 self.state.history.clear();
                 self.streaming.clear();
                 self.redo_stack.clear();
-                self.set_ok("Transcript cleared".into());
+                self.prune_sections();
+                self.set_ok(match backup {
+                    Some(name) => format!("Transcript cleared · backup {name}"),
+                    None => "Transcript cleared".to_string(),
+                });
             }
             "/workspace" => self.command_workspace(&parsed.args),
             "/session" => self.command_session(&parsed.args),
@@ -1492,6 +1531,8 @@ impl UiApp {
             "/retry" => self.command_retry(),
             "/undo" => self.command_undo(),
             "/redo" => self.command_redo(),
+            "/rewind" => self.command_rewind(&parsed.args),
+            "/expand" => self.command_expand(&parsed.args),
             "/editor" => self.command_editor(),
             "/settings" => {
                 self.overlay = Overlay::Settings { selected: 0 };
@@ -2048,10 +2089,22 @@ impl UiApp {
             self.set_error("There is not enough conversation to compact yet".into());
             return;
         }
-        let keep = (self.state.history.len() / 3).max(1);
-        let split = self.state.history.len().saturating_sub(keep);
-        let older = self.state.history[..split].to_vec();
-        let recent = self.state.history[split..].to_vec();
+        // Backup first: the summary replaces the transcript, so a bad
+        // compaction must stay recoverable via `/session load`.
+        let backup = match session::save_checkpoint(&self.paths, &self.state, "compact") {
+            Ok(name) => name,
+            Err(error) => {
+                self.set_error(format!("Compact backup failed, transcript kept: {error}"));
+                return;
+            }
+        };
+        let (older, recent) = split_compact(&self.state.history);
+        if older.is_empty() {
+            self.set_error("There is not enough conversation to compact yet".into());
+            return;
+        }
+        let older = older.to_vec();
+        let recent = recent.to_vec();
         let transcript = older
             .iter()
             .map(|message| format!("{}: {}", message.role, message.content))
@@ -2071,6 +2124,7 @@ impl UiApp {
         self.awaiting_first_token = true;
         self.slow_hint_shown = false;
         self.cancellation = Some(CancellationToken::new());
+        self.compact_backup = Some(backup);
         self.set_status(if automatic {
             "Context near its limit; compacting…".into()
         } else {
@@ -2085,11 +2139,38 @@ impl UiApp {
                     });
                 }
                 Err(error) => {
-                    let _ =
-                        sender.send(UiEvent::ChatError(format!("compaction failed: {error:#}")));
+                    let _ = sender.send(UiEvent::ChatError(format!("{error:#}")));
                 }
             }
         });
+    }
+
+    /// Apply a compaction summary, replacing the transcript head. Returns
+    /// false (history untouched) when the summary is blank — wiping
+    /// context for an empty summary is never a valid compaction.
+    fn apply_compaction(&mut self, summary: String, recent: Vec<Message>) -> bool {
+        if summary.trim().is_empty() {
+            self.busy = false;
+            self.cancellation = None;
+            self.compact_backup = None;
+            self.follow_transcript = true;
+            self.set_error("Compaction returned an empty summary · /compact to retry".into());
+            return false;
+        }
+        self.state.history = vec![Message::system(format!("Conversation summary:\n{summary}"))];
+        self.state.history.extend(recent);
+        self.state.last_usage = Usage::default();
+        self.prune_sections();
+        self.busy = false;
+        self.cancellation = None;
+        self.follow_transcript = true;
+        let backup_note = self
+            .compact_backup
+            .take()
+            .map(|name| format!(" · backup {name}"))
+            .unwrap_or_default();
+        self.set_ok(format!("Context compacted{backup_note}"));
+        true
     }
 
     fn command_skills(&mut self) {
@@ -2430,6 +2511,8 @@ impl UiApp {
                 match session::load(&self.paths, name, &mut self.state) {
                     Ok(count) => {
                         self.redo_stack.clear();
+                        self.reseed_msg_ids();
+                        self.prune_sections();
                         self.follow_transcript = true;
                         self.set_ok(format!("Loaded {name} ({count} messages)"));
                     }
@@ -2481,6 +2564,63 @@ impl UiApp {
         }
     }
 
+    /// `/rewind [n]`: drop the last n user turns after a checkpoint
+    /// backup. Unlike `/undo` the composer is left alone; `/redo`
+    /// re-applies the dropped turns and `/session load <backup>`
+    /// restores the pre-rewind transcript.
+    fn command_rewind(&mut self, args: &[String]) {
+        if self.busy {
+            self.set_error("Finish the active request before rewinding".into());
+            return;
+        }
+        let turns = args
+            .first()
+            .map(String::as_str)
+            .unwrap_or("1")
+            .parse::<usize>()
+            .unwrap_or(0);
+        if turns == 0 {
+            self.set_error("Usage: /rewind [turns]".into());
+            return;
+        }
+        let mut index = None;
+        let mut seen = 0;
+        for (position, message) in self.state.history.iter().enumerate().rev() {
+            if message.role == "user" {
+                seen += 1;
+                if seen == turns {
+                    index = Some(position);
+                    break;
+                }
+            }
+        }
+        let Some(index) = index else {
+            self.set_error(if seen == 0 {
+                "Nothing to rewind".into()
+            } else {
+                format!("Only {seen} user turn(s) in the transcript")
+            });
+            return;
+        };
+        // Backup first: without it a rewind is unrecoverable.
+        let backup = match session::save_checkpoint(&self.paths, &self.state, "rewind") {
+            Ok(name) => name,
+            Err(error) => {
+                self.set_error(format!("Rewind backup failed, transcript kept: {error}"));
+                return;
+            }
+        };
+        let removed: Vec<Message> = self.state.history.drain(index..).collect();
+        let count = removed.len();
+        self.redo_stack.push(UndoEntry { messages: removed });
+        self.prune_sections();
+        self.follow_transcript = true;
+        self.push_system(&format!(
+            "Rewound {count} message(s) · backup {backup} · /redo to re-apply, /session load {backup} to restore"
+        ));
+        self.set_ok(format!("Rewound {count} message(s); backup {backup}"));
+    }
+
     fn command_undo(&mut self) {
         if self.busy {
             self.set_error("Finish the active request before undoing".into());
@@ -2503,6 +2643,7 @@ impl UiApp {
         };
         let count = removed.len();
         self.redo_stack.push(UndoEntry { messages: removed });
+        self.prune_sections();
         self.input = prompt;
         self.cursor = self.input.len();
         self.at_cache_key.clear();
@@ -2703,6 +2844,127 @@ impl UiApp {
     fn set_error(&mut self, text: String) {
         self.status = text;
         self.status_tone = StatusTone::Error;
+    }
+
+    /// Stable ID for a history message, assigning `m<N>` lazily so IDs
+    /// survive undo/redo/compact (which move messages but never renumber).
+    fn section_id(&mut self, index: usize) -> String {
+        if self.state.history[index].id.is_empty() {
+            let id = format!("m{}", self.next_msg_id);
+            self.next_msg_id += 1;
+            self.state.history[index].id = id.clone();
+            id
+        } else {
+            self.state.history[index].id.clone()
+        }
+    }
+
+    /// Effective expanded state: the per-section override wins, otherwise
+    /// the global default for this section kind.
+    fn section_expanded(&self, id: &str, default: bool) -> bool {
+        self.section_state.get(id).copied().unwrap_or(default)
+    }
+
+    /// A failed tool result always renders expanded: collapsing it would
+    /// hide exactly what the user needs to see.
+    fn section_failed(&self, id: &str) -> bool {
+        self.state.history.iter().any(|message| {
+            message.id == id && message.role == "tool" && message.content.contains("tool error:")
+        })
+    }
+
+    /// Drop overrides for messages that left the transcript so the map
+    /// cannot grow without bound. Overrides are view-local: redoing an
+    /// undone exchange renders it with the global defaults again.
+    fn prune_sections(&mut self) {
+        self.section_state
+            .retain(|id, _| self.state.history.iter().any(|message| message.id == *id));
+    }
+
+    /// Advance the ID counter past anything already in history (session
+    /// load), so fresh messages never collide with restored IDs. An empty
+    /// transcript leaves the counter alone: monotonic is enough.
+    fn reseed_msg_ids(&mut self) {
+        if self
+            .state
+            .history
+            .iter()
+            .any(|message| !message.id.is_empty())
+        {
+            let max = self
+                .state
+                .history
+                .iter()
+                .filter_map(|message| message.id.strip_prefix('m')?.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0);
+            self.next_msg_id = self.next_msg_id.max(max + 1);
+        }
+    }
+
+    /// `/expand [n|all|none]`: flip one transcript section's expanded
+    /// state. Bare toggles the most recent section; gutter numbers come
+    /// from the last draw (`section_order`), and a draw always precedes
+    /// input in the event loop.
+    fn command_expand(&mut self, args: &[String]) {
+        match args.first().map(String::as_str) {
+            Some("all") | Some("none") => {
+                let value = args.first().is_some_and(|action| action == "all");
+                let count = self.section_order.len();
+                for (id, _) in self.section_order.clone() {
+                    // Failed tool results stay expanded whatever is asked.
+                    if value || !self.section_failed(&id) {
+                        self.section_state.insert(id, value);
+                    }
+                }
+                self.set_ok(format!(
+                    "{} {count} section(s)",
+                    if value { "Expanded" } else { "Collapsed" }
+                ));
+            }
+            Some(text) => match text.parse::<usize>() {
+                Ok(number) if number >= 1 && number <= self.section_order.len() => {
+                    let (id, default) = self.section_order[number - 1].clone();
+                    if self.section_failed(&id) {
+                        self.set_status(format!(
+                            "Section {number} is a failed tool result and stays expanded"
+                        ));
+                        return;
+                    }
+                    let next = !self.section_expanded(&id, default);
+                    self.section_state.insert(id, next);
+                    self.set_status(format!(
+                        "Section {number} {}",
+                        if next { "expanded" } else { "collapsed" }
+                    ));
+                }
+                _ => self.set_error(format!(
+                    "Usage: /expand [1-{}|all|none]",
+                    self.section_order.len().max(1)
+                )),
+            },
+            None => {
+                let last = self.section_order.last().cloned();
+                match last {
+                    Some((id, default)) => {
+                        let number = self.section_order.len();
+                        if self.section_failed(&id) {
+                            self.set_status(format!(
+                                "Section {number} is a failed tool result and stays expanded"
+                            ));
+                            return;
+                        }
+                        let next = !self.section_expanded(&id, default);
+                        self.section_state.insert(id, next);
+                        self.set_status(format!(
+                            "Section {number} {}",
+                            if next { "expanded" } else { "collapsed" }
+                        ));
+                    }
+                    None => self.set_status("No expandable sections in the transcript".into()),
+                }
+            }
+        }
     }
 
     fn cancel_work(&mut self, status: &str) {
@@ -3290,7 +3552,14 @@ impl UiApp {
         let mut lines = Vec::new();
         let palette = theme_palette(&self.state.theme);
         let show_thinking = self.state.show_thinking;
-        let thinking_expanded = self.state.thinking_default_expanded;
+        let thinking_default = self.state.thinking_default_expanded;
+        let details_default = self.show_details;
+        // Lazy IDs first: a short &mut pass so the render below (and the
+        // section bookkeeping) only needs shared borrows.
+        for index in 0..self.state.history.len() {
+            self.section_id(index);
+        }
+        let mut order: Vec<(String, bool)> = Vec::new();
         for message in &self.state.history {
             let color = match message.role.as_str() {
                 "user" => palette.user,
@@ -3299,28 +3568,57 @@ impl UiApp {
                 _ => Color::Magenta,
             };
             let label = message.role.to_ascii_uppercase();
+            let thinking = if message.role == "assistant" {
+                thinking_body(&message.content)
+            } else {
+                None
+            };
+            let is_tool = message.role == "tool";
+            let failed = is_tool && message.content.contains("tool error:");
+            // A message is one section: tool output, or the thinking part
+            // of an assistant message (shown only when thinking is on).
+            let is_section = is_tool || (thinking.is_some() && show_thinking);
+            let gutter = if is_section {
+                let default = if is_tool {
+                    details_default
+                } else {
+                    thinking_default
+                };
+                order.push((message.id.clone(), default));
+                format!(" [{}]", order.len())
+            } else {
+                String::new()
+            };
             lines.push(Line::from(Span::styled(
-                format!(" {label} "),
+                format!(" {label}{gutter} "),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             )));
             if message.role == "assistant"
-                && let Some(body) = thinking_body(&message.content)
+                && let Some(body) = thinking
             {
-                push_thinking_lines(&mut lines, body, show_thinking, thinking_expanded);
-            } else if message.role == "tool" && !self.show_details {
-                // Error results always expand: a collapsed red line hides
-                // exactly what the user needs to see.
-                let failed = message.content.contains("tool error:");
-                if failed {
+                let expanded = if is_section {
+                    let (id, default) = order.last().cloned().unwrap_or_default();
+                    self.section_expanded(&id, default)
+                } else {
+                    thinking_default
+                };
+                push_thinking_lines(&mut lines, body, show_thinking, expanded);
+            } else if is_tool {
+                let expanded = failed || self.section_expanded(&message.id, details_default);
+                if !expanded {
+                    let first = message.content.lines().next().unwrap_or_default();
+                    let number = order.len();
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "  ▸[{number}] {}…",
+                            first.chars().take(96).collect::<String>()
+                        ),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                } else {
                     for line in message.content.lines() {
                         lines.push(Line::from(format!("  {line}")));
                     }
-                } else {
-                    let first = message.content.lines().next().unwrap_or_default();
-                    lines.push(Line::from(Span::styled(
-                        format!("  {}…", first.chars().take(100).collect::<String>()),
-                        Style::default().fg(Color::DarkGray),
-                    )));
                 }
             } else {
                 for line in message.content.lines() {
@@ -3344,6 +3642,7 @@ impl UiApp {
             }
             lines.push(Line::from(""));
         }
+        self.section_order = order;
         if !self.streaming.is_empty() {
             lines.push(Line::from(Span::styled(
                 " ASSISTANT ",
@@ -3848,6 +4147,19 @@ fn thinking_body(content: &str) -> Option<&str> {
         .strip_prefix("<thinking>")
         .and_then(|rest| rest.strip_suffix("</thinking>"))
         .map(str::trim)
+}
+
+/// Split history for compaction: summarize `older`, keep `recent`
+/// verbatim. The kept tail follows the existing last-third ratio, then
+/// walks the split backward past leading tool messages so it never
+/// starts mid-exchange with results whose call was summarized away.
+fn split_compact(history: &[Message]) -> (&[Message], &[Message]) {
+    let keep = (history.len() / 3).max(1);
+    let mut split = history.len().saturating_sub(keep);
+    while split > 0 && history[split].role == "tool" {
+        split -= 1;
+    }
+    (&history[..split], &history[split..])
 }
 
 /// Split a trailing ` (×N)` repeat suffix folded by [`UiApp::push_system`].
@@ -4407,11 +4719,32 @@ mod tests {
         assert_eq!(cell.fg, Color::Red);
     }
 
+    /// Isolated session dirs for tests that write checkpoints: the
+    /// default `test_app` paths point at the real user config.
+    fn test_paths(root: &std::path::Path) -> ConfigPaths {
+        ConfigPaths {
+            home: root.to_path_buf(),
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.json"),
+            sessions_dir: root.join("config/sessions"),
+            plugins_dir: root.join("config/plugins"),
+        }
+    }
+
     fn system_notes(app: &UiApp) -> Vec<String> {
         app.state
             .history
             .iter()
             .filter(|message| message.role == "system")
+            .map(|message| message.content.clone())
+            .collect()
+    }
+
+    fn user_messages(app: &UiApp) -> Vec<String> {
+        app.state
+            .history
+            .iter()
+            .filter(|message| message.role == "user")
             .map(|message| message.content.clone())
             .collect()
     }
@@ -4444,6 +4777,180 @@ mod tests {
         // Malformed tails are left alone rather than mis-folded.
         assert_eq!(split_repeat_suffix("note (×)"), ("note (×)", 1));
         assert_eq!(split_repeat_suffix("note (×x)"), ("note (×x)", 1));
+    }
+
+    #[test]
+    fn expand_toggles_single_tool_section() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.history.push(Message::user("do things"));
+        app.state
+            .history
+            .push(Message::tool("call-1", "line1\nline2\nline3"));
+        // Collapsed by default: only the first line shows, with a marker.
+        let collapsed = render_lines(&mut app, 80, 24).join("\n");
+        assert!(
+            collapsed.contains("TOOL [1]"),
+            "gutter missing:\n{collapsed}"
+        );
+        assert!(collapsed.contains("▸[1]"), "marker missing:\n{collapsed}");
+        assert!(!collapsed.contains("line2"), "should start collapsed");
+        app.command_expand(&["1".to_string()]);
+        let expanded = render_lines(&mut app, 80, 24).join("\n");
+        assert!(expanded.contains("line2"), "toggle did not expand");
+        assert!(expanded.contains("line3"), "toggle did not expand");
+        // Toggling again collapses back to the summary row.
+        app.command_expand(&["1".to_string()]);
+        let again = render_lines(&mut app, 80, 24).join("\n");
+        assert!(!again.contains("line2"), "second toggle did not collapse");
+    }
+
+    #[test]
+    fn expand_all_none_and_failed_guard() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.history.push(Message::tool("call-1", "ok1\nok1b"));
+        app.state
+            .history
+            .push(Message::tool("call-2", "tool error: boom\ndetail"));
+        let _ = render_lines(&mut app, 80, 24);
+        assert_eq!(app.section_order.len(), 2);
+        // The failed result reports that it stays expanded.
+        app.command_expand(&["2".to_string()]);
+        assert!(
+            app.status.contains("stays expanded"),
+            "guard missing: {}",
+            app.status
+        );
+        let rendered = render_lines(&mut app, 80, 24).join("\n");
+        assert!(rendered.contains("detail"), "failed result must expand");
+        // `none` collapses the healthy section but not the failed one.
+        app.command_expand(&["none".to_string()]);
+        let collapsed = render_lines(&mut app, 80, 24).join("\n");
+        assert!(!collapsed.contains("ok1b"), "healthy section not collapsed");
+        assert!(
+            collapsed.contains("detail"),
+            "failed result must stay expanded"
+        );
+        app.command_expand(&["all".to_string()]);
+        let all = render_lines(&mut app, 80, 24).join("\n");
+        assert!(all.contains("ok1b"), "all did not expand");
+        // Bare `/expand` toggles the most recent section (the failed one
+        // refuses, so point the check at a healthy-only transcript).
+        let (mut solo, _workspace, _skills) = test_app();
+        solo.state
+            .history
+            .push(Message::tool("call-9", "solo1\nsolo2"));
+        let _ = render_lines(&mut solo, 80, 24);
+        solo.command_expand(&[]);
+        let bare = render_lines(&mut solo, 80, 24).join("\n");
+        assert!(
+            bare.contains("solo2"),
+            "bare expand did not toggle last section"
+        );
+    }
+
+    #[test]
+    fn rewind_truncates_and_pushes_redo() {
+        let (mut app, _workspace, _skills) = test_app();
+        let sessions = tempfile::TempDir::new().expect("sessions");
+        app.paths = test_paths(sessions.path());
+        app.state.history.push(Message::user("first"));
+        app.state
+            .history
+            .push(Message::assistant_with_tools("answer one", vec![]));
+        app.state.history.push(Message::user("second"));
+        app.state
+            .history
+            .push(Message::assistant_with_tools("answer two", vec![]));
+        app.command_rewind(&[]);
+        let users = user_messages(&app);
+        assert_eq!(users, vec!["first"]);
+        assert_eq!(app.redo_stack.len(), 1);
+        assert!(app.status.contains("backup checkpoint-rewind-"));
+        // The boundary notice names the backup for a later restore.
+        let notes = system_notes(&app);
+        assert!(
+            notes
+                .last()
+                .is_some_and(|note| note.contains("backup checkpoint-rewind-")),
+            "boundary notice missing: {notes:?}"
+        );
+        // `/redo` re-applies the dropped turn.
+        app.command_redo();
+        assert_eq!(user_messages(&app), vec!["first", "second"]);
+        // Two turns back drops every user message.
+        app.command_rewind(&["2".to_string()]);
+        assert!(user_messages(&app).is_empty());
+        // Nothing left to rewind.
+        app.command_rewind(&[]);
+        assert_eq!(app.status, "Nothing to rewind");
+    }
+
+    #[test]
+    fn rewind_writes_checkpoint_backup() {
+        let (mut app, _workspace, _skills) = test_app();
+        let sessions = tempfile::TempDir::new().expect("sessions");
+        app.paths = test_paths(sessions.path());
+        app.state.history.push(Message::user("keep me"));
+        app.state
+            .history
+            .push(Message::assistant_with_tools("kept", vec![]));
+        app.command_rewind(&[]);
+        assert!(app.state.history.len() <= 1);
+        let backup = session::list(&app.paths)
+            .into_iter()
+            .map(|item| item.name)
+            .find(|name| name.starts_with("checkpoint-rewind-"))
+            .expect("checkpoint backup");
+        app.state.history.clear();
+        let count = session::load(&app.paths, &backup, &mut app.state).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(app.state.history[0].content, "keep me");
+    }
+
+    #[test]
+    fn compact_split_keeps_tool_pairs_intact() {
+        // Naive last-third splitting (len 9, keep 3) would cut at index 6,
+        // stranding tool results whose call was summarized away.
+        let history = vec![
+            Message::user("u1"),
+            Message::assistant_with_tools("a1", vec![]),
+            Message::tool("c1", "r1"),
+            Message::user("u2"),
+            Message::assistant_with_tools("a2", vec![]),
+            Message::tool("c2", "r2"),
+            Message::tool("c3", "r3"),
+            Message::user("u3"),
+            Message::assistant_with_tools("a3", vec![]),
+        ];
+        assert_eq!(history[6].role, "tool");
+        let (older, recent) = split_compact(&history);
+        assert_eq!(older.len() + recent.len(), 9);
+        assert_ne!(
+            recent.first().map(|message| message.role.as_str()),
+            Some("tool"),
+            "kept tail starts mid-exchange"
+        );
+        assert!(recent.iter().any(|message| message.content == "a2"));
+    }
+
+    #[test]
+    fn compact_rejects_empty_summary() {
+        let (mut app, _workspace, _skills) = test_app();
+        for index in 0..5 {
+            app.state.history.push(Message::user(format!("m{index}")));
+        }
+        let before = app.state.history.clone();
+        let recent = before[3..].to_vec();
+        assert!(!app.apply_compaction(String::new(), recent.clone()));
+        assert_eq!(app.state.history, before);
+        assert!(
+            app.status.contains("empty summary"),
+            "status: {}",
+            app.status
+        );
+        assert!(app.apply_compaction("summary text".to_string(), recent));
+        assert_eq!(app.state.history.len(), 3);
+        assert!(app.state.history[0].content.contains("summary text"));
     }
 
     #[test]

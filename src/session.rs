@@ -238,6 +238,56 @@ pub fn delete(paths: &ConfigPaths, name: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Timestamped backup before history-destroying commands (rewind,
+/// compact, clear). Checkpoints live in the sessions dir so
+/// `/session load <name>` restores them with the existing code path;
+/// only the newest 10 survive so automatic backups never fill the disk.
+pub fn save_checkpoint(paths: &ConfigPaths, state: &ChatState, reason: &str) -> Result<String> {
+    let epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    let clean: String = reason
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .collect();
+    let clean = if clean.is_empty() {
+        "manual".to_string()
+    } else {
+        clean
+    };
+    let mut name = format!("checkpoint-{clean}-{epoch}");
+    let mut suffix = 1;
+    while session_path(paths, &name)?.exists() {
+        suffix += 1;
+        // Zero-padded so lexicographic order stays chronological when
+        // several checkpoints share one epoch second.
+        name = format!("checkpoint-{clean}-{epoch}-{suffix:03}");
+    }
+    save(paths, &name, state)?;
+    prune_checkpoints(paths, 10);
+    Ok(name)
+}
+
+fn prune_checkpoints(paths: &ConfigPaths, keep: usize) {
+    let Ok(entries) = fs::read_dir(&paths.sessions_dir) else {
+        return;
+    };
+    let mut checkpoints: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let stem = entry.path().file_stem()?.to_string_lossy().to_string();
+            stem.starts_with("checkpoint-").then_some(stem)
+        })
+        .collect();
+    checkpoints.sort();
+    if checkpoints.len() > keep {
+        for stale in checkpoints.drain(..checkpoints.len() - keep) {
+            let _ = delete(paths, &stale);
+        }
+    }
+}
+
 pub fn diff(paths: &ConfigPaths, name: &str, state: &ChatState) -> Result<String> {
     let path = session_path(paths, name)?;
     let value: Value = serde_json::from_str(&fs::read_to_string(path)?)?;
@@ -305,6 +355,11 @@ fn parse_message(value: &Value) -> Option<Message> {
     Some(Message {
         role,
         content,
+        id: object
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         tool_calls,
         tool_call_id: optional_string(object.get("tool_call_id")),
         name: optional_string(object.get("name")),
@@ -398,5 +453,63 @@ mod tests {
         assert!(parse_message(&value).is_none());
         let value = serde_json::json!({"role": "user", "content": "hi"});
         assert_eq!(parse_message(&value).unwrap().role, "user");
+    }
+
+    #[test]
+    fn message_ids_survive_round_trip_and_default_empty() {
+        let root = tempdir().unwrap();
+        let paths = ConfigPaths {
+            home: root.path().to_path_buf(),
+            config_dir: root.path().join("config"),
+            config_file: root.path().join("config/config.json"),
+            sessions_dir: root.path().join("config/sessions"),
+            plugins_dir: root.path().join("config/plugins"),
+        };
+        let mut state = ChatState {
+            workspace: root.path().to_path_buf(),
+            ..ChatState::from_config(&crate::config::Config::default(), root.path().to_path_buf())
+        };
+        let mut tagged = Message::user("tagged");
+        tagged.id = "m7".to_string();
+        state.history.push(tagged);
+        save(&paths, "ids", &state).unwrap();
+        state.history.clear();
+        assert_eq!(load(&paths, "ids", &mut state).unwrap(), 1);
+        assert_eq!(state.history[0].id, "m7");
+        // Files written before IDs existed load with an empty ID.
+        let legacy = serde_json::json!({"role": "tool", "content": "out"});
+        assert_eq!(parse_message(&legacy).unwrap().id, "");
+    }
+
+    #[test]
+    fn save_checkpoint_prunes_to_ten() {
+        let root = tempdir().unwrap();
+        let paths = ConfigPaths {
+            home: root.path().to_path_buf(),
+            config_dir: root.path().join("config"),
+            config_file: root.path().join("config/config.json"),
+            sessions_dir: root.path().join("config/sessions"),
+            plugins_dir: root.path().join("config/plugins"),
+        };
+        let state = ChatState {
+            workspace: root.path().to_path_buf(),
+            ..ChatState::from_config(&crate::config::Config::default(), root.path().to_path_buf())
+        };
+        let mut first = String::new();
+        for _ in 0..12 {
+            let name = save_checkpoint(&paths, &state, "test").unwrap();
+            assert!(name.starts_with("checkpoint-test-"));
+            if first.is_empty() {
+                first = name;
+            }
+        }
+        let kept: Vec<String> = list(&paths)
+            .into_iter()
+            .map(|item| item.name)
+            .filter(|name| name.starts_with("checkpoint-"))
+            .collect();
+        assert_eq!(kept.len(), 10);
+        // The oldest backup (no numeric suffix) was pruned first.
+        assert!(!kept.contains(&first));
     }
 }

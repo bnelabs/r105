@@ -241,6 +241,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "re-apply the last undone exchange",
     },
     CommandSpec {
+        name: "/rewind",
+        usage: "/rewind [turns]",
+        description: "drop recent turns after a checkpoint backup",
+    },
+    CommandSpec {
+        name: "/expand",
+        usage: "/expand [n|all|none]",
+        description: "expand or collapse one transcript section",
+    },
+    CommandSpec {
         name: "/editor",
         usage: "/editor",
         description: "compose the prompt in $EDITOR",
@@ -416,6 +426,7 @@ pub fn static_arg_values(name: &str) -> Option<&'static [&'static str]> {
             "creative",
         ]),
         "/session" => Some(&["save", "load", "list", "search", "delete", "diff", "fork"]),
+        "/expand" => Some(&["all", "none"]),
         "/export" => Some(&["markdown", "text", "json", "html", "md", "txt", "pdf"]),
         "/mcp" => Some(&["list", "tools", "reconnect"]),
         "/plugin" => Some(&["list", "reload"]),
