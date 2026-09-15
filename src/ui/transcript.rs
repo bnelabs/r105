@@ -35,6 +35,24 @@ impl UiApp {
         self.status_tone = StatusTone::Success;
     }
 
+    /// Switch mode in both mirrors: the Tab-cycle label and the session
+    /// state that gates tools and prompts. Splitting them was the 0012 bug.
+    pub(crate) fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+        self.state.mode = mode.as_str().to_string();
+        self.set_ok(format!("Mode: {}", mode.as_str()));
+    }
+
+    /// Re-derive the Tab-cycle label after a session load/rewind replaced
+    /// the state. Unknown values fall back to build (gates fail open).
+    pub(crate) fn sync_mode_from_state(&mut self) {
+        self.mode = match self.state.mode.as_str() {
+            "plan" => Mode::Plan,
+            "ask" => Mode::Ask,
+            _ => Mode::Build,
+        };
+    }
+
     /// Failure or blocked-action notice (red tone).
     pub(crate) fn set_error(&mut self, text: String) {
         self.status = text;

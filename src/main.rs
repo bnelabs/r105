@@ -1,11 +1,15 @@
 #![forbid(unsafe_code)]
+// The config-schema `json!` literal holds one entry per key; keep headroom.
+#![recursion_limit = "256"]
 
 mod app;
+mod approve;
 mod backend;
 mod command;
 mod config;
 mod custom;
 mod export;
+mod ghost;
 mod mcp;
 mod model;
 mod plugin;

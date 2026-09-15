@@ -3,6 +3,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -32,6 +33,58 @@ pub struct ToolContext {
     pub cancellation: CancellationToken,
     pub allow_network: bool,
     pub allow_code: bool,
+    pub mode: String,
+    pub policy: crate::approve::Policy,
+    /// Shared with the TUI: `todo_write` replaces the list, the UI syncs
+    /// it into session state when the round's results land.
+    pub todos: Arc<Mutex<Vec<crate::model::TodoItem>>>,
+}
+
+/// Tools usable in plan mode: read-only inspection, web research, and
+/// the todo list (which mutates no workspace state). Everything else —
+/// `execute_rust`, `write_file`, `plugin_*`, `mcp_*` — is denied.
+pub const PLAN_MODE_TOOLS: &[&str] = &[
+    "read_file",
+    "list_files",
+    "get_time",
+    "calculate",
+    "convert",
+    "system_info",
+    "web_search",
+    "web_fetch",
+    "todo_write",
+];
+
+/// Ask mode answers directly; only the todo list may be touched so a
+/// spoken plan can still be recorded. (Added alongside 0014; until then
+/// the name simply matches nothing.)
+pub const ASK_MODE_TOOLS: &[&str] = &["todo_write"];
+
+/// Whether `name` may run under `mode`. Unknown modes fail open to
+/// build behavior so a corrupt session file cannot brick tool use.
+pub fn mode_allows(mode: &str, name: &str) -> bool {
+    match mode {
+        "ask" => ASK_MODE_TOOLS.contains(&name),
+        "plan" => PLAN_MODE_TOOLS.contains(&name),
+        _ => true,
+    }
+}
+
+/// Tool definitions offered to the model under `mode`. Ask mode hides
+/// everything but the todo list so denied calls never start; plan keeps
+/// the full set (denials arrive as feedback) so writes can be discussed.
+pub fn definitions_for_mode(all: Vec<Value>, mode: &str) -> Vec<Value> {
+    if mode != "ask" {
+        return all;
+    }
+    all.into_iter()
+        .filter(|definition| {
+            definition
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| ASK_MODE_TOOLS.contains(&name))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +170,12 @@ fn builtin_definitions() -> Vec<Value> {
             json!({"url": {"type": "string"}}),
             &["url"],
         ),
+        definition(
+            "todo_write",
+            "Replace the visible task list for a multi-step task. Call with the full list each time (pending, in_progress, completed); exactly one item may be in_progress. Use for plans the user can follow, not for single-step answers.",
+            json!({"items": {"type": "array", "items": {"type": "object"}}}),
+            &["items"],
+        ),
     ]
 }
 
@@ -132,6 +191,23 @@ fn definition(name: &str, description: &str, properties: Value, required: &[&str
 }
 
 pub async fn execute(name: &str, raw_arguments: &Value, context: &ToolContext) -> Result<String> {
+    // Policy floor first (mode gate, posture, lists, ask level): no
+    // caller — UI, headless, or test — can bypass it.
+    let arguments = repair_arguments(raw_arguments);
+    match crate::approve::resolve(
+        name,
+        &arguments,
+        &context.mode,
+        context.allow_code,
+        context.allow_network,
+        &context.policy,
+    ) {
+        crate::approve::Decision::Allow => {}
+        crate::approve::Decision::Deny(reason) => bail!("tool '{name}' denied: {reason}"),
+        crate::approve::Decision::Ask(summary) => bail!(
+            "tool '{name}' requires approval ({summary}); approve the card in the TUI or add a matching command_allowlist pattern"
+        ),
+    }
     // Policy hooks see every tool call (built-in, MCP, plugin) after
     // repair: denies abort before anything runs, rewrites chain into the
     // call below and into the after-hooks' view of the arguments.
@@ -150,6 +226,7 @@ pub async fn execute(name: &str, raw_arguments: &Value, context: &ToolContext) -
         "system_info" => system_info()?,
         "web_search" => web_search(&arguments, context).await?,
         "web_fetch" => web_fetch(&arguments, context).await?,
+        "todo_write" => todo_write(&arguments, context)?,
         _ if name.starts_with("mcp_") => crate::mcp::call(name, &arguments).await?,
         _ if name.starts_with("plugin_") => {
             if !context.allow_code {
@@ -204,7 +281,7 @@ pub async fn execute_calls(
     Ok(results)
 }
 
-fn repair_arguments(raw: &Value) -> Value {
+pub(crate) fn repair_arguments(raw: &Value) -> Value {
     match raw {
         Value::Object(_) => raw.clone(),
         Value::String(text) => {
@@ -294,6 +371,64 @@ fn list_files(arguments: &Value, workspace: &Path) -> Result<String> {
     } else {
         entries.join("\n")
     })
+}
+
+/// Replace the visible task list. The model sends the full list every
+/// time; at most 20 items, exactly one `in_progress` (extras demote to
+/// pending so a sloppy update cannot claim two active tasks).
+fn todo_write(arguments: &Value, context: &ToolContext) -> Result<String> {
+    use crate::model::{TodoItem, TodoStatus};
+
+    const MAX_TODOS: usize = 20;
+    let items = arguments
+        .get("items")
+        .and_then(Value::as_array)
+        .context("todo_write needs an 'items' array")?;
+    if items.len() > MAX_TODOS {
+        bail!("todo_write takes at most {MAX_TODOS} items");
+    }
+    let mut todos = Vec::with_capacity(items.len());
+    let mut active_seen = false;
+    for (position, item) in items.iter().enumerate() {
+        let content = item
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .with_context(|| format!("todo item {position} needs non-empty 'content'"))?;
+        if content.chars().count() > 200 {
+            bail!("todo item {position} content exceeds 200 chars");
+        }
+        let status = match item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending")
+        {
+            "pending" => TodoStatus::Pending,
+            "completed" => TodoStatus::Completed,
+            "in_progress" if !active_seen => {
+                active_seen = true;
+                TodoStatus::InProgress
+            }
+            "in_progress" => TodoStatus::Pending,
+            other => bail!("todo item {position} has unknown status '{other}'"),
+        };
+        todos.push(TodoItem {
+            content: content.to_string(),
+            status,
+        });
+    }
+    let done = todos
+        .iter()
+        .filter(|item| item.status == TodoStatus::Completed)
+        .count();
+    let total = todos.len();
+    context
+        .todos
+        .lock()
+        .map_err(|_| anyhow::anyhow!("todo list lock poisoned"))?
+        .clone_from(&todos);
+    Ok(format!("todo list updated: {done}/{total} done"))
 }
 
 fn current_time() -> String {
@@ -850,6 +985,9 @@ mod tests {
             cancellation: CancellationToken::new(),
             allow_network: false,
             allow_code: true,
+            mode: "build".to_string(),
+            policy: crate::approve::Policy::default(),
+            todos: Arc::new(Mutex::new(Vec::new())),
         };
         let error = execute("calculate", &json!({"expression": "1+1"}), &context)
             .await
@@ -857,6 +995,160 @@ mod tests {
         assert!(
             error.to_string().contains("denied by plugin 'gate'"),
             "{error:#}"
+        );
+    }
+
+    fn mode_context(mode: &str) -> (tempfile::TempDir, tempfile::TempDir, ToolContext) {
+        use crate::sandbox::Sandbox;
+
+        let workspace = tempdir().unwrap();
+        let plugins = tempdir().unwrap();
+        let context = ToolContext {
+            workspace: workspace.path().to_path_buf(),
+            plugins_dir: plugins.path().to_path_buf(),
+            sandbox: Sandbox::detect("none", None, 5),
+            cancellation: CancellationToken::new(),
+            allow_network: true,
+            allow_code: true,
+            mode: mode.to_string(),
+            policy: crate::approve::Policy::default(),
+            todos: Arc::new(Mutex::new(Vec::new())),
+        };
+        (workspace, plugins, context)
+    }
+
+    /// Ask mode refuses every real tool before any side effect runs.
+    #[tokio::test]
+    async fn mode_ask_denies_all_tools() {
+        let (_workspace, _plugins, context) = mode_context("ask");
+        for name in ["get_time", "calculate", "read_file", "web_search"] {
+            let error = execute(name, &json!({}), &context).await.unwrap_err();
+            assert!(
+                error.to_string().contains("not available in ask mode"),
+                "{name}: {error:#}"
+            );
+        }
+    }
+
+    /// Plan mode keeps reads and research, refuses mutation and exec.
+    #[tokio::test]
+    async fn mode_plan_allows_reads_denies_writes() {
+        let (_workspace, _plugins, context) = mode_context("plan");
+        assert!(
+            execute("calculate", &json!({"expression": "1+1"}), &context)
+                .await
+                .is_ok()
+        );
+        assert!(execute("get_time", &json!({}), &context).await.is_ok());
+        for name in ["write_file", "execute_rust"] {
+            let error = execute(name, &json!({}), &context).await.unwrap_err();
+            assert!(
+                error.to_string().contains("not available in plan mode"),
+                "{name}: {error:#}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mode_build_unchanged() {
+        let (_workspace, _plugins, context) = mode_context("build");
+        assert!(
+            execute("calculate", &json!({"expression": "1+1"}), &context)
+                .await
+                .is_ok()
+        );
+        assert!(mode_allows("bogus-mode", "write_file"));
+    }
+
+    #[test]
+    fn definitions_for_mode_ask_keeps_todo_write() {
+        fn definition(name: &str) -> Value {
+            json!({"type": "function", "function": {"name": name, "parameters": {}}})
+        }
+        let all = vec![definition("read_file"), definition("todo_write")];
+        let ask = definitions_for_mode(all.clone(), "ask");
+        assert_eq!(ask.len(), 1);
+        assert_eq!(
+            ask[0].pointer("/function/name").and_then(Value::as_str),
+            Some("todo_write")
+        );
+        assert_eq!(definitions_for_mode(all, "build").len(), 2);
+        assert_eq!(definitions_for_mode(vec![], "ask").len(), 0);
+    }
+
+    /// `todo_write` replaces the list; a second `in_progress` demotes.
+    #[tokio::test]
+    async fn todo_write_replaces_list() {
+        use crate::model::TodoStatus;
+
+        let (_workspace, _plugins, context) = mode_context("plan");
+        let output = execute(
+            "todo_write",
+            &json!({"items": [
+                {"content": "done thing", "status": "completed"},
+                {"content": "active thing", "status": "in_progress"},
+                {"content": "second active", "status": "in_progress"},
+                {"content": "later thing"},
+            ]}),
+            &context,
+        )
+        .await
+        .unwrap();
+        assert!(output.contains("1/4"), "{output}");
+        let todos = context.todos.lock().unwrap();
+        assert_eq!(todos.len(), 4);
+        assert_eq!(todos[0].status, TodoStatus::Completed);
+        assert_eq!(todos[1].status, TodoStatus::InProgress);
+        assert_eq!(todos[2].status, TodoStatus::Pending);
+        assert_eq!(todos[3].status, TodoStatus::Pending);
+    }
+
+    /// Malformed updates fail visibly so the model can retry.
+    #[tokio::test]
+    async fn todo_write_rejects_bad_items() {
+        let (_workspace, _plugins, context) = mode_context("build");
+        assert!(
+            execute(
+                "todo_write",
+                &json!({"items": [{"content": "x", "status": "later"}]}),
+                &context
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            execute(
+                "todo_write",
+                &json!({"items": [{"content": "  "}]}),
+                &context
+            )
+            .await
+            .is_err()
+        );
+        let many: Vec<Value> = (0..21)
+            .map(|index| json!({"content": format!("task {index}")}))
+            .collect();
+        assert!(
+            execute("todo_write", &json!({"items": many}), &context)
+                .await
+                .is_err()
+        );
+    }
+
+    /// The list is working state, allowed everywhere including ask.
+    #[tokio::test]
+    async fn todo_allowed_in_plan_mode() {
+        let (_workspace, _plugins, plan) = mode_context("plan");
+        let (_workspace, _plugins, ask) = mode_context("ask");
+        let args = json!({"items": [{"content": "review"}]});
+        assert!(execute("todo_write", &args, &plan).await.is_ok());
+        assert!(execute("todo_write", &args, &ask).await.is_ok());
+        assert!(
+            execute("write_file", &args, &ask)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("ask mode")
         );
     }
 }

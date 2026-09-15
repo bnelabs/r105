@@ -59,6 +59,30 @@ pub struct Config {
     pub keybindings: BTreeMap<String, String>,
     pub sandbox_backend: String,
     pub permission_posture: String,
+    #[serde(default = "default_approval_ask")]
+    pub approval_exec: String,
+    #[serde(default = "default_approval_ask")]
+    pub approval_write: String,
+    #[serde(default = "default_approval_allow")]
+    pub approval_read: String,
+    #[serde(default = "default_approval_allow")]
+    pub approval_network: String,
+    #[serde(default = "default_approval_ask")]
+    pub approval_mcp: String,
+    #[serde(default = "default_approval_ask")]
+    pub approval_plugin: String,
+    pub command_allowlist: Vec<String>,
+    pub command_denylist: Vec<String>,
+    #[serde(default = "default_completion_on")]
+    pub completion_enabled: bool,
+    #[serde(default = "default_completion_endpoint")]
+    pub completion_endpoint: String,
+    #[serde(default)]
+    pub completion_model_path: String,
+    #[serde(default = "default_completion_timeout_ms")]
+    pub completion_timeout_ms: u64,
+    #[serde(default = "default_completion_debounce_ms")]
+    pub completion_debounce_ms: u64,
     pub reasoning_effort: String,
     pub show_thinking: bool,
     pub thinking_default_expanded: bool,
@@ -79,6 +103,30 @@ pub struct Config {
     pub timeout_seconds: u64,
 }
 
+fn default_approval_ask() -> String {
+    "ask".to_string()
+}
+
+fn default_approval_allow() -> String {
+    "allow".to_string()
+}
+
+fn default_completion_endpoint() -> String {
+    "http://127.0.0.1:11438".to_string()
+}
+
+fn default_completion_on() -> bool {
+    true
+}
+
+fn default_completion_timeout_ms() -> u64 {
+    1500
+}
+
+fn default_completion_debounce_ms() -> u64 {
+    250
+}
+
 impl Default for Config {
     fn default() -> Self {
         let paths = ConfigPaths::discover();
@@ -95,6 +143,19 @@ impl Default for Config {
             keybindings: BTreeMap::new(),
             sandbox_backend: "auto".to_string(),
             permission_posture: "sandboxed".to_string(),
+            approval_exec: default_approval_ask(),
+            approval_write: default_approval_ask(),
+            approval_read: default_approval_allow(),
+            approval_network: default_approval_allow(),
+            approval_mcp: default_approval_ask(),
+            approval_plugin: default_approval_ask(),
+            command_allowlist: Vec::new(),
+            command_denylist: Vec::new(),
+            completion_enabled: true,
+            completion_endpoint: default_completion_endpoint(),
+            completion_model_path: String::new(),
+            completion_timeout_ms: default_completion_timeout_ms(),
+            completion_debounce_ms: default_completion_debounce_ms(),
             reasoning_effort: "auto".to_string(),
             show_thinking: true,
             thinking_default_expanded: false,
@@ -180,6 +241,19 @@ impl Config {
                 "keybindings": {"type": "object", "additionalProperties": {"type": "string"}},
                 "sandbox_backend": {"type": "string", "enum": ["auto", "nsjail", "bwrap", "docker", "rlimit", "none"]},
                 "permission_posture": {"type": "string", "enum": ["full-access", "restricted", "sandboxed", "off"]},
+                "approval_exec": {"type": "string", "enum": ["allow", "ask", "deny"]},
+                "approval_write": {"type": "string", "enum": ["allow", "ask", "deny"]},
+                "approval_read": {"type": "string", "enum": ["allow", "ask", "deny"]},
+                "approval_network": {"type": "string", "enum": ["allow", "ask", "deny"]},
+                "approval_mcp": {"type": "string", "enum": ["allow", "ask", "deny"]},
+                "approval_plugin": {"type": "string", "enum": ["allow", "ask", "deny"]},
+                "command_allowlist": {"type": "array", "items": {"type": "string"}},
+                "command_denylist": {"type": "array", "items": {"type": "string"}},
+                "completion_enabled": {"type": "boolean"},
+                "completion_endpoint": {"type": "string"},
+                "completion_model_path": {"type": "string"},
+                "completion_timeout_ms": {"type": "integer", "minimum": 100, "maximum": 30000},
+                "completion_debounce_ms": {"type": "integer", "minimum": 0, "maximum": 5000},
                 "reasoning_effort": {"type": "string", "enum": ["auto", "off", "low", "medium", "high"]},
                 "show_thinking": {"type": "boolean"},
                 "thinking_default_expanded": {"type": "boolean"},
@@ -214,6 +288,19 @@ fn known_keys() -> BTreeSet<&'static str> {
         "keybindings",
         "sandbox_backend",
         "permission_posture",
+        "approval_exec",
+        "approval_write",
+        "approval_read",
+        "approval_network",
+        "approval_mcp",
+        "approval_plugin",
+        "command_allowlist",
+        "command_denylist",
+        "completion_enabled",
+        "completion_endpoint",
+        "completion_model_path",
+        "completion_timeout_ms",
+        "completion_debounce_ms",
         "reasoning_effort",
         "show_thinking",
         "thinking_default_expanded",
@@ -247,6 +334,24 @@ fn validate(config: &Config) -> Result<()> {
         .contains(&config.permission_posture.as_str())
     {
         anyhow::bail!("invalid permission_posture '{}'", config.permission_posture);
+    }
+    for (key, value) in [
+        ("approval_exec", &config.approval_exec),
+        ("approval_write", &config.approval_write),
+        ("approval_read", &config.approval_read),
+        ("approval_network", &config.approval_network),
+        ("approval_mcp", &config.approval_mcp),
+        ("approval_plugin", &config.approval_plugin),
+    ] {
+        if !["allow", "ask", "deny"].contains(&value.as_str()) {
+            anyhow::bail!("invalid {key} '{value}'");
+        }
+    }
+    if !crate::provider::valid_url(&config.completion_endpoint) {
+        anyhow::bail!(
+            "invalid completion_endpoint '{}'",
+            config.completion_endpoint
+        );
     }
     if !["auto", "off", "low", "medium", "high"].contains(&config.reasoning_effort.as_str()) {
         anyhow::bail!("invalid reasoning_effort '{}'", config.reasoning_effort);
