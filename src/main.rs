@@ -9,7 +9,6 @@ mod command;
 mod config;
 mod custom;
 mod export;
-mod ghost;
 mod mcp;
 mod model;
 mod plugin;
@@ -18,6 +17,7 @@ mod sandbox;
 mod security;
 mod session;
 mod sse;
+mod suggest;
 mod tool;
 mod ui;
 

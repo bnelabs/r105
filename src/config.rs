@@ -75,14 +75,10 @@ pub struct Config {
     pub command_denylist: Vec<String>,
     #[serde(default = "default_completion_on")]
     pub completion_enabled: bool,
-    #[serde(default = "default_completion_endpoint")]
-    pub completion_endpoint: String,
-    #[serde(default)]
-    pub completion_model_path: String,
-    #[serde(default = "default_completion_timeout_ms")]
-    pub completion_timeout_ms: u64,
     #[serde(default = "default_completion_debounce_ms")]
     pub completion_debounce_ms: u64,
+    #[serde(default = "default_completion_history_max")]
+    pub completion_history_max: u64,
     pub reasoning_effort: String,
     pub show_thinking: bool,
     pub thinking_default_expanded: bool,
@@ -111,16 +107,12 @@ fn default_approval_allow() -> String {
     "allow".to_string()
 }
 
-fn default_completion_endpoint() -> String {
-    "http://127.0.0.1:11438".to_string()
-}
-
 fn default_completion_on() -> bool {
     true
 }
 
-fn default_completion_timeout_ms() -> u64 {
-    1500
+fn default_completion_history_max() -> u64 {
+    500
 }
 
 fn default_completion_debounce_ms() -> u64 {
@@ -152,10 +144,8 @@ impl Default for Config {
             command_allowlist: Vec::new(),
             command_denylist: Vec::new(),
             completion_enabled: true,
-            completion_endpoint: default_completion_endpoint(),
-            completion_model_path: String::new(),
-            completion_timeout_ms: default_completion_timeout_ms(),
             completion_debounce_ms: default_completion_debounce_ms(),
+            completion_history_max: default_completion_history_max(),
             reasoning_effort: "auto".to_string(),
             show_thinking: true,
             thinking_default_expanded: false,
@@ -250,10 +240,8 @@ impl Config {
                 "command_allowlist": {"type": "array", "items": {"type": "string"}},
                 "command_denylist": {"type": "array", "items": {"type": "string"}},
                 "completion_enabled": {"type": "boolean"},
-                "completion_endpoint": {"type": "string"},
-                "completion_model_path": {"type": "string"},
-                "completion_timeout_ms": {"type": "integer", "minimum": 100, "maximum": 30000},
                 "completion_debounce_ms": {"type": "integer", "minimum": 0, "maximum": 5000},
+                "completion_history_max": {"type": "integer", "minimum": 1, "maximum": 5000},
                 "reasoning_effort": {"type": "string", "enum": ["auto", "off", "low", "medium", "high"]},
                 "show_thinking": {"type": "boolean"},
                 "thinking_default_expanded": {"type": "boolean"},
@@ -297,10 +285,8 @@ fn known_keys() -> BTreeSet<&'static str> {
         "command_allowlist",
         "command_denylist",
         "completion_enabled",
-        "completion_endpoint",
-        "completion_model_path",
-        "completion_timeout_ms",
         "completion_debounce_ms",
+        "completion_history_max",
         "reasoning_effort",
         "show_thinking",
         "thinking_default_expanded",
@@ -346,12 +332,6 @@ fn validate(config: &Config) -> Result<()> {
         if !["allow", "ask", "deny"].contains(&value.as_str()) {
             anyhow::bail!("invalid {key} '{value}'");
         }
-    }
-    if !crate::provider::valid_url(&config.completion_endpoint) {
-        anyhow::bail!(
-            "invalid completion_endpoint '{}'",
-            config.completion_endpoint
-        );
     }
     if !["auto", "off", "low", "medium", "high"].contains(&config.reasoning_effort.as_str()) {
         anyhow::bail!("invalid reasoning_effort '{}'", config.reasoning_effort);
