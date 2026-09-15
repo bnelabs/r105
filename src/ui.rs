@@ -4145,8 +4145,10 @@ mod tests {
     fn test_app() -> (UiApp, tempfile::TempDir, tempfile::TempDir) {
         let workspace = tempfile::TempDir::new().expect("workspace");
         let skills = tempfile::TempDir::new().expect("skills");
-        let mut config = Config::default();
-        config.skills_dir = skills.path().to_path_buf();
+        let config = Config {
+            skills_dir: skills.path().to_path_buf(),
+            ..Config::default()
+        };
         let paths = ConfigPaths::discover();
         let state = ChatState::from_config(&config, workspace.path().to_path_buf());
         let connection = provider::resolve_connection(None, None, Some("http://127.0.0.1:9"));
