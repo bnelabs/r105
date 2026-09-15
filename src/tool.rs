@@ -140,7 +140,13 @@ fn definition(name: &str, description: &str, properties: Value, required: &[&str
 }
 
 pub async fn execute(name: &str, raw_arguments: &Value, context: &ToolContext) -> Result<String> {
+    // Policy hooks see every tool call (built-in, MCP, plugin) after
+    // repair: denies abort before anything runs, rewrites chain into the
+    // call below and into the after-hooks' view of the arguments.
     let arguments = repair_arguments(raw_arguments);
+    let arguments =
+        crate::plugin::run_before_hooks(&context.workspace, &context.plugins_dir, name, &arguments)
+            .await?;
     let content = match name {
         "execute_rust" => execute_rust(&arguments, context).await?,
         "execute_python" => execute_python(&arguments, context).await?,
@@ -163,7 +169,15 @@ pub async fn execute(name: &str, raw_arguments: &Value, context: &ToolContext) -
         }
         _ => bail!("unknown tool '{name}'"),
     };
-    Ok(truncate_output(content))
+    let content = truncate_output(content);
+    crate::plugin::run_after_hooks(
+        &context.workspace,
+        &context.plugins_dir,
+        name,
+        &arguments,
+        &content,
+    )
+    .await
 }
 
 pub async fn execute_calls(
@@ -842,6 +856,38 @@ mod tests {
         assert_eq!(
             read_file(&json!({"path": "note.txt"}), directory.path()).unwrap(),
             "hello"
+        );
+    }
+
+    /// A denying hook aborts `execute` before the tool runs.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn deny_hook_blocks_execute_end_to_end() {
+        use crate::sandbox::Sandbox;
+
+        let workspace = tempdir().unwrap();
+        let plugins = tempdir().unwrap();
+        std::fs::write(
+            plugins.path().join("gate.json"),
+            r#"{"name":"gate","command":"sh","args":["-c","cat >/dev/null; echo '{\"deny\": \"nope\"}'"],"tools":[],"hooks":["before_tool"]}"#,
+        )
+        .unwrap();
+        let context = ToolContext {
+            workspace: workspace.path().to_path_buf(),
+            plugins_dir: plugins.path().to_path_buf(),
+            python_bridge_command: None,
+            sandbox: Sandbox::detect("none", None, 5),
+            cancellation: CancellationToken::new(),
+            allow_network: false,
+            allow_code: true,
+            python_approved: false,
+        };
+        let error = execute("calculate", &json!({"expression": "1+1"}), &context)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("denied by plugin 'gate'"),
+            "{error:#}"
         );
     }
 }

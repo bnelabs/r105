@@ -33,6 +33,11 @@ pub struct Message {
     pub role: String,
     #[serde(default)]
     pub content: String,
+    /// Stable per-message key for transcript section state (per-block
+    /// expand). Empty in files written before v1.4 and assigned lazily
+    /// by the TUI, so old sessions keep loading unchanged.
+    #[serde(default)]
+    pub id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,6 +51,7 @@ impl Message {
         Self {
             role: "user".to_string(),
             content: content.into(),
+            id: String::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
@@ -56,6 +62,7 @@ impl Message {
         Self {
             role: "assistant".to_string(),
             content: content.into(),
+            id: String::new(),
             tool_calls,
             tool_call_id: None,
             name: None,
@@ -66,6 +73,7 @@ impl Message {
         Self {
             role: "tool".to_string(),
             content: content.into(),
+            id: String::new(),
             tool_calls: Vec::new(),
             tool_call_id: Some(call_id.into()),
             name: None,
@@ -76,6 +84,7 @@ impl Message {
         Self {
             role: "system".to_string(),
             content: content.into(),
+            id: String::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
