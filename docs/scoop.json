@@ -3,15 +3,15 @@
   "homepage": "https://github.com/bnelabs/r105",
   "description": "r105 — Beyond the prompt. Native local-first AI harness for OpenAI-compatible backends.",
   "license": "MIT",
-  "version": "1.4.0",
+  "version": "2.0.0",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/bnelabs/r105/releases/download/v1.4.0/r105-windows-x86_64.zip",
-      "hash": "e5c5b620356be2d9ddf0c550d2380ada928a5c2b915a6e9e862c55f627b5e9f5"
+      "url": "https://github.com/bnelabs/r105/releases/download/v2.0.0/r105-windows-x86_64.zip",
+      "hash": "6c8f38525d2c4b9929e5282e6049bfccbf7f92e98d7ee3c0e3f864ffbacdb485"
     },
     "arm64": {
-      "url": "https://github.com/bnelabs/r105/releases/download/v1.4.0/r105-windows-arm64.zip",
-      "hash": "ab8c881747a67cb73ce0bc990c8bb88a9207e23cee971509699f22ee8e292a3a"
+      "url": "https://github.com/bnelabs/r105/releases/download/v2.0.0/r105-windows-arm64.zip",
+      "hash": "6bc76d5e088492675bac33e6ebb6d8c767432e48db772ccf44d632436854bae5"
     }
   },
   "bin": "r105.exe",
