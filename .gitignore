@@ -3,5 +3,6 @@ workspace/*
 !workspace/.gitkeep
 *.log
 .aider*
+.cache/
 .codewhale/
 target/
