@@ -1,6 +1,6 @@
 # 0003: Status tone and consecutive-notice dedup
 
-- Status: proposed
+- Status: landed
 - Author: r105
 - Scope: `src/ui.rs` (status field, footer, `push_system`)
 

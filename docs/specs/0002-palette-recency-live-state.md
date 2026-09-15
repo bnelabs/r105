@@ -1,6 +1,6 @@
 # 0002: Palette recency priority and live-state badges
 
-- Status: proposed
+- Status: landed
 - Author: r105
 - Scope: `src/ui.rs` (`UiApp::palette_items`, accept paths)
 
