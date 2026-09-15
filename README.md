@@ -213,7 +213,9 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 └──────────────────────────────────────────────────────────┘
 ```
 
-- Type / to open the fuzzy command palette.
+- Type / to open the fuzzy command palette (`*` marks custom commands from Markdown files).
+- After a space, `/command <Tab>` completes argument values (models, themes, skill and session names, …); unknown commands suggest the closest match.
+- /sh turns plain words into a shell command draft for review — Enter runs it, nothing executes unseen.
 - Up and Down keep the selected command inside the visible palette window, including when the list is taller than the terminal.
 - /connect and /models use scrollable provider and model pickers.
 - Tab cycles through build, plan, and ask modes.
@@ -263,6 +265,8 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /reasoning [effort] | Set the reasoning effort hint |
 | /thinking [on|off] | Show or hide the model's thinking blocks |
 | /attention [on|off] | Toggle the bell when a request finishes |
+| /commands [reload] | List Markdown-backed custom commands |
+| /sh <request> | Draft a shell command from plain words |
 | /settings | Change theme, permissions, reasoning, and toggles |
 | /editor | Compose the prompt in $EDITOR |
 | /permissions [posture] | Set the local tool permission posture |
@@ -335,6 +339,32 @@ Use it from the TUI:
 ```
 
 A skill can use literal {key} placeholders. Activate it with values such as /skill use reviewer scope=security; r105 substitutes those values into the Markdown system message. Skill names are restricted to one local Markdown filename.
+
+## Custom commands
+
+Custom commands are Markdown prompt files that become real slash commands — no plugin code needed.
+A global directory (`~/.config/r105/commands/`) and a project directory (`<workspace>/.r105/commands/`)
+are scanned for `name.md`; each file becomes `/name`.
+
+```sh
+mkdir -p ~/.config/r105/commands
+cat > ~/.config/r105/commands/review.md <<'EOF'
+---
+description: Review the staged change
+argument-hint: <scope>
+---
+
+Review the $ARGUMENTS for correctness, security, and missing tests.
+Return findings with file, line, impact, and a concrete fix.
+EOF
+```
+
+Typing `/review scope=security` expands the template and submits it as the prompt
+(`$1`, `$@`/`$ARGUMENTS`, `${1:-default}`, and `${@:2}` slices are supported).
+Custom commands appear in the `/` palette marked with `*`, accept `/help /review`,
+and reload with `/commands reload` (also reloaded by `/config reload` and workspace
+switches). Built-in commands always win a name collision; shadowed files are listed
+by `/commands` instead of running silently.
 
 ## Native plugins
 

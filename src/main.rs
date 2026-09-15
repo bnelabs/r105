@@ -4,6 +4,7 @@ mod app;
 mod backend;
 mod command;
 mod config;
+mod custom;
 mod export;
 mod mcp;
 mod model;
