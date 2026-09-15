@@ -419,6 +419,8 @@ impl UiApp {
             self.redo_stack.clear();
             self.state.history.push(Message::user(value));
             self.follow_transcript = true;
+            // Frequency layer: every run teaches the ghost.
+            self.record_shell(&shell);
             self.run_shell_command(shell);
             return Ok(());
         }

@@ -72,8 +72,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/completion",
-        usage: "/completion [status|start|stop]",
-        description: "ghost-text sidecar status and control",
+        usage: "/completion [status|clear]",
+        description: "ghost-text history status and control",
     },
     CommandSpec {
         name: "/profiles",

@@ -220,10 +220,11 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 - Tab cycles through build, plan, and ask modes. Modes are enforced:
   plan allows reads and web research but refuses writes and execution,
   ask answers without tools; the session file remembers the mode.
-- Start a `!` shell line or `/sh` draft and pause: a local ghost-text
-  sidecar (Qwen2.5-Coder 0.5B via llama-server) suggests the rest dimmed;
-  Tab accepts, Esc dismisses. `/completion` shows status, starts, or
-  stops the sidecar; everything fails silent back to the menus.
+- Start a `!` shell line or `/sh` draft and pause: the cascade suggests
+  the rest dimmed — shell-history frequency first (same-directory runs
+  win), path top-hit second. No weights, no server, microseconds. Tab
+  accepts (continuations chain), Esc dismisses until the next edit.
+  `/completion` shows history counts or clears them.
 - Destructive tools pause on an approval card (`y` once, `a` always this
   run, `n` deny) unless the per-category policy (`approval_exec`,
   `approval_write`, …) or `command_allowlist`/`command_denylist` says
@@ -254,7 +255,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /profiles | List llama-router profiles |
 | /profile [name|auto] | Set or clear the llama-router profile |
 | /build, /plan, /ask | Switch working mode (enforced, persisted) |
-| /completion [status\|start\|stop] | Ghost-text sidecar status and control |
+| /completion [status\|clear] | Ghost-text history status; clear remembered commands |
 | /history | Show a transcript preview |
 | /skills | List Markdown skills |
 | /skill use <name> [key=value] | Activate a skill |
