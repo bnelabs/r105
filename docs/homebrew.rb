@@ -1,26 +1,26 @@
 class R105 < Formula
   desc "Native local-first AI harness for OpenAI-compatible backends"
   homepage "https://github.com/bnelabs/r105"
-  version "2.0.0"
+  version "2.1.0"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/bnelabs/r105/releases/download/v2.0.0/r105-macos-arm64.tar.gz"
-      sha256 "79640a9f9305acdb708066ff0e54d32768a1ee940e5e8caea8eedf98d5ef7cee"
+      url "https://github.com/bnelabs/r105/releases/download/v2.1.0/r105-macos-arm64.tar.gz"
+      sha256 "1ec0a112717be37319f18186ab8bf98db4fc99a889d19e7ec5f96dfe7591d2be"
     else
-      url "https://github.com/bnelabs/r105/releases/download/v2.0.0/r105-macos-x86_64.tar.gz"
-      sha256 "29cd864fc6fbf6391c72c6fcd2efab17af89f14c51e2ce49cbd9633282e7a2cf"
+      url "https://github.com/bnelabs/r105/releases/download/v2.1.0/r105-macos-x86_64.tar.gz"
+      sha256 "e453d2e5a62bbff3880867e681ad55753debdb8b5454203bfa42fd062873cd61"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/bnelabs/r105/releases/download/v2.0.0/r105-linux-aarch64.tar.gz"
-      sha256 "1725b9891599b0a928ef6e0355d43d3c8edfd5dd3abea08a0b11abe60165123e"
+      url "https://github.com/bnelabs/r105/releases/download/v2.1.0/r105-linux-aarch64.tar.gz"
+      sha256 "7b1df3d0b8df12f2cd899c5b6e478069b5f64627af2760ffa1ccbe9d4f881712"
     else
-      url "https://github.com/bnelabs/r105/releases/download/v2.0.0/r105-linux-x86_64.tar.gz"
-      sha256 "f5c95633ac5b3337b098e1f62af96b9584176f57e0aa922125eb38156b1bcb29"
+      url "https://github.com/bnelabs/r105/releases/download/v2.1.0/r105-linux-x86_64.tar.gz"
+      sha256 "fbc04942166baf9682de8bc52fd48cfc4fdffe99f2dbae644c2504d702fd4ac8"
     end
   end
 
