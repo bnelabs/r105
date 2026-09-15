@@ -221,6 +221,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 - Tab cycles through build, plan, and ask modes.
 - Type @ to fuzzy-complete a workspace file; Tab accepts, Enter sends with the file attached as context.
 - Start a line with ! to run a shell command in the sandbox; its output joins the conversation context.
+- Start a line with # to classify it first: shell one-liners are prefilled after ! for review, agent prompts are sent as-is, ambiguous input shows a hint in the status line. Nothing executes unseen.
 - Enter while a request is active steers it (the new prompt jumps the queue); Alt+Enter while busy queues a follow-up instead.
 - Esc or Ctrl+X cancels the current request or local tool batch.
 - Ctrl+O expands tool details; Ctrl+T shows active work. The five Ctrl shortcuts are remappable via `keybindings` in config.json.
@@ -256,7 +257,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /config show|reload | Inspect or reload configuration |
 | /clear | Clear the transcript |
 | /workspace [path] | Show or change the workspace |
-| /session save|load|list|search|delete|diff|fork | Manage local sessions |
+| /session save|load|list|search|delete|diff|fork|tree | Manage local sessions |
 | /export markdown|text|json|html|pdf [path] | Export the transcript |
 | /mcp list|tools|reconnect [server] | Inspect or rediscover MCP tools |
 | /plugin list|reload | Inspect native executable plugins |
@@ -280,6 +281,8 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /retry | Retry the last failed prompt |
 | /undo | Remove the last exchange and restore its prompt |
 | /redo | Re-apply the last undone exchange |
+| /expand [n\|all\|none] | Expand or collapse transcript sections |
+| /rewind [n] | Restore an earlier checkpoint (current work is backed up first) |
 | /exit | Save autosave and quit |
 
 ## Built in tools
@@ -395,6 +398,28 @@ The executable receives one JSON request on stdin and returns one JSON object on
 ```
 
 Return {"content":"..."} or {"result":"..."}. Plugin tools are exposed to the model as plugin_example_hello. A Python implementation can remain outside the binary by using the optional bridge below.
+
+### Tool hooks
+
+A manifest can declare `"hooks": ["before_tool", "after_tool"]` to observe, gate, or rewrite tool execution. Only plugins that declare hooks are ever spawned for them, and declared hooks see every tool call (there are no per-tool subscriptions):
+
+```json
+{
+  "name": "example",
+  "command": "r105-plugin-example",
+  "version": "1",
+  "tools": [],
+  "hooks": ["before_tool", "after_tool"]
+}
+```
+
+Before a tool runs (after argument repair), each `before_tool` plugin receives:
+
+```json
+{"method":"before_tool","tool":"write_file","arguments":{"path":"demo.txt"}}
+```
+
+Reply `{"deny": "reason"}` to abort the call with a visible error, or `{"arguments": {...}}` to replace the arguments (rewrites chain across plugins). After the tool runs, each `after_tool` plugin receives `{"method":"after_tool","tool":"...","arguments":{...},"result":...}` and may reply `{"result": ...}` to replace the result. Hook calls have a 5 second limit, and hook transport failures fail the tool visibly (`tool error: … hook …`) instead of silently.
 
 ## Optional Python compatibility bridge
 

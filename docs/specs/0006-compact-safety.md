@@ -1,6 +1,6 @@
 # 0006: Compaction safety (pair-aware split, empty guard, retry hint)
 
-- Status: proposed
+- Status: landed
 - Author: r105
 - Scope: `src/ui.rs` (`start_compaction`, `Compacted`/`ChatError` arms)
 

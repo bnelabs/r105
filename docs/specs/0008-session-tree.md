@@ -1,6 +1,6 @@
 # 0008: Session tree and snapping fork
 
-- Status: proposed
+- Status: landed
 - Author: r105
 - Scope: `src/session.rs` (parent links, tree render, prefix repair),
   `src/ui.rs` (`/session tree`, fork turns, current tracking),

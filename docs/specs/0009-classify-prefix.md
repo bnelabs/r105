@@ -1,6 +1,6 @@
 # 0009: `#` classify prefix
 
-- Status: proposed
+- Status: landed
 - Author: r105
 - Scope: `src/command.rs` (`classify_input`), `src/ui.rs` (submit path)
 
