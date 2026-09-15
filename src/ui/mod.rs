@@ -250,6 +250,10 @@ struct UiApp {
     /// bool is the section's global default (tool output follows
     /// `show_details`, thinking follows `thinking_default_expanded`).
     pub(crate) section_order: Vec<(String, bool)>,
+    /// Per-block output filter keyed by message id (spec 0017). Entries exist
+    /// only where the user has applied /filter. Pruned with sections on
+    /// transcript load/save.
+    pub(crate) block_filters: HashMap<String, BlockFilter>,
     /// File context resolved from `@refs`, pushed as a system message next
     /// to the user message once the backend answers.
     pub(crate) pending_context: Option<String>,
@@ -281,6 +285,15 @@ struct UiApp {
     pub(crate) completion_on: bool,
     pub(crate) shell_history: crate::suggest::ShellHistory,
     pub(crate) history_max: usize,
+    /// ↑/↓ history walk: `Some(depth)` while a past user message is
+    /// previewed (1 = most recent), plus the stashed live draft the walk
+    /// restored or replaced. Spec 0018.
+    pub(crate) hist_depth: Option<usize>,
+    pub(crate) draft_stash: String,
+    /// PATH executables for the command-name ghost layer, refreshed on a
+    /// TTL rather than per keystroke.
+    pub(crate) bin_cache: Vec<String>,
+    pub(crate) bin_cache_at: Option<Instant>,
     pub(crate) last_response: String,
     pub(crate) tx: mpsc::UnboundedSender<UiEvent>,
     pub(crate) rx: mpsc::UnboundedReceiver<UiEvent>,
@@ -404,6 +417,7 @@ impl UiApp {
             next_msg_id: 0,
             section_state: HashMap::new(),
             section_order: Vec::new(),
+            block_filters: HashMap::new(),
             pending_context: None,
             redo_stack: Vec::new(),
             drop_next_restore: false,
@@ -424,6 +438,10 @@ impl UiApp {
             completion_on: config.completion_enabled,
             shell_history,
             history_max,
+            hist_depth: None,
+            draft_stash: String::new(),
+            bin_cache: Vec::new(),
+            bin_cache_at: None,
             last_response: String::new(),
             tx,
             rx,
@@ -1119,6 +1137,282 @@ mod tests {
         assert!(
             joined.contains("> hello world"),
             "composer text missing:\n{joined}"
+        );
+    }
+
+    /// ↑/↓ walks user turns, stashes the live draft, clamps at the
+    /// oldest, and restores the draft past the newest.
+    #[test]
+    fn history_walk_stashes_and_restores_draft() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.history.push(Message::user("first"));
+        app.state.history.push(Message::user("second"));
+        app.input = "draft".into();
+        app.cursor = app.input.len();
+
+        app.history_previous();
+        assert_eq!(app.input, "second");
+        app.history_previous();
+        assert_eq!(app.input, "first");
+        app.history_previous();
+        assert_eq!(app.input, "first", "walk clamps at the oldest turn");
+        app.history_next();
+        assert_eq!(app.input, "second");
+        app.history_next();
+        assert_eq!(app.input, "draft");
+        assert_eq!(app.hist_depth, None);
+        app.history_next();
+        assert_eq!(app.input, "draft", "no walk: ↓ is a no-op");
+    }
+
+    /// A real edit adopts the previewed turn as the draft; Esc restores
+    /// the stashed draft and ends the walk.
+    #[test]
+    fn history_walk_edit_adopts_and_esc_restores() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.history.push(Message::user("sent"));
+        app.input = "draft".into();
+        app.cursor = app.input.len();
+
+        app.history_previous();
+        app.insert_text("x");
+        assert_eq!(app.input, "sentx");
+        assert_eq!(app.hist_depth, None);
+
+        app.input = "draft".into();
+        app.cursor = app.input.len();
+        app.history_previous();
+        app.end_history_walk(false);
+        assert_eq!(app.input, "draft");
+        assert_eq!(app.hist_depth, None);
+    }
+
+    /// Single-owner rule: palette, `@` token, and argument menus all
+    /// clear and suppress the ghost.
+    #[test]
+    fn menus_suppress_ghost() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.completion_on = true;
+        app.ghost_debounce = Duration::ZERO;
+        app.shell_history.record("git status", "/repo");
+        app.bin_cache_at = Some(Instant::now());
+
+        app.input = "!gi".into();
+        app.cursor = app.input.len();
+        app.tick_ghost();
+        assert_eq!(app.ghost_text.as_deref(), Some("t status"));
+
+        // Slash palette open (`/th`): ghost cleared, nothing resolved.
+        app.input = "/th".into();
+        app.cursor = app.input.len();
+        app.tick_ghost();
+        assert!(app.ghost_text.is_none());
+        assert!(app.menu_wants_input());
+
+        // Live `@token` suppresses.
+        app.input = "see @Cargo".into();
+        app.cursor = app.input.len();
+        assert!(app.menu_wants_input());
+
+        // Argument position with candidates suppresses (`/theme d`).
+        app.input = "/theme d".into();
+        app.cursor = app.input.len();
+        assert!(app.menu_wants_input());
+
+        // Plain `!` argument territory does not.
+        app.input = "!git sta".into();
+        app.cursor = app.input.len();
+        assert!(!app.menu_wants_input());
+    }
+
+    /// Empty-composer hint: idle coaching is a display-only string,
+    /// never part of the input; an active walk retitles the composer.
+    #[test]
+    fn empty_composer_shows_teaching_hint() {
+        let (mut app, _workspace, _skills) = test_app();
+        let joined = render_lines(&mut app, 80, 24).join("\n");
+        assert!(
+            joined.contains("prompt · ! shell"),
+            "idle hint missing:\n{joined}"
+        );
+        assert!(app.input.is_empty());
+
+        app.state.history.push(Message::user("old"));
+        app.history_previous();
+        app.input.clear();
+        app.cursor = 0;
+        let walking = render_lines(&mut app, 80, 24).join("\n");
+        assert!(
+            walking.contains("↑↓ history · Esc restore"),
+            "walk title missing:\n{walking}"
+        );
+    }
+
+    /// `/filter` parsing: flags, `#n` form, clear, bad regex, missing
+    /// context value, out-of-range blocks.
+    #[test]
+    fn block_filter_parses() {
+        let args = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_block_filter(3, &[]).unwrap(), FilterAction::List);
+        match parse_block_filter(3, &args(&["#2", "error", "--context", "1"])).unwrap() {
+            FilterAction::Set(index, filter) => {
+                assert_eq!(index, 1);
+                assert_eq!(filter.context, 1);
+                assert_eq!(filter.describe(), "\"error\" · ctx 1");
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse_block_filter(3, &args(&["2"])).unwrap() {
+            FilterAction::Clear(index) => assert_eq!(index, 1),
+            other => panic!("{other:?}"),
+        }
+        assert!(parse_block_filter(3, &args(&["9", "x"])).is_err());
+        assert!(parse_block_filter(3, &args(&["1", "[", "--regex"])).is_err());
+        assert!(parse_block_filter(3, &args(&["1", "--context"])).is_err());
+        assert!(parse_block_filter(0, &args(&["1", "x"])).is_err());
+    }
+
+    /// `/filter` application: hits, context windows, invert, regex, case,
+    /// and the all-hidden case.
+    #[test]
+    fn block_filter_keeps_hits_and_context() {
+        let body = "alpha\nbeta error\ngamma\ndelta error\nepsilon";
+        let base = BlockFilter {
+            pattern: "error".into(),
+            regex: false,
+            case: false,
+            invert: false,
+            context: 0,
+        };
+        let filtered = apply_block_filter(body, &base);
+        assert_eq!(filtered.shown, vec!["beta error", "delta error"]);
+        assert_eq!(filtered.hidden, 3);
+
+        let contextual = BlockFilter {
+            context: 1,
+            ..base.clone()
+        };
+        let filtered = apply_block_filter(body, &contextual);
+        assert_eq!(filtered.shown.len(), 5);
+        assert_eq!(filtered.hidden, 0);
+
+        let inverted = BlockFilter {
+            invert: true,
+            ..base.clone()
+        };
+        assert_eq!(
+            apply_block_filter(body, &inverted).shown,
+            vec!["alpha", "gamma", "epsilon"]
+        );
+
+        let regex = BlockFilter {
+            pattern: "err.r".into(),
+            regex: true,
+            ..base.clone()
+        };
+        assert_eq!(apply_block_filter(body, &regex).shown.len(), 2);
+
+        let case = BlockFilter {
+            pattern: "ERROR".into(),
+            case: true,
+            ..base
+        };
+        let all_hidden = apply_block_filter(body, &case);
+        assert!(all_hidden.shown.is_empty());
+        assert_eq!(all_hidden.hidden, 5);
+    }
+
+    /// `/filter` stores by message id and bare `/filter <n>` clears,
+    /// while `/block n` reports the filter.
+    #[test]
+    fn filter_command_stores_and_clears() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.history.push(Message::user("hello"));
+        let id = app.section_id(0);
+        app.command_filter(&["1".into(), "err".into()]);
+        assert!(app.block_filters.contains_key(&id));
+        app.command_filter(&["#1".into()]);
+        assert!(app.block_filters.is_empty());
+    }
+
+    /// `/copy out` payload: verbatim without a filter, filtered view
+    /// with one.
+    #[test]
+    fn copy_payload_respects_filter() {
+        let body = "keep\nnoise\nkeep too";
+        assert_eq!(block_copy_content(body, None), body);
+        let filter = BlockFilter {
+            pattern: "keep".into(),
+            regex: false,
+            case: false,
+            invert: false,
+            context: 0,
+        };
+        assert_eq!(block_copy_content(body, Some(&filter)), "keep\nkeep too");
+    }
+
+    /// Rerun resolves explicit blocks, defaults to the last user turn,
+    /// and refuses non-user blocks and out-of-range numbers.
+    #[test]
+    fn rerun_resolves_user_blocks_only() {
+        let history = vec![
+            Message::user("first"),
+            Message::assistant_with_tools("ok", vec![]),
+            Message::user("!ls -la"),
+        ];
+        assert_eq!(rerun_target(&history, None).unwrap(), "!ls -la");
+        assert_eq!(rerun_target(&history, Some(1)).unwrap(), "first");
+        assert!(rerun_target(&history, Some(2)).is_err());
+        assert!(rerun_target(&history, Some(9)).is_err());
+        assert!(rerun_target(&[], None).is_err());
+    }
+
+    /// `/expand #n` maps a block to its section; failed tool blocks and
+    /// non-section blocks refuse with a status note.
+    #[test]
+    fn expand_accepts_block_address() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state
+            .history
+            .push(Message::tool("call-1", "tool error: boom"));
+        let id = app.section_id(0);
+        app.section_order = vec![(id.clone(), false)];
+        app.command_expand(&["#1".into()]);
+        assert!(
+            !app.section_state.contains_key(&id),
+            "failed tool block must stay expanded"
+        );
+
+        app.state.history[0].content = "clean output".into();
+        app.command_expand(&["#1".into()]);
+        assert_eq!(app.section_state.get(&id), Some(&true));
+
+        app.state.history.push(Message::user("hi"));
+        app.command_expand(&["#2".into()]);
+        assert!(
+            app.status.contains("not a collapsible section"),
+            "status: {}",
+            app.status
+        );
+    }
+
+    /// The transcript renders block addresses as `#n` so `/filter`,
+    /// `/block`, and `/rerun` targets are visible.
+    #[test]
+    fn transcript_renders_block_numbers() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.history.push(Message::user("hello"));
+        app.state
+            .history
+            .push(Message::assistant_with_tools("hi", vec![]));
+        let joined = render_lines(&mut app, 80, 24).join("\n");
+        assert!(
+            joined.contains("USER #1"),
+            "block gutter missing:\n{joined}"
+        );
+        assert!(
+            joined.contains("ASSISTANT #2"),
+            "block gutter missing:\n{joined}"
         );
     }
 

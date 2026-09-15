@@ -122,7 +122,8 @@ impl UiApp {
             self.section_id(index);
         }
         let mut order: Vec<(String, bool)> = Vec::new();
-        for message in &self.state.history {
+        for (index, message) in self.state.history.iter().enumerate() {
+            let block = index + 1;
             let color = match message.role.as_str() {
                 "user" => palette.user,
                 "assistant" => palette.assistant,
@@ -149,12 +150,18 @@ impl UiApp {
                 order.push((message.id.clone(), default));
                 format!(" [{}]", order.len())
             } else {
-                String::new()
+                // `#n` is the block address (/filter, /block, /rerun);
+                // section gutters keep `[n]` for /expand.
+                format!(" #{block}")
             };
             lines.push(Line::from(Span::styled(
                 format!(" {label}{gutter} "),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             )));
+            let filtered = self
+                .block_filters
+                .get(&message.id)
+                .map(|filter| apply_block_filter(&message.content, filter));
             if message.role == "assistant"
                 && let Some(body) = thinking
             {
@@ -164,11 +171,22 @@ impl UiApp {
                 } else {
                     thinking_default
                 };
-                push_thinking_lines(&mut lines, body, show_thinking, expanded);
+                let body = match &filtered {
+                    Some(filtered) => filtered.shown.join("\n"),
+                    None => body.to_string(),
+                };
+                push_thinking_lines(&mut lines, &body, show_thinking, expanded);
+                if let Some(filtered) = &filtered {
+                    push_filter_trailer(&mut lines, filtered.hidden, block);
+                }
             } else if is_tool {
                 let expanded = failed || self.section_expanded(&message.id, details_default);
                 if !expanded {
-                    let first = message.content.lines().next().unwrap_or_default();
+                    let first = filtered
+                        .as_ref()
+                        .and_then(|filtered| filtered.shown.first().cloned())
+                        .or_else(|| message.content.lines().next().map(str::to_string))
+                        .unwrap_or_default();
                     let number = order.len();
                     lines.push(Line::from(Span::styled(
                         format!(
@@ -178,14 +196,10 @@ impl UiApp {
                         Style::default().fg(Color::DarkGray),
                     )));
                 } else {
-                    for line in message.content.lines() {
-                        lines.push(Line::from(format!("  {line}")));
-                    }
+                    push_block_body(&mut lines, message, &filtered, block);
                 }
             } else {
-                for line in message.content.lines() {
-                    lines.push(Line::from(format!("  {line}")));
-                }
+                push_block_body(&mut lines, message, &filtered, block);
             }
             if !message.tool_calls.is_empty() {
                 let names: Vec<String> = message
@@ -420,7 +434,9 @@ impl UiApp {
     }
 
     pub(crate) fn draw_composer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let title = if self.busy {
+        let title = if self.hist_depth.is_some() {
+            " composer · ↑↓ history · Esc restore ".into()
+        } else if self.busy {
             format!(
                 " composer · {} queued · Esc/Ctrl-X cancel ",
                 self.queue.len()
@@ -434,6 +450,18 @@ impl UiApp {
         {
             composer.push(Span::styled(
                 ghost.clone(),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        if self.input.is_empty() && self.ghost_text.is_none() {
+            // Display-only teaching hint: never part of the input.
+            let hint = if self.busy {
+                "working… Enter queues · Ctrl+X cancels"
+            } else {
+                "prompt · ! shell · / commands · # route · ↑ history"
+            };
+            composer.push(Span::styled(
+                hint.to_string(),
                 Style::default().fg(Color::DarkGray),
             ));
         }
@@ -696,6 +724,38 @@ pub(crate) fn theme_palette(theme: &str) -> ThemePalette {
 
 pub(crate) fn accent_color(theme: &str) -> Color {
     theme_palette(theme).accent
+}
+
+/// Body lines of one block: the filtered view when a `/filter` is set,
+/// otherwise the raw content. `FilteredLines::shown` already carries the
+/// context windows, so the renderer only adds the trailer.
+fn push_block_body(
+    lines: &mut Vec<Line<'static>>,
+    message: &Message,
+    filtered: &Option<FilteredLines>,
+    block: usize,
+) {
+    match filtered {
+        Some(filtered) => {
+            for line in &filtered.shown {
+                lines.push(Line::from(format!("  {line}")));
+            }
+            push_filter_trailer(lines, filtered.hidden, block);
+        }
+        None => {
+            for line in message.content.lines() {
+                lines.push(Line::from(format!("  {line}")));
+            }
+        }
+    }
+}
+
+/// Dim trailer under a filtered block: hidden count plus the undo path.
+fn push_filter_trailer(lines: &mut Vec<Line<'static>>, hidden: usize, block: usize) {
+    lines.push(Line::from(Span::styled(
+        format!("  ⋯ {hidden} line(s) hidden · /filter {block} --clear"),
+        Style::default().fg(Color::DarkGray),
+    )));
 }
 
 pub(crate) fn selection_style(theme: &str) -> Style {
