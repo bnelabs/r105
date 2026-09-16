@@ -42,11 +42,15 @@ impl UiApp {
         }
         self.refresh_bin_cache();
         let cwd = self.state.workspace.clone();
+        if let Some(prefix) = crate::suggest::ghost_prefix(&self.input) {
+            self.ctx_cache.refresh_for(&prefix, &cwd);
+        }
         self.ghost_text = crate::suggest::suggest(
             &self.input,
             &self.shell_history,
             &cwd,
             &self.bin_cache,
+            &self.ctx_cache,
             super::complete::score_file_candidate,
         );
     }
@@ -75,6 +79,41 @@ impl UiApp {
             return true;
         }
         false
+    }
+
+    /// Accept one word of the visible ghost (leading whitespace plus
+    /// the next word run), leaving the rest for the tick to re-offer —
+    /// the partial-accept half of history-style autosuggestion.
+    pub(crate) fn accept_ghost_word(&mut self) -> bool {
+        if self.cursor != self.input.len() {
+            return false;
+        }
+        let Some(ghost) = self.ghost_text.take() else {
+            return false;
+        };
+        let mut end = 0;
+        let mut chars = ghost.char_indices().peekable();
+        while let Some((index, char)) = chars.peek() {
+            if !char.is_whitespace() {
+                break;
+            }
+            end = index + char.len_utf8();
+            chars.next();
+        }
+        for (index, char) in chars {
+            if char.is_whitespace() {
+                break;
+            }
+            end = index + char.len_utf8();
+        }
+        if end == 0 {
+            return false;
+        }
+        self.input.push_str(&ghost[..end]);
+        self.cursor = self.input.len();
+        self.ghost_seen_input = self.input.clone();
+        self.ghost_dismissed = None;
+        true
     }
 
     /// Dismiss without accepting; the tick will not resurrect it until
@@ -108,7 +147,7 @@ impl UiApp {
             "status" => {
                 self.set_status(if self.completion_on {
                     format!(
-                        "Suggestions on · {} remembered · Tab accepts",
+                        "Suggestions on · {} remembered · Tab accepts · Ctrl+→ word",
                         self.shell_history.len(),
                     )
                 } else {

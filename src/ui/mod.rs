@@ -57,6 +57,7 @@ mod events;
 mod ghost;
 mod input;
 mod render;
+mod sidebar;
 mod transcript;
 
 pub(crate) use approve::*;
@@ -194,6 +195,12 @@ struct UiApp {
     /// TTL rather than per keystroke.
     pub(crate) bin_cache: Vec<String>,
     pub(crate) bin_cache_at: Option<Instant>,
+    /// Filesystem-derived value candidates (git refs, npm scripts, make
+    /// targets, ssh hosts) behind the context-aware ghost layer.
+    pub(crate) ctx_cache: crate::suggest::ContextCache,
+    /// A failed shell line's proposed fix, offered until the next edit.
+    /// `→` applies it into an empty composer; any edit drops it.
+    pub(crate) pending_correction: Option<crate::suggest::Correction>,
     pub(crate) last_response: String,
     pub(crate) tx: mpsc::UnboundedSender<crate::ui::events::UiEvent>,
     pub(crate) rx: mpsc::UnboundedReceiver<crate::ui::events::UiEvent>,
@@ -220,6 +227,17 @@ struct UiApp {
     pub(crate) arg_selected: usize,
     pub(crate) arg_cache_key: String,
     pub(crate) arg_cache_items: Vec<String>,
+    /// Shell-line Tab menu (`!git check<Tab>`): unified history, spec,
+    /// and file candidates with the same input-keyed cache discipline.
+    pub(crate) sh_selected: usize,
+    pub(crate) sh_cache_key: String,
+    pub(crate) sh_cache_items: Vec<crate::suggest::ShellCandidate>,
+    /// Tab opens the shell menu only when ambiguous (2+ rows); a
+    /// single row applies directly. Sticky across edits until Esc,
+    /// accept, or submit — the ghost stands down while it shows rows.
+    pub(crate) sh_menu_invoked: bool,
+    pub(crate) last_sh_rect: Option<Rect>,
+    pub(crate) last_sh_count: usize,
     /// Model ids from the last `/models` refresh, backing `/model <Tab>`.
     pub(crate) known_models: Vec<String>,
     pub(crate) editor_requested: bool,
@@ -235,6 +253,17 @@ struct UiApp {
     pub(crate) transcript_header_rows: Vec<Option<String>>,
     /// Scroll offset at render time, so a click row maps back to a line.
     pub(crate) last_transcript_scroll: usize,
+    /// Left session pane: visibility, keyboard focus, selection, filter,
+    /// cached saved sessions, recent workspaces, and the last drawn
+    /// rect plus scroll for click mapping.
+    pub(crate) sidebar_visible: bool,
+    pub(crate) sidebar_focus: bool,
+    pub(crate) sidebar_selected: usize,
+    pub(crate) sidebar_scroll: usize,
+    pub(crate) sidebar_filter: String,
+    pub(crate) sidebar_sessions: Vec<crate::session::SessionInfo>,
+    pub(crate) recent_workspaces: Vec<String>,
+    pub(crate) last_sidebar_rect: Rect,
 }
 
 impl UiApp {
@@ -354,6 +383,8 @@ impl UiApp {
             draft_stash: String::new(),
             bin_cache: Vec::new(),
             bin_cache_at: None,
+            ctx_cache: crate::suggest::ContextCache::default(),
+            pending_correction: None,
             last_response: String::new(),
             tx,
             rx,
@@ -372,6 +403,12 @@ impl UiApp {
             arg_selected: 0,
             arg_cache_key: String::new(),
             arg_cache_items: Vec::new(),
+            sh_selected: 0,
+            sh_cache_key: String::new(),
+            sh_cache_items: Vec::new(),
+            sh_menu_invoked: false,
+            last_sh_rect: None,
+            last_sh_count: 0,
             known_models: Vec::new(),
             editor_requested: false,
             transcript_height: 20,
@@ -381,8 +418,17 @@ impl UiApp {
             last_palette_count: 0,
             transcript_header_rows: Vec::new(),
             last_transcript_scroll: 0,
+            sidebar_visible: false,
+            sidebar_focus: false,
+            sidebar_selected: 0,
+            sidebar_scroll: 0,
+            sidebar_filter: String::new(),
+            sidebar_sessions: Vec::new(),
+            recent_workspaces: Vec::new(),
+            last_sidebar_rect: Rect::default(),
         };
         app.sync_mode_from_state();
+        app.load_recent_workspaces();
         app
     }
 
@@ -564,6 +610,29 @@ impl UiApp {
                     }
                 }
                 crate::ui::events::UiEvent::Notice(notice) => self.push_system(&notice),
+                crate::ui::events::UiEvent::ShellCorrection {
+                    failed,
+                    fixed,
+                    more,
+                } => {
+                    // Never clobber typing: an empty composer gets the
+                    // one-keystroke offer, a busy one gets a transcript
+                    // note pointing at the same fixes.
+                    if self.input.trim().is_empty() {
+                        self.pending_correction = Some(crate::suggest::Correction {
+                            failed,
+                            fixed: fixed.clone(),
+                            more: more.clone(),
+                        });
+                        self.set_status(if more.is_empty() {
+                            format!("Did you mean `!{fixed}`? → applies")
+                        } else {
+                            format!("Did you mean `!{fixed}`? → applies · +{} more", more.len())
+                        });
+                    } else {
+                        self.push_system(&format!("Did you mean `!{fixed}`?"));
+                    }
+                }
                 crate::ui::events::UiEvent::ShellDraft(outcome) => match outcome {
                     Ok(command) if self.input.is_empty() => {
                         self.input = format!("!{command}");
@@ -1407,17 +1476,262 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn right_accepts_ghost_ctrl_right_takes_word() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _workspace, _skills) = test_app();
+        // Plain → at the end takes the whole ghost.
+        app.input = "!git sta".to_string();
+        app.cursor = app.input.len();
+        app.ghost_text = Some("tus".to_string());
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        app.handle_key(right).await.unwrap();
+        assert_eq!(app.input, "!git status");
+        // Ctrl+→ takes one word; the rest stays offered.
+        app.input = "!git check".to_string();
+        app.cursor = app.input.len();
+        app.ghost_text = Some("out main".to_string());
+        let ctrl_right = KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL);
+        app.handle_key(ctrl_right).await.unwrap();
+        assert_eq!(app.input, "!git checkout");
+        // Mid-line → still moves the cursor, never eats the ghost.
+        app.cursor = 2;
+        app.ghost_text = Some("out".to_string());
+        app.handle_key(right).await.unwrap();
+        assert_eq!(app.cursor, 3);
+        assert_eq!(app.ghost_text.as_deref(), Some("out"));
+    }
+
+    #[tokio::test]
+    async fn correction_applies_on_right_clears_on_edit() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _workspace, _skills) = test_app();
+        // The worker's offer lands as a one-keystroke hint.
+        app.tx
+            .send(crate::ui::events::UiEvent::ShellCorrection {
+                failed: "gti status".to_string(),
+                fixed: "git status".to_string(),
+                more: vec!["get status".to_string()],
+            })
+            .unwrap();
+        app.process_events();
+        assert!(app.pending_correction.is_some());
+        assert!(
+            app.status.contains("Did you mean"),
+            "status: {}",
+            app.status
+        );
+        // → takes it into an empty composer.
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        app.handle_key(right).await.unwrap();
+        assert_eq!(app.input, "!git status");
+        assert!(app.pending_correction.is_none());
+        // A fresh offer dies on the next edit instead of lingering.
+        app.input.clear();
+        app.cursor = 0;
+        app.pending_correction = Some(crate::suggest::Correction {
+            failed: "gti status".to_string(),
+            fixed: "git status".to_string(),
+            more: Vec::new(),
+        });
+        app.insert_text("x");
+        assert!(app.pending_correction.is_none());
+    }
+
+    #[test]
+    fn ghost_tick_completes_branch_from_workspace_git() {
+        let (mut app, workspace, _skills) = test_app();
+        let git = workspace.path().join(".git").join("refs").join("heads");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("main"), "abc").unwrap();
+        std::fs::write(
+            workspace.path().join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .unwrap();
+        app.state.workspace = workspace.path().to_path_buf();
+        app.input = "!git checkout ma".to_string();
+        app.ghost_debounce = Duration::ZERO;
+        app.tick_ghost();
+        assert_eq!(app.ghost_text.as_deref(), Some("in"));
+    }
+
+    /// Sidebar tests run against temp session/config dirs: `test_app`
+    /// discovers the real config paths, which tests must never write.
+    fn sidebar_app() -> (
+        UiApp,
+        tempfile::TempDir,
+        tempfile::TempDir,
+        tempfile::TempDir,
+    ) {
+        let (mut app, workspace, skills) = test_app();
+        let dirs = tempfile::TempDir::new().expect("sidebar dirs");
+        app.paths.sessions_dir = dirs.path().join("sessions");
+        app.paths.config_dir = dirs.path().join("config");
+        app.recent_workspaces.clear();
+        (app, workspace, skills, dirs)
+    }
+
+    #[tokio::test]
+    async fn ctrl_b_toggles_sidebar_esc_unfocuses() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _workspace, _skills, _dirs) = sidebar_app();
+        let toggle = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        app.handle_key(toggle).await.unwrap();
+        assert!(app.sidebar_visible && app.sidebar_focus);
+        // Focused toggle hides outright.
+        app.handle_key(toggle).await.unwrap();
+        assert!(!app.sidebar_visible && !app.sidebar_focus);
+        // Visible-but-idle toggle refocuses instead of hiding.
+        app.handle_key(toggle).await.unwrap();
+        app.unfocus_sidebar();
+        assert!(app.sidebar_visible && !app.sidebar_focus);
+        app.handle_key(toggle).await.unwrap();
+        assert!(app.sidebar_visible && app.sidebar_focus);
+        // Esc leaves the pane visible but returns keys to the composer.
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_key(esc).await.unwrap();
+        assert!(app.sidebar_visible && !app.sidebar_focus);
+        assert!(app.sidebar_filter.is_empty());
+    }
+
+    #[test]
+    fn sidebar_rows_filter_sessions_and_workspaces() {
+        let (mut app, workspace, _skills, _dirs) = sidebar_app();
+        crate::session::save(&app.paths, "alpha", &app.state).unwrap();
+        crate::session::save(&app.paths, "beta", &app.state).unwrap();
+        app.refresh_sidebar();
+        let live = workspace.path().to_string_lossy().to_string();
+        let rows = app.sidebar_rows();
+        // `list` order is recency-based, so only the shape is stable:
+        // New first, the live workspace last, both saves between.
+        assert_eq!(rows.first(), Some(&super::sidebar::SidebarRow::New));
+        assert_eq!(
+            rows.last(),
+            Some(&super::sidebar::SidebarRow::Workspace { path: live })
+        );
+        let mut saved: Vec<String> = rows
+            .iter()
+            .filter_map(|row| match row {
+                super::sidebar::SidebarRow::Session { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        saved.sort();
+        assert_eq!(saved, vec!["alpha".to_string(), "beta".to_string()]);
+        // A filter hides `+ New` and non-matching rows alike.
+        app.sidebar_filter = "alpha".into();
+        assert_eq!(
+            app.sidebar_rows(),
+            vec![super::sidebar::SidebarRow::Session {
+                name: "alpha".into(),
+                messages: 0,
+            }]
+        );
+        app.sidebar_filter = "zzz-no-match".into();
+        assert!(app.sidebar_rows().is_empty());
+    }
+
+    #[test]
+    fn sidebar_new_load_delete_roundtrip() {
+        let (mut app, _workspace, _skills, _dirs) = sidebar_app();
+        app.state.history.push(Message::user("hello"));
+        app.sidebar_new();
+        assert!(app.state.history.is_empty());
+        // Fresh sessions are unnamed, but the previous work autosaved.
+        assert!(app.current_session.is_none());
+        assert!(
+            crate::session::list(&app.paths)
+                .iter()
+                .any(|info| info.name.starts_with("autosave-")),
+            "previous transcript autosaved"
+        );
+        // Named save, wipe, reload through the pane.
+        app.state.history.push(Message::user("work"));
+        crate::session::save(&app.paths, "proj", &app.state).unwrap();
+        app.state.history.clear();
+        app.sidebar_load("proj");
+        assert_eq!(app.state.history.len(), 1);
+        assert_eq!(app.current_session.as_deref(), Some("proj"));
+        // Deleting the loaded session removes the file but keeps the
+        // live transcript, unnamed.
+        let index = app
+            .sidebar_rows()
+            .iter()
+            .position(|row| {
+                matches!(row, super::sidebar::SidebarRow::Session { name, .. } if name == "proj")
+            })
+            .expect("proj row");
+        app.sidebar_selected = index;
+        app.sidebar_delete_selected();
+        assert!(
+            !crate::session::list(&app.paths)
+                .iter()
+                .any(|info| info.name == "proj")
+        );
+        assert_eq!(app.state.history.len(), 1);
+        assert!(app.current_session.is_none());
+    }
+
+    #[test]
+    fn recent_workspaces_pin_live_and_persist() {
+        let (mut app, workspace, _skills, _dirs) = sidebar_app();
+        let other = tempfile::TempDir::new().expect("other workspace");
+        app.note_workspace(other.path());
+        let live = workspace.path().to_string_lossy().to_string();
+        let other_path = other.path().to_string_lossy().to_string();
+        // Live first, recents after, no duplicates.
+        assert_eq!(
+            app.sidebar_rows(),
+            vec![
+                super::sidebar::SidebarRow::New,
+                super::sidebar::SidebarRow::Workspace { path: live },
+                super::sidebar::SidebarRow::Workspace {
+                    path: other_path.clone()
+                },
+            ]
+        );
+        app.note_workspace(other.path());
+        assert_eq!(app.recent_workspaces.len(), 1, "re-switch dedupes");
+        // A fresh load restores the persisted recents.
+        app.recent_workspaces.clear();
+        app.load_recent_workspaces();
+        assert_eq!(app.recent_workspaces, vec![other_path]);
+    }
+
+    #[test]
+    fn sidebar_draws_pane_beside_transcript() {
+        let (mut app, _workspace, _skills, _dirs) = sidebar_app();
+        app.toggle_sidebar();
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| app.draw(frame)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("SESSIONS"), "pane header missing");
+        assert!(text.contains("New session"), "new row missing");
+        assert!(text.contains("WORKSPACES"), "workspace group missing");
+        assert!(!app.last_sidebar_rect.is_empty(), "click rect untracked");
+    }
+
+    #[tokio::test]
     async fn ghost_tab_accepts_esc_dismisses() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let (mut app, _workspace, _skills) = test_app();
-        app.input = "!git sta".to_string();
+        // Certain Tab (one row, no ghost): applies at once.
+        app.input = "!git statu".to_string();
         app.cursor = app.input.len();
-        app.ghost_text = Some("tus".to_string());
         let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
         app.handle_key(tab).await.unwrap();
         assert_eq!(app.input, "!git status");
-        assert!(app.ghost_text.is_none());
         // A fresh ghost dismisses on Esc without touching the request.
         app.ghost_text = Some(" --help".to_string());
         app.busy = false;
@@ -1425,6 +1739,34 @@ mod tests {
         app.handle_key(esc).await.unwrap();
         assert!(app.ghost_text.is_none());
         assert!(!app.busy);
+    }
+
+    #[tokio::test]
+    async fn shell_tab_opens_menu_when_ambiguous() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "!git sta".to_string();
+        app.cursor = app.input.len();
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        // `status` and `stash` both match: first Tab opens, input stays.
+        app.handle_key(tab).await.unwrap();
+        assert_eq!(app.input, "!git sta");
+        assert!(app.sh_menu_invoked);
+        assert!(app.sh_menu_open());
+        // Second Tab accepts the selected row.
+        app.handle_key(tab).await.unwrap();
+        assert_eq!(app.input, "!git status");
+        assert!(!app.sh_menu_invoked);
+        // Reopen, then Esc closes without accepting.
+        app.input = "!git sta".to_string();
+        app.cursor = app.input.len();
+        app.handle_key(tab).await.unwrap();
+        assert!(app.sh_menu_invoked);
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.handle_key(esc).await.unwrap();
+        assert!(!app.sh_menu_invoked);
+        assert_eq!(app.input, "!git sta");
     }
 
     /// Shrinking widgets must not leave stale glyphs: draw with content,
@@ -1976,7 +2318,7 @@ mod tests {
 
     #[test]
     fn known_key_actions_cover_the_remappable_set() {
-        for action in ["cancel", "details", "tasks", "history", "redraw"] {
+        for action in ["cancel", "details", "tasks", "history", "redraw", "sidebar"] {
             assert!(is_known_key_action(action));
         }
         assert!(!is_known_key_action("quit"));

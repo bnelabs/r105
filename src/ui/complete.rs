@@ -17,13 +17,22 @@ impl UiApp {
         if !matches!(self.overlay, Overlay::None) {
             return true;
         }
+        // A focused pane owns the next keystroke, so the ghost stands
+        // down the same way it does for open menus.
+        if self.sidebar_focus {
+            self.ghost_text = None;
+            return true;
+        }
         if self.palette_active() {
             return true;
         }
         if self.at_token().is_some() {
             return true;
         }
-        !self.arg_menu_items().is_empty()
+        if !self.arg_menu_items().is_empty() {
+            return true;
+        }
+        !self.sh_menu_items().is_empty()
     }
 
     pub(crate) fn palette_items(&self) -> Vec<command::PaletteItem> {
@@ -283,6 +292,128 @@ impl UiApp {
         !self.arg_cache_key.is_empty()
             && !self.arg_cache_items.is_empty()
             && format!("{}:{}", self.input, self.cursor) == self.arg_cache_key
+    }
+
+    /// Shell-line Tab menu rows: history plus the context-aware
+    /// candidates behind the ghost (subcommands, flags, branches,
+    /// scripts, files). Tab-invoked only — the ghost is the as-you-type
+    /// layer, the menu opens when Tab finds ambiguity. Input-keyed
+    /// cache like the `@` and arg menus.
+    pub(crate) fn sh_menu_items(&mut self) -> Vec<crate::suggest::ShellCandidate> {
+        if !self.sh_menu_invoked {
+            self.sh_cache_key.clear();
+            self.sh_cache_items.clear();
+            return Vec::new();
+        }
+        let key = format!("{}:{}", self.input, self.cursor);
+        if key == self.sh_cache_key {
+            return self.sh_cache_items.clone();
+        }
+        let items = self.sh_candidates_uncached();
+        self.sh_cache_key = key;
+        self.sh_selected = 0;
+        self.sh_cache_items = items.clone();
+        items
+    }
+
+    /// Raw candidate computation, independent of invocation: Tab uses
+    /// it to decide between direct apply (1 row), opening (2+), and
+    /// falling through to the ghost (none).
+    pub(crate) fn sh_candidates_uncached(&mut self) -> Vec<crate::suggest::ShellCandidate> {
+        // `ghost_prefix` admits exactly the shell lines (`!`, `/sh `);
+        // every other `/` line belongs to the palette or arg menu.
+        if !matches!(self.overlay, Overlay::None)
+            || self.palette_active()
+            || self.cursor != self.input.len()
+            || self.input.contains('\n')
+            || self.at_token().is_some()
+        {
+            return Vec::new();
+        }
+        let Some(prefix) = crate::suggest::ghost_prefix(&self.input) else {
+            return Vec::new();
+        };
+        let cwd = self.state.workspace.clone();
+        self.ctx_cache.refresh_for(&prefix, &cwd);
+        crate::suggest::shell_candidates(
+            &prefix,
+            &self.shell_history,
+            &cwd,
+            &self.ctx_cache,
+            &self.bin_cache,
+        )
+    }
+
+    pub(crate) fn sh_menu_open(&mut self) -> bool {
+        self.sh_menu_invoked && !self.sh_menu_items().is_empty()
+    }
+
+    pub(crate) fn sh_menu_active(&mut self) -> bool {
+        self.sh_menu_invoked
+            && !self.sh_cache_key.is_empty()
+            && !self.sh_cache_items.is_empty()
+            && format!("{}:{}", self.input, self.cursor) == self.sh_cache_key
+    }
+
+    /// Tab on a shell line: certain (1 row) applies at once, ambiguous
+    /// (2+) opens the menu, empty falls through to ghost/mode. False
+    /// when Tab is not ours to take.
+    pub(crate) fn sh_tab(&mut self) -> bool {
+        if self.sh_menu_invoked {
+            return false;
+        }
+        let items = self.sh_candidates_uncached();
+        if items.len() == 1 {
+            let pick = items.into_iter().next().expect("single row");
+            self.apply_sh_pick(&pick);
+            self.sh_selected = 0;
+            return true;
+        }
+        if items.len() > 1 {
+            self.sh_cache_key = format!("{}:{}", self.input, self.cursor);
+            self.sh_selected = 0;
+            self.sh_cache_items = items;
+            self.sh_menu_invoked = true;
+            return true;
+        }
+        false
+    }
+
+    /// Dismiss the invoked menu without accepting.
+    pub(crate) fn close_sh_menu(&mut self) {
+        self.sh_menu_invoked = false;
+        self.sh_cache_key.clear();
+        self.sh_cache_items.clear();
+        self.sh_selected = 0;
+    }
+
+    /// Accept the selected shell row: history rows swap the whole line,
+    /// token rows swap the token under the cursor. Either way typing
+    /// resumes at the end, and an empty pick list is a no-op.
+    pub(crate) fn accept_sh_complete(&mut self) -> bool {
+        let items = self.sh_cache_items.clone();
+        let Some(pick) = items.get(self.sh_selected).cloned() else {
+            return false;
+        };
+        if !self.apply_sh_pick(&pick) {
+            return false;
+        }
+        self.close_sh_menu();
+        true
+    }
+
+    /// Swap one candidate into the composer, keeping the `!`/`/sh `
+    /// marker. False when the input stopped being a shell line.
+    pub(crate) fn apply_sh_pick(&mut self, pick: &crate::suggest::ShellCandidate) -> bool {
+        let Some(prefix) = crate::suggest::ghost_prefix(&self.input) else {
+            return false;
+        };
+        let marker_len = self.input.len() - prefix.len();
+        let swapped = crate::suggest::apply_shell_candidate(&prefix, pick);
+        self.input = format!("{}{}", &self.input[..marker_len], swapped);
+        self.cursor = self.input.len();
+        self.pending_correction = None;
+        true
     }
 }
 

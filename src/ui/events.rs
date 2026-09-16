@@ -40,6 +40,14 @@ pub enum UiEvent {
     /// A `/sh` draft round-trip finished: prefill the composer with the
     /// proposed `!command` (`Ok`) or report why drafting failed (`Err`).
     ShellDraft(Result<String, String>),
+    /// A `!` shell line failed and local rules proposed fixes: the best
+    /// plus up to two alternates. The UI offers the best without
+    /// clobbering the composer and lists the rest in the transcript.
+    ShellCorrection {
+        failed: String,
+        fixed: String,
+        more: Vec<String>,
+    },
     ModelsLoaded {
         backend: Backend,
         models: Vec<ModelInfo>,

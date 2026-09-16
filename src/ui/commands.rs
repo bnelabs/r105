@@ -1134,10 +1134,30 @@ impl UiApp {
                 self.state.workspace = path;
                 self.refresh_git_branch();
                 self.refresh_custom_commands();
+                let workspace = self.state.workspace.clone();
+                self.note_workspace(&workspace);
+                self.refresh_sidebar();
                 self.set_ok(format!("Workspace: {}", self.state.workspace.display()));
             }
         } else {
             self.push_system(&format!("Workspace: {}", self.state.workspace.display()));
+        }
+    }
+
+    /// Load a saved session by name, reseeding transcript bookkeeping.
+    /// Shared by `/session load` and the sidebar.
+    pub(crate) fn load_session_named(&mut self, name: &str) {
+        match session::load(&self.paths, name, &mut self.state) {
+            Ok(count) => {
+                self.redo_stack.clear();
+                self.reseed_msg_ids();
+                self.prune_sections();
+                self.sync_mode_from_state();
+                self.current_session = Some(name.to_string());
+                self.follow_transcript = true;
+                self.set_ok(format!("Loaded {name} ({count} messages)"));
+            }
+            Err(error) => self.set_error(format!("Session load failed: {error}")),
         }
     }
 
@@ -1148,25 +1168,20 @@ impl UiApp {
                 match session::save(&self.paths, name, &self.state) {
                     Ok(path) => {
                         self.current_session = Some(name.to_string());
+                        self.refresh_sidebar();
                         self.set_ok(format!("Saved {}", path.display()));
                     }
                     Err(error) => self.set_error(format!("Session save failed: {error}")),
                 }
             }
             Some("load") => {
-                let name = args.get(1).map(String::as_str).unwrap_or("default");
-                match session::load(&self.paths, name, &mut self.state) {
-                    Ok(count) => {
-                        self.redo_stack.clear();
-                        self.reseed_msg_ids();
-                        self.prune_sections();
-                        self.sync_mode_from_state();
-                        self.current_session = Some(name.to_string());
-                        self.follow_transcript = true;
-                        self.set_ok(format!("Loaded {name} ({count} messages)"));
-                    }
-                    Err(error) => self.set_error(format!("Session load failed: {error}")),
-                }
+                let name = args
+                    .get(1)
+                    .map(String::as_str)
+                    .unwrap_or("default")
+                    .to_string();
+                self.load_session_named(&name);
+                self.refresh_sidebar();
             }
             Some("list") => {
                 let items = session::list(&self.paths);
@@ -1182,7 +1197,10 @@ impl UiApp {
             Some("delete") => {
                 let name = args.get(1).map(String::as_str).unwrap_or_default();
                 match session::delete(&self.paths, name) {
-                    Ok(true) => self.set_ok(format!("Deleted session {name}")),
+                    Ok(true) => {
+                        self.refresh_sidebar();
+                        self.set_ok(format!("Deleted session {name}"));
+                    }
                     Ok(false) => self.set_error(format!("Session not found: {name}")),
                     Err(error) => self.set_error(format!("Session delete failed: {error}")),
                 }

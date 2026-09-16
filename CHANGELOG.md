@@ -18,6 +18,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell-command ghost layer: `!` lines now complete the command name
   from shell builtins and PATH executables (30s cache) between the
   history-frequency and path layers.
+- Context-aware shell arguments: `!` lines complete subcommands and
+  flags for common commands (git, cargo, npm, docker, kubectl, gh,
+  ssh, make, go, pip, brew, tmux, terraform, node, yarn, pnpm, python,
+  scp, helm, systemctl) plus live values — git branches/tags/remotes
+  from `.git`, npm scripts, make targets, ssh hosts, kubectl resource
+  types, files — all from local files, no subprocess. Nested verbs
+  complete a level deeper (`gh issue list`, `docker container ls`,
+  `git stash pop`).
+- Shell alias expansion: rc-file aliases and gitconfig aliases expand
+  before spec lookup, so `g st` completes as git and `git co` offers
+  checkout's branches; aliases also appear in command-position menus.
+- Shell Tab menu: Tab on a `!`/`/sh` line applies the single match at
+  once or opens a navigable menu when ambiguous (history first, then
+  context rows tagged by kind, then files); ↑↓ move, Tab fills, Esc
+  closes, click selects and fills.
+- Post-failure shell corrections: a failed `!` line offers up to three
+  ranked fixes when local rules match (mistyped command, git
+  subcommand/branch/flag, missing upstream, `chmod +x`, mistyped
+  path); `→` applies the best into the empty composer, alternates
+  list in the transcript notice and status, any edit drops them.
+- Partial ghost accept: `→` at end of input takes the whole ghost,
+  Ctrl+`→` takes one word.
+- Session pane (Ctrl+B, remappable `sidebar` action): a left column
+  listing saved sessions and recent workspaces — open, start fresh,
+  delete, filter, and switch workspaces by keyboard or mouse.
+  Switching autosaves the live transcript first, so nothing is lost;
+  recents persist in `recent_workspaces.json`.
 - Composer history walk like a terminal: ↑/↓ preview earlier user
   turns, first ↑ stashes the live draft, ↓ past the newest restores it,
   Esc restores, any edit adopts. The composer title shows the walk.

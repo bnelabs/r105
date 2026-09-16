@@ -5,6 +5,23 @@ use super::*;
 impl UiApp {
     pub(crate) fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
         let area = frame.area();
+        // A visible pane takes a fixed left column; narrow screens keep
+        // the full width for the transcript instead.
+        let (side, area) = if self.sidebar_visible && area.width >= 50 {
+            let width = sidebar::SIDEBAR_WIDTH.min(area.width * 40 / 100).max(20);
+            let columns = ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Horizontal)
+                .constraints([Constraint::Length(width), Constraint::Min(20)])
+                .split(area);
+            (Some(columns[0]), columns[1])
+        } else {
+            (None, area)
+        };
+        if let Some(side) = side {
+            self.draw_sidebar(frame, side);
+        } else {
+            self.last_sidebar_rect = Rect::default();
+        }
         let palette = self.palette_items();
         let palette_height = if self.palette_active() && !palette.is_empty() {
             palette.len().min(8) as u16 + 2
@@ -13,9 +30,10 @@ impl UiApp {
         };
         let file_items = self.at_menu_items();
         let arg_items = self.arg_menu_items();
-        // The `@file` and argument-value menus never co-show (the latter
-        // requires no `@` token), so they share one chunk.
-        let complete_rows = file_items.len().max(arg_items.len());
+        let sh_items = self.sh_menu_items();
+        // The `@file`, argument-value, and shell menus never co-show
+        // (each requires its own input shape), so they share one chunk.
+        let complete_rows = file_items.len().max(arg_items.len()).max(sh_items.len());
         let file_height = if complete_rows == 0 {
             0
         } else {
@@ -58,11 +76,20 @@ impl UiApp {
         }
         if file_height > 0 {
             if !file_items.is_empty() {
+                self.last_sh_rect = None;
                 self.draw_file_complete(frame, chunks[3], &file_items);
-            } else {
+            } else if !arg_items.is_empty() {
+                self.last_sh_rect = None;
                 self.draw_arg_complete(frame, chunks[3], &arg_items);
+            } else if !sh_items.is_empty() {
+                self.draw_sh_complete(frame, chunks[3], &sh_items);
+            } else {
+                self.last_sh_rect = None;
             }
+        } else {
+            self.last_sh_rect = None;
         }
+        self.last_sh_count = sh_items.len();
         self.draw_composer(frame, chunks[4]);
         self.draw_footer(frame, chunks[5]);
         self.draw_overlay(frame, area);
@@ -396,6 +423,47 @@ impl UiApp {
         );
     }
 
+    pub(crate) fn draw_sh_complete(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        items: &[crate::suggest::ShellCandidate],
+    ) {
+        self.last_sh_rect = Some(area);
+        let viewport = area.height.saturating_sub(2) as usize;
+        let scroll = command::ensure_visible(self.sh_selected, 0, viewport, items.len());
+        let selection = selection_style(&self.state.theme);
+        let rows = items
+            .iter()
+            .skip(scroll)
+            .take(viewport)
+            .enumerate()
+            .map(|(offset, item)| {
+                let index = scroll + offset;
+                let style = if index == self.sh_selected {
+                    selection
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                Line::from(vec![
+                    Span::styled(format!(" {}", item.text), style),
+                    Span::styled(
+                        format!(" · {}", item.kind),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ])
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(rows).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Complete · Tab fills "),
+            ),
+            area,
+        );
+    }
+
     pub(crate) fn draw_settings(&self, frame: &mut Frame<'_>, area: Rect, selected: usize) {
         let rows = self.settings_rows();
         let height = (rows.len() as u16 + 4).min(area.height.max(1));
@@ -465,6 +533,51 @@ impl UiApp {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" commands · type to filter "),
+            ),
+            area,
+        );
+    }
+
+    pub(crate) fn draw_sidebar(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        self.last_sidebar_rect = area;
+        let width = area.width.saturating_sub(2) as usize;
+        let viewport = area.height.saturating_sub(2) as usize;
+        let rows = self.sidebar_rows().len();
+        self.sidebar_selected = self.sidebar_selected.min(rows.saturating_sub(1));
+        let (lines, map) = self.sidebar_display(width);
+        // Scroll the selected row's line into view (headers shift lines
+        // away from row indexes, so scroll in line space).
+        let selected_line = map
+            .iter()
+            .position(|entry| *entry == Some(self.sidebar_selected))
+            .unwrap_or(0);
+        self.sidebar_scroll =
+            command::ensure_visible(selected_line, self.sidebar_scroll, viewport, lines.len());
+        let visible: Vec<Line<'_>> = lines
+            .into_iter()
+            .skip(self.sidebar_scroll)
+            .take(viewport)
+            .collect();
+        let title = if self.sidebar_filter.is_empty() {
+            if self.sidebar_focus {
+                " sessions · Esc ".to_string()
+            } else {
+                " sessions ".to_string()
+            }
+        } else {
+            format!(" sessions · /{} ", self.sidebar_filter)
+        };
+        let border = if self.sidebar_focus {
+            Color::White
+        } else {
+            Color::DarkGray
+        };
+        frame.render_widget(
+            Paragraph::new(visible).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border))
+                    .title(title),
             ),
             area,
         );
@@ -573,7 +686,7 @@ impl UiApp {
             ),
             Span::raw("  "),
             Span::styled(
-                "Tab complete · / palette · @ files · ! shell · Ctrl+P",
+                "Tab complete · / palette · @ files · ! shell · Ctrl+P · Ctrl+B",
                 Style::default().fg(Color::DarkGray),
             ),
         ]);

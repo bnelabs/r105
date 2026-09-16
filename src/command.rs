@@ -763,7 +763,7 @@ pub fn help_text_with(customs: &[crate::custom::CustomCommand]) -> String {
         }
     }
     output.push_str(
-        "Keys\n  Enter send · Alt/Shift+Enter newline · Tab complete · Esc dismiss/cancel · ↑↓ history/pick · PgUp/PgDn scroll · Ctrl+Home/End top/latest\n  Ctrl+C quit · Ctrl+X cancel · Ctrl+P palette · Ctrl+O details · Ctrl+T tasks · Ctrl+R history · y/a/n approve card · @file attach · !cmd run · /sh draft · #! describe\n\nTip: /help <command> shows one command.\n",
+        "Keys\n  Enter send · Alt/Shift+Enter newline · Tab complete · Esc dismiss/cancel · ↑↓ history/pick · PgUp/PgDn scroll · Ctrl+Home/End top/latest\n  Ctrl+C quit · Ctrl+X cancel · Ctrl+P palette · Ctrl+B sessions · Ctrl+O details · Ctrl+T tasks · Ctrl+R history · y/a/n approve card · @file attach · !cmd run · /sh draft · #! describe\n\nTip: /help <command> shows one command.\n",
     );
     output
 }

@@ -23,6 +23,20 @@ impl UiApp {
             return Ok(());
         }
         if key.code == KeyCode::Esc {
+            // A focused pane owns Esc first: focus returns to the
+            // composer, the pane stays visible.
+            if self.sidebar_focus {
+                self.unfocus_sidebar();
+                return Ok(());
+            }
+            // An open shell menu owns Esc the way the palette owns
+            // typing: close it, leave the composer alone.
+            if self.sh_menu_invoked {
+                self.close_sh_menu();
+                return Ok(());
+            }
+            // Esc stands down every offer, including a pending fix.
+            self.pending_correction = None;
             if self.hist_depth.is_some() {
                 // A history walk owns Esc: restore the draft, cancel the
                 // walk, and leave any ghost/cancel handling alone.
@@ -46,6 +60,16 @@ impl UiApp {
         }
         if !matches!(self.overlay, Overlay::None) {
             self.handle_overlay_key(key).await?;
+            return Ok(());
+        }
+        if self.action_key("sidebar", &key) {
+            self.toggle_sidebar();
+            return Ok(());
+        }
+        // A focused pane owns every other key: arrows move, Enter
+        // opens, letters filter, Esc (above) leaves.
+        if self.sidebar_focus {
+            self.handle_sidebar_key(key);
             return Ok(());
         }
         if self.action_key("details", &key) {
@@ -119,6 +143,15 @@ impl UiApp {
             self.accept_arg_complete();
             return Ok(());
         }
+        if key.code == KeyCode::Tab && self.sh_menu_open() {
+            self.accept_sh_complete();
+            return Ok(());
+        }
+        // Shell Tab decides: certain applies, ambiguous opens the
+        // menu, empty falls through to ghost/mode cycling below.
+        if key.code == KeyCode::Tab && self.sh_tab() {
+            return Ok(());
+        }
         // A visible ghost wins over the mode cycle: Tab already means
         // "complete" everywhere else in the composer.
         if key.code == KeyCode::Tab && self.cursor == self.input.len() && self.ghost_text.is_some()
@@ -165,6 +198,17 @@ impl UiApp {
                     self.arg_selected = self.arg_selected.saturating_sub(1);
                 } else {
                     self.arg_selected = (self.arg_selected + 1).min(count - 1);
+                }
+            }
+            return Ok(());
+        }
+        if self.sh_menu_active() && matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            let count = self.sh_cache_items.len();
+            if count > 0 {
+                if key.code == KeyCode::Up {
+                    self.sh_selected = self.sh_selected.saturating_sub(1);
+                } else {
+                    self.sh_selected = (self.sh_selected + 1).min(count - 1);
                 }
             }
             return Ok(());
@@ -227,7 +271,23 @@ impl UiApp {
                 }
             }
             KeyCode::Right => {
-                if key.modifiers.contains(KeyModifiers::CONTROL)
+                // A pending fix owns an empty composer: one keystroke
+                // takes it, whatever the modifiers.
+                if self.input.trim().is_empty() && self.apply_correction() {
+                    return Ok(());
+                }
+                // At the end of input a visible ghost owns `→`: plain
+                // takes it all, Ctrl takes one word; Alt stays a word
+                // jump and mid-line stays cursor movement.
+                let at_end = self.cursor == self.input.len();
+                if at_end && self.ghost_text.is_some() && !key.modifiers.contains(KeyModifiers::ALT)
+                {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        self.accept_ghost_word();
+                    } else {
+                        self.accept_ghost();
+                    }
+                } else if key.modifiers.contains(KeyModifiers::CONTROL)
                     || key.modifiers.contains(KeyModifiers::ALT)
                 {
                     self.cursor = next_word_boundary(&self.input, self.cursor);
@@ -473,6 +533,8 @@ impl UiApp {
         if value.is_empty() {
             return Ok(());
         }
+        self.pending_correction = None;
+        self.close_sh_menu();
         self.end_history_walk(true);
         // `#` asks for cheap local routing before any model call: shell
         // shapes prefill `!`, agent shapes send, the rest stays editable.
@@ -644,6 +706,10 @@ impl UiApp {
             self.state.permission_posture != "restricted" && self.state.permission_posture != "off";
         let cancellation = self.cancellation.clone().unwrap_or_default();
         let sender = self.tx.clone();
+        // The correction worker needs the same context the ghost layers
+        // use: the raw line, the workspace, and the PATH binaries.
+        let bins = self.bin_cache.clone();
+        let correction_cwd = workspace.clone();
         let preview: String = command.chars().take(60).collect();
         self.set_status(format!("Running: {preview}"));
         tokio::spawn(async move {
@@ -657,6 +723,18 @@ impl UiApp {
                 .await
             {
                 Ok(output) => {
+                    // A non-zero exit with rule matches becomes a
+                    // one-keystroke offer for the best fix; alternates
+                    // ride along in the notice and the status.
+                    let mut fixes = Vec::new();
+                    if output.status.is_some_and(|code| code != 0) {
+                        fixes = crate::suggest::suggest_corrections(
+                            &command,
+                            &output.stderr,
+                            &correction_cwd,
+                            &bins,
+                        );
+                    }
                     let mut body = String::new();
                     let stdout = output.stdout.trim_end();
                     if !stdout.is_empty() {
@@ -676,10 +754,24 @@ impl UiApp {
                     const LIMIT: usize = 8_000;
                     let over = body.chars().count() > LIMIT;
                     let shown: String = body.chars().take(LIMIT).collect();
-                    format!(
+                    let mut notice = format!(
                         "$ {command}\n{shown}{}",
                         if over { "\n⋯ output truncated" } else { "" }
-                    )
+                    );
+                    if let Some((best, rest)) = fixes.split_first() {
+                        let mut hint = format!("Did you mean `!{best}`? → applies");
+                        for alt in rest {
+                            hint.push_str(&format!(" · `!{alt}`"));
+                        }
+                        notice.push('\n');
+                        notice.push_str(&hint);
+                        let _ = sender.send(crate::ui::events::UiEvent::ShellCorrection {
+                            failed: command.clone(),
+                            fixed: best.clone(),
+                            more: rest.to_vec(),
+                        });
+                    }
+                    notice
                 }
                 Err(error) => format!("$ {command}\nfailed: {error:#}"),
             };
@@ -724,8 +816,16 @@ impl UiApp {
     }
 
     pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let over_sidebar = self.sidebar_hit(mouse.column, mouse.row);
         match mouse.kind {
             MouseEventKind::ScrollUp => {
+                if over_sidebar {
+                    // The draw step pins scroll to the selection, so
+                    // wheel over the pane moves the selection itself.
+                    self.sidebar_selected = self.sidebar_selected.saturating_sub(3);
+                    self.clamp_sidebar_selected();
+                    return;
+                }
                 let mut step = 4usize;
                 if mouse.modifiers.contains(KeyModifiers::SHIFT) {
                     step = 12;
@@ -734,6 +834,11 @@ impl UiApp {
                 self.follow_transcript = false;
             }
             MouseEventKind::ScrollDown => {
+                if over_sidebar {
+                    self.sidebar_selected = self.sidebar_selected.saturating_add(3);
+                    self.clamp_sidebar_selected();
+                    return;
+                }
                 let mut step = 4usize;
                 if mouse.modifiers.contains(KeyModifiers::SHIFT) {
                     step = 12;
@@ -747,7 +852,14 @@ impl UiApp {
                 }
                 let col = mouse.column;
                 let row = mouse.row;
+                if self.sidebar_hit(col, row) {
+                    self.sidebar_click(col, row);
+                    return;
+                }
                 if self.click_palette(col, row) {
+                    return;
+                }
+                if self.click_sh_complete(col, row) {
                     return;
                 }
                 if self.click_composer(col, row) {
@@ -790,6 +902,38 @@ impl UiApp {
             }
         } else {
             self.palette_selected = index;
+        }
+        true
+    }
+
+    /// Shell menu clicks mirror the palette: first click selects,
+    /// second click fills. Viewport math matches `draw_sh_complete`.
+    fn click_sh_complete(&mut self, col: u16, row: u16) -> bool {
+        let Some(rect) = self.last_sh_rect else {
+            return false;
+        };
+        if col < rect.x
+            || col >= rect.x + rect.width
+            || row < rect.y
+            || row >= rect.y + rect.height
+            || self.last_sh_count == 0
+        {
+            return false;
+        }
+        let viewport = rect.height.saturating_sub(2) as usize;
+        let offset = (row.saturating_sub(rect.y).saturating_sub(1)) as usize;
+        if offset >= viewport {
+            return false;
+        }
+        // Same scroll math as `draw_sh_complete`, recomputed: the draw
+        // pins the window to the selection from the top.
+        let scroll = command::ensure_visible(self.sh_selected, 0, viewport, self.last_sh_count);
+        let index = (scroll + offset).min(self.last_sh_count - 1);
+        if self.sh_selected == index {
+            self.accept_sh_complete();
+            self.sh_selected = 0;
+        } else {
+            self.sh_selected = index;
         }
         true
     }
@@ -888,13 +1032,28 @@ impl UiApp {
 
     pub(crate) fn insert_text(&mut self, value: &str) {
         self.end_history_walk(true);
+        self.pending_correction = None;
         self.input.insert_str(self.cursor, value);
         self.cursor += value.len();
+    }
+
+    /// Take the pending shell fix into an empty composer. False when
+    /// there is nothing to take.
+    pub(crate) fn apply_correction(&mut self) -> bool {
+        let Some(correction) = self.pending_correction.take() else {
+            return false;
+        };
+        self.end_history_walk(true);
+        self.input = format!("!{}", correction.fixed);
+        self.cursor = self.input.len();
+        self.set_status(format!("From `{}` — Enter runs", correction.failed));
+        true
     }
 
     /// IDE-style paired input: typing an opener inserts its closer and
     /// steps inside; typing a closer over itself steps over it.
     pub(crate) fn insert_paired(&mut self, character: char) {
+        self.pending_correction = None;
         let closer = match character {
             '(' => Some(')'),
             '[' => Some(']'),
@@ -940,6 +1099,7 @@ impl UiApp {
         if self.cursor == 0 {
             return;
         }
+        self.pending_correction = None;
         self.end_history_walk(true);
         let start = prev_word_boundary(&self.input, self.cursor);
         self.input.drain(start..self.cursor);
@@ -950,6 +1110,7 @@ impl UiApp {
         if self.cursor == 0 {
             return;
         }
+        self.pending_correction = None;
         self.end_history_walk(true);
         self.input.drain(..self.cursor);
         self.cursor = 0;
@@ -959,11 +1120,13 @@ impl UiApp {
         if self.cursor >= self.input.len() {
             return;
         }
+        self.pending_correction = None;
         self.end_history_walk(true);
         self.input.truncate(self.cursor);
     }
 
     pub(crate) fn open_palette(&mut self) {
+        self.pending_correction = None;
         if self.input.starts_with('/')
             && self.input.len() <= 24
             && !self.input.contains([' ', '\n'])
@@ -1007,6 +1170,7 @@ impl UiApp {
         if self.cursor == 0 {
             return;
         }
+        self.pending_correction = None;
         self.end_history_walk(true);
         let start = previous_boundary(&self.input, self.cursor);
         self.input.drain(start..self.cursor);
@@ -1017,6 +1181,7 @@ impl UiApp {
         if self.cursor >= self.input.len() {
             return;
         }
+        self.pending_correction = None;
         self.end_history_walk(true);
         let end = next_boundary(&self.input, self.cursor);
         self.input.drain(self.cursor..end);
@@ -1027,6 +1192,7 @@ impl UiApp {
         if history.is_empty() {
             return;
         }
+        self.pending_correction = None;
         let depth = match self.hist_depth {
             None => {
                 // First ↑ stashes the live draft: ↓ past the newest
@@ -1046,6 +1212,7 @@ impl UiApp {
         let Some(depth) = self.hist_depth else {
             return;
         };
+        self.pending_correction = None;
         let history = self.user_history();
         if depth > 1 {
             let next = depth - 1;
@@ -1091,6 +1258,7 @@ impl UiApp {
         let Some(pick) = items.get(self.at_selected).cloned() else {
             return false;
         };
+        self.pending_correction = None;
         let end = self.cursor.min(self.input.len());
         let before = self.input[..end].to_string();
         let Some(at) = before.rfind('@') else {
@@ -1113,6 +1281,7 @@ impl UiApp {
     /// Replace the partial argument after the last space with the selected
     /// pick plus a trailing space so typing resumes naturally.
     pub(crate) fn accept_arg_complete(&mut self) -> bool {
+        self.pending_correction = None;
         let items = self.arg_cache_items.clone();
         let Some(pick) = items.get(self.arg_selected).cloned() else {
             return false;
@@ -1132,12 +1301,13 @@ impl UiApp {
 /// Remappable composer actions and their built-in defaults. Only
 /// `ctrl+<letter>` specs are accepted: predictable to parse, hard to typo
 /// into something destructive. Ctrl+C, Esc, Tab, and Enter stay fixed.
-pub(crate) const KEY_ACTIONS: [(&str, char); 5] = [
+pub(crate) const KEY_ACTIONS: [(&str, char); 6] = [
     ("cancel", 'x'),
     ("details", 'o'),
     ("tasks", 't'),
     ("history", 'r'),
     ("redraw", 'l'),
+    ("sidebar", 'b'),
 ];
 
 pub(crate) fn is_known_key_action(action: &str) -> bool {

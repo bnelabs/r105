@@ -213,6 +213,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 ```
 
 - Type / or press Ctrl+P to open the action palette (`*` marks saved workflows from Markdown files). Click a row to pick it; click again to fill it in.
+- Press Ctrl+B for the session pane: a left column listing saved sessions (`●` marks the loaded one) and recent workspaces with the live one pinned first. ↑↓ move, Enter opens (`+ New session` starts fresh), `d` deletes a saved file, typing filters, click selects (click again opens), wheel scrolls, Esc returns to the composer. Switching sessions or starting fresh autosaves the live transcript first, so the pane never discards work; `/session` and `/workspace` stay for everything scripted.
 - After a space, `/command <Tab>` completes argument values (models, themes, skill and session names, …); unknown commands suggest the closest match.
 - /sh turns plain words into a shell command draft for review — Enter runs it, nothing executes unseen. #! does the same from the composer (e.g. `#! list large files`).
 - Up and Down keep the selected command inside the visible palette window, including when the list is taller than the terminal.
@@ -222,10 +223,24 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
   ask answers without tools; the session file remembers the mode.
 - Start a `!` shell line or `/sh` draft and pause: the cascade suggests
   the rest dimmed — shell-history frequency first (same-directory runs
-  win), command names (builtins plus PATH executables) second, path
-  top-hit last. No weights, no server, microseconds. Tab accepts
-  (continuations chain), Esc dismisses until the next edit.
+  win), context-aware arguments second (`git checkout` offers branches,
+  `npm run` offers scripts, `make` offers targets, `ssh` offers hosts,
+  `kubectl get` offers resource types, flags complete after `-`,
+  nested verbs complete deeper like `gh issue list`), command names
+  (builtins plus PATH executables) third, path top-hit last. Shell
+  aliases (`~/.bashrc`, `~/.zshrc`) and git aliases expand before
+  lookup, so `g st` completes as git. No weights, no server,
+  microseconds. Tab or → accepts (continuations chain), Ctrl+→ takes
+  one word, Esc dismisses until the next edit.
   `/completion` shows history counts or clears them.
+- Tab on a shell line opens a completion menu when ambiguous (history,
+  subcommands, flags, branches, files — each tagged with its kind):
+  ↑↓ move, Tab fills, Enter runs, Esc closes, click selects (click
+  again fills). One match applies at once without opening.
+- A failed `!` line offers fixes when local rules match (mistyped
+  command, git subcommand/branch/flag, missing upstream, `chmod +x`,
+  mistyped path): `Did you mean ...?` — → applies the best into the
+  empty composer, alternates list in the transcript, any edit drops it.
 - Up and Down at an empty-argument composer walk earlier user turns like
   a shell: first Up stashes the live draft, Down past the newest
   restores it, Esc restores, any edit adopts. The composer title shows
@@ -250,7 +265,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 - The composer edits like a small IDE input: click to place the cursor, brackets and quotes close themselves, Ctrl+Left/Right (or Alt+F/B) jumps by word, Ctrl+A/E jumps to line ends, Ctrl+W/U/K deletes a word to the line start/end.
 - Enter while a request is active steers it (the new prompt jumps the queue); Alt+Enter while busy queues a follow-up instead.
 - Esc or Ctrl+X cancels the current request or local tool batch.
-- Ctrl+O expands tool details; Ctrl+T shows active work. The five Ctrl shortcuts are remappable via `keybindings` in config.json.
+- Ctrl+O expands tool details; Ctrl+T shows active work. The six Ctrl shortcuts are remappable via `keybindings` in config.json.
 - Mouse is on by default: wheel scrolls (Shift+wheel scrolls faster), click the composer to place the cursor, click a block header to collapse it. /mouse toggles capture; Shift+drag still selects natively. Ctrl+Home/End jumps to the top/latest, and End returns when scrolled up.
 - PageUp and PageDown scroll a full page; Alt+Up/Down jumps between blocks.
 - Saved workflows are Markdown files (`/workflows` lists them, `/commands reload` refreshes); run one as `/name [args]` or find it with Ctrl+P.
