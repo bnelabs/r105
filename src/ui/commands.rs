@@ -296,7 +296,7 @@ impl UiApp {
                 },
                 Err(error) => Err(format!("Shell draft failed: {error:#}")),
             };
-            let _ = sender.send(UiEvent::ShellDraft(outcome));
+            let _ = sender.send(crate::ui::events::UiEvent::ShellDraft(outcome));
         });
     }
 
@@ -758,13 +758,14 @@ impl UiApp {
         tokio::spawn(async move {
             match backend.chat(&state, &prompt, &[]).await {
                 Ok(result) => {
-                    let _ = sender.send(UiEvent::Compacted {
+                    let _ = sender.send(crate::ui::events::UiEvent::Compacted {
                         summary: result.content,
                         recent,
                     });
                 }
                 Err(error) => {
-                    let _ = sender.send(UiEvent::ChatError(format!("{error:#}")));
+                    let _ =
+                        sender.send(crate::ui::events::UiEvent::ChatError(format!("{error:#}")));
                 }
             }
         });
@@ -962,7 +963,7 @@ impl UiApp {
                         Ok(message) => message,
                         Err(error) => format!("MCP reconnect failed: {error:#}"),
                     };
-                    let _ = sender.send(UiEvent::Notice(notice));
+                    let _ = sender.send(crate::ui::events::UiEvent::Notice(notice));
                 });
             }
             Some("tools") => {
@@ -1022,14 +1023,15 @@ impl UiApp {
                     match candidate.list_models().await {
                         Ok(value) => {
                             let models = extract_models(&value);
-                            let _ = sender.send(UiEvent::ModelsLoaded {
+                            let _ = sender.send(crate::ui::events::UiEvent::ModelsLoaded {
                                 backend: candidate,
                                 models,
                             });
                         }
                         Err(error) => {
-                            let _ = sender
-                                .send(UiEvent::Notice(format!("connection failed: {error:#}")));
+                            let _ = sender.send(crate::ui::events::UiEvent::Notice(format!(
+                                "connection failed: {error:#}"
+                            )));
                         }
                     }
                 });
@@ -1047,13 +1049,18 @@ impl UiApp {
                 Ok(value) => {
                     let models = extract_models(&value);
                     if models.is_empty() {
-                        let _ = sender.send(UiEvent::Notice("Provider returned no models".into()));
+                        let _ = sender.send(crate::ui::events::UiEvent::Notice(
+                            "Provider returned no models".into(),
+                        ));
                     } else {
-                        let _ = sender.send(UiEvent::ModelsLoaded { backend, models });
+                        let _ = sender
+                            .send(crate::ui::events::UiEvent::ModelsLoaded { backend, models });
                     }
                 }
                 Err(error) => {
-                    let _ = sender.send(UiEvent::Notice(format!("model list failed: {error:#}")));
+                    let _ = sender.send(crate::ui::events::UiEvent::Notice(format!(
+                        "model list failed: {error:#}"
+                    )));
                 }
             }
         });
@@ -1070,7 +1077,7 @@ impl UiApp {
                 }
                 Err(error) => format!("health failed: {error:#}"),
             };
-            let _ = sender.send(UiEvent::Notice(notice));
+            let _ = sender.send(crate::ui::events::UiEvent::Notice(notice));
         });
     }
 
@@ -1085,7 +1092,7 @@ impl UiApp {
                 }
                 Err(error) => format!("profiles failed: {error:#}"),
             };
-            let _ = sender.send(UiEvent::Notice(notice));
+            let _ = sender.send(crate::ui::events::UiEvent::Notice(notice));
         });
     }
 
@@ -1286,7 +1293,8 @@ impl UiApp {
         };
         let removed: Vec<Message> = self.state.history.drain(index..).collect();
         let count = removed.len();
-        self.redo_stack.push(UndoEntry { messages: removed });
+        self.redo_stack
+            .push(crate::ui::events::UndoEntry { messages: removed });
         self.prune_sections();
         self.follow_transcript = true;
         self.push_system(&format!(
@@ -1316,7 +1324,8 @@ impl UiApp {
             return;
         };
         let count = removed.len();
-        self.redo_stack.push(UndoEntry { messages: removed });
+        self.redo_stack
+            .push(crate::ui::events::UndoEntry { messages: removed });
         self.prune_sections();
         self.input = prompt;
         self.cursor = self.input.len();

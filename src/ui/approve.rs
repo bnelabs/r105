@@ -103,7 +103,7 @@ impl UiApp {
                         })
                     })
                     .collect();
-                let _ = self.tx.send(UiEvent::ToolsDone(merged));
+                let _ = self.tx.send(crate::ui::events::UiEvent::ToolsDone(merged));
                 return;
             }
             self.set_status(format!("Running {} tool call(s)…", approved.len()));
@@ -189,7 +189,7 @@ impl UiApp {
                         })
                     })
                     .collect();
-                let _ = self.tx.send(UiEvent::ToolsDone(merged));
+                let _ = self.tx.send(crate::ui::events::UiEvent::ToolsDone(merged));
                 return;
             }
             self.spawn_tool_calls(context, approved, results);
@@ -238,10 +238,12 @@ impl UiApp {
                             })
                         })
                         .collect();
-                    let _ = sender.send(UiEvent::ToolsDone(merged));
+                    let _ = sender.send(crate::ui::events::UiEvent::ToolsDone(merged));
                 }
                 Err(error) => {
-                    let _ = sender.send(UiEvent::ChatError(format!("tool execution: {error:#}")));
+                    let _ = sender.send(crate::ui::events::UiEvent::ChatError(format!(
+                        "tool execution: {error:#}"
+                    )));
                 }
             }
         });

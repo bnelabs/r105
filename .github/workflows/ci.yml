@@ -18,6 +18,18 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated
+
+      - name: Audit dependencies
+        run: cargo audit
+
+      - name: Check for outdated dependencies
+        run: cargo outdated || true
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

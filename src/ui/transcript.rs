@@ -26,13 +26,13 @@ impl UiApp {
     /// Neutral status note (muted tone).
     pub(crate) fn set_status(&mut self, text: String) {
         self.status = text;
-        self.status_tone = StatusTone::Muted;
+        self.status_tone = crate::ui::events::StatusTone::Muted;
     }
 
     /// Completed-action confirmation (green tone).
     pub(crate) fn set_ok(&mut self, text: String) {
         self.status = text;
-        self.status_tone = StatusTone::Success;
+        self.status_tone = crate::ui::events::StatusTone::Success;
     }
 
     /// Switch mode in both mirrors: the Tab-cycle label and the session
@@ -56,7 +56,7 @@ impl UiApp {
     /// Failure or blocked-action notice (red tone).
     pub(crate) fn set_error(&mut self, text: String) {
         self.status = text;
-        self.status_tone = StatusTone::Error;
+        self.status_tone = crate::ui::events::StatusTone::Error;
     }
 
     /// Stable ID for a history message, assigning `m<N>` lazily so IDs

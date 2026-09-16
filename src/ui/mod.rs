@@ -53,6 +53,7 @@ use crate::{
 mod approve;
 mod commands;
 mod complete;
+mod events;
 mod ghost;
 mod input;
 mod render;
@@ -60,89 +61,9 @@ mod transcript;
 
 pub(crate) use approve::*;
 pub(crate) use commands::*;
+pub(crate) use events::*;
 pub(crate) use input::*;
 pub(crate) use transcript::*;
-
-#[derive(Debug)]
-enum UiEvent {
-    Backend(BackendEvent),
-    ChatDone(ChatResult),
-    ChatError(String),
-    ToolsDone(Vec<ToolResult>),
-    Compacted {
-        summary: String,
-        recent: Vec<Message>,
-    },
-    /// A `/sh` draft round-trip finished: prefill the composer with the
-    /// proposed `!command` (`Ok`) or report why drafting failed (`Err`).
-    ShellDraft(Result<String, String>),
-    ModelsLoaded {
-        backend: Backend,
-        models: Vec<ModelInfo>,
-    },
-    Notice(String),
-}
-
-/// One entry of a provider model list. `status` carries the backend's load
-/// state (`loaded`, `unloaded`, …) when the provider reports one; most
-/// OpenAI-compatible endpoints omit it entirely.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ModelInfo {
-    id: String,
-    status: Option<String>,
-}
-
-impl ModelInfo {
-    pub(crate) fn display(&self, active: &str) -> String {
-        let marker = if self.id == active { "●" } else { " " };
-        let mut text = if self.id == active {
-            format!("{marker} {} (active)", self.id)
-        } else {
-            format!("{marker} {}", self.id)
-        };
-        if let Some(status) = &self.status {
-            text.push_str(&format!(" · {status}"));
-        }
-        text
-    }
-}
-
-#[derive(Debug)]
-enum Overlay {
-    None,
-    Providers {
-        selected: usize,
-        scroll: usize,
-    },
-    Models {
-        items: Vec<ModelInfo>,
-        selected: usize,
-        scroll: usize,
-        active: String,
-    },
-    ApiKey {
-        provider: String,
-    },
-    CustomUrl {
-        provider: String,
-    },
-    Theme {
-        selected: usize,
-        original: String,
-    },
-    Settings {
-        selected: usize,
-    },
-    /// A tool call awaits y/a/n; the queue lives in `pending_tools`.
-    Approval,
-}
-
-/// One undoable exchange: everything from a user message onward. The prompt
-/// itself is `messages[0]`, so `/undo` can restore it into the composer.
-#[derive(Debug, Clone)]
-struct UndoEntry {
-    messages: Vec<Message>,
-}
 
 pub use crate::config::THEMES;
 
@@ -183,27 +104,6 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
     terminal.show_cursor().context("showing terminal cursor")
 }
 
-/// Severity of the footer status line. The line is a single superseding
-/// slot (a new note always replaces the old one); the tone only colors
-/// it so failures stop looking like idle notes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum StatusTone {
-    #[default]
-    Muted,
-    Success,
-    Error,
-}
-
-impl StatusTone {
-    pub(crate) fn color(self) -> Color {
-        match self {
-            StatusTone::Muted => Color::White,
-            StatusTone::Success => Color::Green,
-            StatusTone::Error => Color::Red,
-        }
-    }
-}
-
 struct UiApp {
     pub(crate) backend: Backend,
     pub(crate) state: ChatState,
@@ -212,7 +112,7 @@ struct UiApp {
     pub(crate) input: String,
     pub(crate) cursor: usize,
     pub(crate) mode: Mode,
-    pub(crate) overlay: Overlay,
+    pub(crate) overlay: crate::ui::events::Overlay,
     pub(crate) palette_selected: usize,
     pub(crate) palette_scroll: usize,
     pub(crate) transcript_scroll: usize,
@@ -221,7 +121,7 @@ struct UiApp {
     pub(crate) busy: bool,
     pub(crate) streaming: String,
     pub(crate) status: String,
-    pub(crate) status_tone: StatusTone,
+    pub(crate) status_tone: crate::ui::events::StatusTone,
     /// When the active request started, for the slow-start hint. Cold model
     /// loads look exactly like a hung request until the first token lands.
     pub(crate) request_started: Option<Instant>,
@@ -258,7 +158,7 @@ struct UiApp {
     /// to the user message once the backend answers.
     pub(crate) pending_context: Option<String>,
     /// Undone exchanges, newest last; any new user prompt clears the stack.
-    pub(crate) redo_stack: Vec<UndoEntry>,
+    pub(crate) redo_stack: Vec<crate::ui::events::UndoEntry>,
     /// Set by steering: the in-flight request is cancelled and its prompt
     /// must not be restored into the composer or offered via `/retry`.
     pub(crate) drop_next_restore: bool,
@@ -295,8 +195,8 @@ struct UiApp {
     pub(crate) bin_cache: Vec<String>,
     pub(crate) bin_cache_at: Option<Instant>,
     pub(crate) last_response: String,
-    pub(crate) tx: mpsc::UnboundedSender<UiEvent>,
-    pub(crate) rx: mpsc::UnboundedReceiver<UiEvent>,
+    pub(crate) tx: mpsc::UnboundedSender<crate::ui::events::UiEvent>,
+    pub(crate) rx: mpsc::UnboundedReceiver<crate::ui::events::UiEvent>,
     pub(crate) quit: bool,
     pub(crate) exit_notice: Option<String>,
     /// Accumulated session token usage for the footer telemetry.
@@ -397,7 +297,7 @@ impl UiApp {
             input: String::new(),
             cursor: 0,
             mode: Mode::Build,
-            overlay: Overlay::None,
+            overlay: crate::ui::events::Overlay::None,
             palette_selected: 0,
             palette_scroll: 0,
             transcript_scroll: 0,
@@ -406,7 +306,7 @@ impl UiApp {
             busy: false,
             streaming: String::new(),
             status,
-            status_tone: StatusTone::Muted,
+            status_tone: crate::ui::events::StatusTone::Muted,
             request_started: None,
             awaiting_first_token: false,
             slow_hint_shown: false,
@@ -534,15 +434,17 @@ impl UiApp {
     pub(crate) fn process_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
-                UiEvent::Backend(BackendEvent::Token(token)) => {
+                crate::ui::events::UiEvent::Backend(BackendEvent::Token(token)) => {
                     self.streaming.push_str(&token);
                     self.awaiting_first_token = false;
                     self.set_status("Generating…".into());
                     self.follow_transcript = true;
                 }
-                UiEvent::Backend(BackendEvent::Status(status)) => self.set_status(status),
-                UiEvent::ChatDone(result) => self.chat_done(result),
-                UiEvent::ChatError(error) => {
+                crate::ui::events::UiEvent::Backend(BackendEvent::Status(status)) => {
+                    self.set_status(status)
+                }
+                crate::ui::events::UiEvent::ChatDone(result) => self.chat_done(result),
+                crate::ui::events::UiEvent::ChatError(error) => {
                     self.streaming.clear();
                     self.awaiting_first_token = false;
                     self.busy = false;
@@ -575,7 +477,7 @@ impl UiApp {
                         self.ring_bell();
                     }
                 }
-                UiEvent::ToolsDone(results) => {
+                crate::ui::events::UiEvent::ToolsDone(results) => {
                     self.awaiting_first_token = false;
                     for result in &results {
                         self.state.history.push(Message::tool(
@@ -597,13 +499,13 @@ impl UiApp {
                     ));
                     self.start_continue();
                 }
-                UiEvent::Compacted { summary, recent } => {
+                crate::ui::events::UiEvent::Compacted { summary, recent } => {
                     self.awaiting_first_token = false;
                     if self.apply_compaction(summary, recent) {
                         self.start_next_queued();
                     }
                 }
-                UiEvent::ModelsLoaded { backend, models } => {
+                crate::ui::events::UiEvent::ModelsLoaded { backend, models } => {
                     self.backend = backend;
                     self.pending_connection = None;
                     if models.is_empty() {
@@ -634,7 +536,7 @@ impl UiApp {
                             .position(|model| model.id == active)
                             .unwrap_or(0);
                         self.known_models = models.iter().map(|model| model.id.clone()).collect();
-                        self.overlay = Overlay::Models {
+                        self.overlay = crate::ui::events::Overlay::Models {
                             items: models,
                             selected,
                             scroll: 0,
@@ -642,8 +544,8 @@ impl UiApp {
                         };
                     }
                 }
-                UiEvent::Notice(notice) => self.push_system(&notice),
-                UiEvent::ShellDraft(outcome) => match outcome {
+                crate::ui::events::UiEvent::Notice(notice) => self.push_system(&notice),
+                crate::ui::events::UiEvent::ShellDraft(outcome) => match outcome {
                     Ok(command) if self.input.is_empty() => {
                         self.input = format!("!{command}");
                         self.cursor = self.input.len();
@@ -809,7 +711,7 @@ impl UiApp {
         let relay_sender = sender.clone();
         tokio::spawn(async move {
             while let Some(event) = backend_events.recv().await {
-                let _ = relay_sender.send(UiEvent::Backend(event));
+                let _ = relay_sender.send(crate::ui::events::UiEvent::Backend(event));
             }
         });
         tokio::spawn(async move {
@@ -818,10 +720,10 @@ impl UiApp {
                 .await
             {
                 Ok(result) => {
-                    let _ = sender.send(UiEvent::ChatDone(result));
+                    let _ = sender.send(crate::ui::events::UiEvent::ChatDone(result));
                 }
                 Err(error) => {
-                    let _ = sender.send(UiEvent::ChatError(error.to_string()));
+                    let _ = sender.send(crate::ui::events::UiEvent::ChatError(error.to_string()));
                 }
             }
         });
@@ -843,7 +745,7 @@ impl UiApp {
         let relay_sender = sender.clone();
         tokio::spawn(async move {
             while let Some(event) = backend_events.recv().await {
-                let _ = relay_sender.send(UiEvent::Backend(event));
+                let _ = relay_sender.send(crate::ui::events::UiEvent::Backend(event));
             }
         });
         tokio::spawn(async move {
@@ -852,10 +754,10 @@ impl UiApp {
                 .await
             {
                 Ok(result) => {
-                    let _ = sender.send(UiEvent::ChatDone(result));
+                    let _ = sender.send(crate::ui::events::UiEvent::ChatDone(result));
                 }
                 Err(error) => {
-                    let _ = sender.send(UiEvent::ChatError(error.to_string()));
+                    let _ = sender.send(crate::ui::events::UiEvent::ChatError(error.to_string()));
                 }
             }
         });
@@ -903,7 +805,7 @@ impl UiApp {
         // A card-paused round runs nothing: no event will settle it, so
         // cancel settles it here instead of stranding busy.
         if self.pending_tools.take().is_some() {
-            self.overlay = Overlay::None;
+            self.overlay = crate::ui::events::Overlay::None;
             self.busy = false;
             self.cancellation = None;
             self.tool_round = 0;
@@ -1039,15 +941,15 @@ mod tests {
         };
         // Default config asks for writes: the call pauses on a card.
         app.precheck_tool_calls(vec![write_call("c1")], context());
-        assert!(matches!(app.overlay, Overlay::Approval));
+        assert!(matches!(app.overlay, crate::ui::events::Overlay::Approval));
         let (name, summary, remaining) = app.approval_card().unwrap();
         assert_eq!(name, "write_file");
         assert!(summary.contains("notes.txt"), "{summary}");
         assert_eq!(remaining, 0);
         app.resolve_approval(ApprovalVerdict::Deny);
-        assert!(matches!(app.overlay, Overlay::None));
+        assert!(matches!(app.overlay, crate::ui::events::Overlay::None));
         match app.rx.try_recv().expect("denial delivered") {
-            UiEvent::ToolsDone(results) => {
+            crate::ui::events::UiEvent::ToolsDone(results) => {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].call_id, "c1");
                 assert!(
@@ -1066,7 +968,7 @@ mod tests {
             .expect("tools done arrives")
             .expect("channel open")
         {
-            UiEvent::ToolsDone(results) => {
+            crate::ui::events::UiEvent::ToolsDone(results) => {
                 assert_eq!(results.len(), 1);
                 assert!(
                     results[0].content.contains("notes.txt"),
@@ -1556,9 +1458,9 @@ mod tests {
     fn status_error_renders_red() {
         let (mut app, _workspace, _skills) = test_app();
         app.set_error("Error demo".to_string());
-        assert_eq!(app.status_tone, StatusTone::Error);
+        assert_eq!(app.status_tone, crate::ui::events::StatusTone::Error);
         app.set_ok("Ok demo".to_string());
-        assert_eq!(app.status_tone, StatusTone::Success);
+        assert_eq!(app.status_tone, crate::ui::events::StatusTone::Success);
         app.set_error("Error demo".to_string());
         let terminal = render_terminal(&mut app, 80, 24);
         let buffer = terminal.backend().buffer();

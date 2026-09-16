@@ -598,7 +598,7 @@ impl UiApp {
                 }
                 Err(error) => format!("$ {command}\nfailed: {error:#}"),
             };
-            let _ = sender.send(UiEvent::Notice(notice));
+            let _ = sender.send(crate::ui::events::UiEvent::Notice(notice));
         });
     }
 
