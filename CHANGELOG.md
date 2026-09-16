@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-09-16
+
 ### Added
 - Marker-free shell completion: plain lines like `git check` now ghost
   and open Tab menus exactly like `!`/`/sh` lines — no marker needed.
