@@ -43,6 +43,14 @@ impl UiApp {
                 Constraint::Length(2),
             ])
             .split(area);
+        self.last_transcript_rect = chunks[1];
+        self.last_composer_rect = chunks[4];
+        if palette_height > 0 {
+            self.last_palette_rect = Some(chunks[2]);
+        } else {
+            self.last_palette_rect = None;
+        }
+        self.last_palette_count = palette.len();
         self.draw_header(frame, chunks[0]);
         self.draw_transcript(frame, chunks[1]);
         if palette_height > 0 {
@@ -111,7 +119,9 @@ impl UiApp {
     }
 
     pub(crate) fn draw_transcript(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let mut lines = Vec::new();
+        self.transcript_height = area.height;
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut headers: Vec<Option<String>> = Vec::new();
         let palette = theme_palette(&self.state.theme);
         let show_thinking = self.state.show_thinking;
         let thinking_default = self.state.thinking_default_expanded;
@@ -124,6 +134,13 @@ impl UiApp {
         let mut order: Vec<(String, bool)> = Vec::new();
         for (index, message) in self.state.history.iter().enumerate() {
             let block = index + 1;
+            if !lines.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "  ─",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                headers.push(None);
+            }
             let color = match message.role.as_str() {
                 "user" => palette.user,
                 "assistant" => palette.assistant,
@@ -141,23 +158,31 @@ impl UiApp {
             // A message is one section: tool output, or the thinking part
             // of an assistant message (shown only when thinking is on).
             let is_section = is_tool || (thinking.is_some() && show_thinking);
-            let gutter = if is_section {
+            let (gutter, header_id) = if is_section {
                 let default = if is_tool {
                     details_default
                 } else {
                     thinking_default
                 };
                 order.push((message.id.clone(), default));
-                format!(" [{}]", order.len())
+                (format!(" [{}]", order.len()), Some(message.id.clone()))
             } else {
                 // `#n` is the block address (/filter, /block, /rerun);
                 // section gutters keep `[n]` for /expand.
-                format!(" #{block}")
+                (format!(" #{block}"), None)
+            };
+            let mark = if failed {
+                " ✗"
+            } else if is_tool {
+                " ✓"
+            } else {
+                ""
             };
             lines.push(Line::from(Span::styled(
-                format!(" {label}{gutter} "),
+                format!("─ {label}{gutter}{mark} ─"),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             )));
+            headers.push(header_id);
             let filtered = self
                 .block_filters
                 .get(&message.id)
@@ -207,16 +232,20 @@ impl UiApp {
                     .iter()
                     .map(|c| c.function.name.clone())
                     .collect();
+                let count = if message.tool_calls.len() == 1 {
+                    "1 call".to_string()
+                } else {
+                    format!("{} calls", message.tool_calls.len())
+                };
                 lines.push(Line::from(Span::styled(
-                    format!(
-                        "  ↳ {} tool call(s): {}",
-                        message.tool_calls.len(),
-                        tool_names(&names)
-                    ),
+                    format!("  ↳ {count}: {}", tool_names(&names)),
                     Style::default().fg(Color::Yellow),
                 )));
             }
             lines.push(Line::from(""));
+            while headers.len() < lines.len() {
+                headers.push(None);
+            }
         }
         if !self.state.todos.is_empty() {
             use crate::model::TodoStatus;
@@ -230,11 +259,12 @@ impl UiApp {
                 .filter(|item| item.status == TodoStatus::Completed)
                 .count();
             lines.push(Line::from(Span::styled(
-                format!(" TASKS [{number}] "),
+                format!("─ TASKS [{number}] {done}/{} ─", self.state.todos.len()),
                 Style::default()
                     .fg(palette.tool)
                     .add_modifier(Modifier::BOLD),
             )));
+            headers.push(Some("todos".to_string()));
             if self.section_expanded("todos", true) {
                 for item in &self.state.todos {
                     let marker = match item.status {
@@ -251,11 +281,14 @@ impl UiApp {
                 )));
             }
             lines.push(Line::from(""));
+            while headers.len() < lines.len() {
+                headers.push(None);
+            }
         }
         self.section_order = order;
         if !self.streaming.is_empty() {
             lines.push(Line::from(Span::styled(
-                " ASSISTANT ",
+                "─ ASSISTANT … ─",
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
@@ -263,7 +296,14 @@ impl UiApp {
             for line in self.streaming.lines() {
                 lines.push(Line::from(format!("  {line}")));
             }
+            while headers.len() < lines.len() {
+                headers.push(None);
+            }
         }
+        while headers.len() < lines.len() {
+            headers.push(None);
+        }
+        self.transcript_header_rows = headers;
         let max_scroll = lines.len().saturating_sub(area.height as usize);
         if self.follow_transcript {
             self.transcript_scroll = max_scroll;
@@ -275,6 +315,7 @@ impl UiApp {
                 self.follow_transcript = true;
             }
         }
+        self.last_transcript_scroll = self.transcript_scroll;
         let block = Block::default()
             .borders(Borders::LEFT | Borders::RIGHT)
             .border_style(Style::default().fg(Color::DarkGray));
@@ -315,7 +356,7 @@ impl UiApp {
             Paragraph::new(rows).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" files · Tab accept · ↑↓ choose "),
+                    .title(" Files · Tab fills "),
             ),
             area,
         );
@@ -349,7 +390,7 @@ impl UiApp {
             Paragraph::new(rows).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" values · Tab accept · ↑↓ choose "),
+                    .title(" Values · Tab fills "),
             ),
             area,
         );
@@ -375,11 +416,7 @@ impl UiApp {
             .collect::<Vec<_>>();
         frame.render_widget(Clear, rect);
         frame.render_widget(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" settings · ↑↓ move · ←/→ change · Esc close "),
-            ),
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Settings ")),
             rect,
         );
     }
@@ -427,7 +464,7 @@ impl UiApp {
             Paragraph::new(rows).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" commands · ↑↓ choose · Enter accept · * custom "),
+                    .title(" commands · type to filter "),
             ),
             area,
         );
@@ -435,14 +472,11 @@ impl UiApp {
 
     pub(crate) fn draw_composer(&self, frame: &mut Frame<'_>, area: Rect) {
         let title = if self.hist_depth.is_some() {
-            " composer · ↑↓ history · Esc restore ".into()
+            " History · Esc restores ".into()
         } else if self.busy {
-            format!(
-                " composer · {} queued · Esc/Ctrl-X cancel ",
-                self.queue.len()
-            )
+            format!(" Working · {} queued · Esc stops ", self.queue.len())
         } else {
-            " composer · Enter send · Alt/Shift-Enter newline ".into()
+            " Message ".into()
         };
         let mut composer = vec![Span::raw(format!("> {}", self.input))];
         if self.cursor == self.input.len()
@@ -456,9 +490,9 @@ impl UiApp {
         if self.input.is_empty() && self.ghost_text.is_none() {
             // Display-only teaching hint: never part of the input.
             let hint = if self.busy {
-                "working… Enter queues · Ctrl+X cancels"
+                "Working — Enter queues · Esc stops"
             } else {
-                "prompt · ! shell · / commands · # route · ↑ history"
+                "Prompt · ! run · / act · #! draft · ↑ recall"
             };
             composer.push(Span::styled(
                 hint.to_string(),
@@ -509,6 +543,11 @@ impl UiApp {
                 .count();
             format!("  tasks {done}/{}", self.state.todos.len())
         };
+        let position = if self.follow_transcript {
+            String::new()
+        } else {
+            " · End for latest".to_string()
+        };
         let first = Line::from(vec![
             Span::styled(
                 format!(" {} ", self.status),
@@ -518,6 +557,7 @@ impl UiApp {
             Span::styled(session_tokens, Style::default().fg(Color::DarkGray)),
             Span::styled(branch, Style::default().fg(Color::DarkGray)),
             Span::styled(tasks, Style::default().fg(Color::DarkGray)),
+            Span::styled(position, Style::default().fg(Color::Yellow)),
         ]);
         let second = Line::from(vec![
             Span::styled(
@@ -533,7 +573,7 @@ impl UiApp {
             ),
             Span::raw("  "),
             Span::styled(
-                "Tab ghost/mode · /help · @file · !cmd · /sh",
+                "Tab complete · / palette · @ files · ! shell · Ctrl+P",
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
@@ -557,7 +597,7 @@ impl UiApp {
                 render_picker(
                     frame,
                     area,
-                    " Connect · provider ",
+                    " Connect ",
                     &items,
                     selected,
                     scroll,
@@ -575,11 +615,11 @@ impl UiApp {
                 render_picker(
                     frame,
                     area,
-                    " Models · ● active · Enter select ",
+                    " Models ",
                     &display,
                     selected,
                     scroll,
-                    selection_style(&self.state.theme),
+                    selection_style(active),
                 );
             }
             Overlay::ApiKey { provider } => {
@@ -621,7 +661,7 @@ impl UiApp {
                 render_picker(
                     frame,
                     area,
-                    " Theme · live preview · Enter keep · Esc revert ",
+                    " Theme ",
                     &items,
                     selected,
                     &mut scroll,

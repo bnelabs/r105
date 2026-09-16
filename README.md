@@ -212,9 +212,9 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 └──────────────────────────────────────────────────────────┘
 ```
 
-- Type / to open the fuzzy command palette (`*` marks custom commands from Markdown files).
+- Type / or press Ctrl+P to open the action palette (`*` marks saved workflows from Markdown files). Click a row to pick it; click again to fill it in.
 - After a space, `/command <Tab>` completes argument values (models, themes, skill and session names, …); unknown commands suggest the closest match.
-- /sh turns plain words into a shell command draft for review — Enter runs it, nothing executes unseen.
+- /sh turns plain words into a shell command draft for review — Enter runs it, nothing executes unseen. #! does the same from the composer (e.g. `#! list large files`).
 - Up and Down keep the selected command inside the visible palette window, including when the list is taller than the terminal.
 - /connect and /models use scrollable provider and model pickers.
 - Tab cycles through build, plan, and ask modes. Modes are enforced:
@@ -230,12 +230,13 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
   a shell: first Up stashes the live draft, Down past the newest
   restores it, Esc restores, any edit adopts. The composer title shows
   the walk while it is active.
-- Every transcript message is an addressable block (`#n` in its
-  header): `/filter <n> <pattern>` narrows long output (`--regex`,
-  `--case`, `--invert`, `--context N`, clear with the shown command),
-  `/block [n]` lists or describes blocks, `/rerun [n]` resubmits an
-  earlier prompt or `!` line, and `/copy out [n]` copies a block
-  (filtered view when a filter is set).
+- Every transcript message is a grouped block (`#n` in its header,
+  ✓/✗ on tool results): click a block header to collapse it,
+  Alt+Up/Down jumps between blocks, `/filter <n> <pattern>` narrows
+  long output (`--regex`, `--case`, `--invert`, `--context N`, clear
+  with the shown command), `/block [n]` lists or describes blocks,
+  `/rerun [n]` resubmits an earlier prompt or `!` line, and
+  `/copy out [n]` copies a block (filtered view when a filter is set).
 - Destructive tools pause on an approval card (`y` once, `a` always this
   run, `n` deny) unless the per-category policy (`approval_exec`,
   `approval_write`, …) or `command_allowlist`/`command_denylist` says
@@ -245,11 +246,14 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
   other section.
 - Type @ to fuzzy-complete a workspace file; Tab accepts, Enter sends with the file attached as context.
 - Start a line with ! to run a shell command in the sandbox; its output joins the conversation context.
-- Start a line with # to classify it first: shell one-liners are prefilled after ! for review, agent prompts are sent as-is, ambiguous input shows a hint in the status line. Nothing executes unseen.
+- Start a line with # to route it first: shell one-liners are prefilled after ! for review, `#! <goal>` drafts a command from plain words, agent prompts are sent as-is, ambiguous input stays editable with a hint. Nothing executes unseen.
+- The composer edits like a small IDE input: click to place the cursor, brackets and quotes close themselves, Ctrl+Left/Right (or Alt+F/B) jumps by word, Ctrl+A/E jumps to line ends, Ctrl+W/U/K deletes a word to the line start/end.
 - Enter while a request is active steers it (the new prompt jumps the queue); Alt+Enter while busy queues a follow-up instead.
 - Esc or Ctrl+X cancels the current request or local tool batch.
 - Ctrl+O expands tool details; Ctrl+T shows active work. The five Ctrl shortcuts are remappable via `keybindings` in config.json.
-- PageUp and PageDown scroll the transcript (mouse wheel too, with `"mouse": true`).
+- Mouse is on by default: wheel scrolls (Shift+wheel scrolls faster), click the composer to place the cursor, click a block header to collapse it. /mouse toggles capture; Shift+drag still selects natively. Ctrl+Home/End jumps to the top/latest, and End returns when scrolled up.
+- PageUp and PageDown scroll a full page; Alt+Up/Down jumps between blocks.
+- Saved workflows are Markdown files (`/workflows` lists them, `/commands reload` refreshes); run one as `/name [args]` or find it with Ctrl+P.
 - Alt+Enter or Shift+Enter inserts a newline; Enter sends the prompt.
 - Exiting with /exit or Ctrl+C saves an __autosave__ session when the transcript is nonempty.
 
@@ -266,7 +270,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /profiles | List llama-router profiles |
 | /profile [name|auto] | Set or clear the llama-router profile |
 | /build, /plan, /ask | Switch working mode (enforced, persisted) |
-| /completion [status\|clear] | Ghost-text history status; clear remembered commands |
+| /completion [status\|clear] | Suggestion status; clear remembered commands |
 | /history | Show a transcript preview |
 | /skills | List Markdown skills |
 | /skill use <name> [key=value] | Activate a skill |
@@ -274,7 +278,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /skill drop <name> | Deactivate a skill |
 | /skill clear | Deactivate all active skills |
 | /compact | Summarize older conversation context |
-| /tokens | Show context usage and estimation source |
+| /tokens | Show context usage |
 | /quality [fast|balanced|best] | Set the router quality hint |
 | /json [on|off] | Toggle JSON response mode |
 | /max [tokens] | Set or clear the completion token limit |
@@ -291,7 +295,9 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /reasoning [effort] | Set the reasoning effort hint |
 | /thinking [on|off] | Show or hide the model's thinking blocks |
 | /attention [on|off] | Toggle the bell when a request finishes |
-| /commands [reload] | List Markdown-backed custom commands |
+| /mouse [on|off] | Toggle mouse capture |
+| /commands [reload] | List saved workflows |
+| /workflows [reload] | List saved reusable workflows |
 | /sh <request> | Draft a shell command from plain words |
 | /settings | Change theme, permissions, reasoning, and toggles |
 | /editor | Compose the prompt in $EDITOR |

@@ -223,6 +223,18 @@ struct UiApp {
     /// Model ids from the last `/models` refresh, backing `/model <Tab>`.
     pub(crate) known_models: Vec<String>,
     pub(crate) editor_requested: bool,
+    /// Last drawn viewport heights/rects for viewport-aware paging and
+    /// mouse hit-testing. Updated in `draw`; read by input handlers.
+    pub(crate) transcript_height: u16,
+    pub(crate) last_transcript_rect: Rect,
+    pub(crate) last_composer_rect: Rect,
+    pub(crate) last_palette_rect: Option<Rect>,
+    pub(crate) last_palette_count: usize,
+    /// Per rendered transcript line, the collapsible section id when the
+    /// line is a section header. Lets a mouse click toggle a section.
+    pub(crate) transcript_header_rows: Vec<Option<String>>,
+    /// Scroll offset at render time, so a click row maps back to a line.
+    pub(crate) last_transcript_scroll: usize,
 }
 
 impl UiApp {
@@ -244,7 +256,7 @@ impl UiApp {
         // confinement, but it is not a namespace/container boundary.
         let mut status = match sandbox.selected_name() {
             "rlimit" | "none" => format!(
-                "Ready · sandbox '{}' fallback — install nsjail/bwrap/docker for stronger isolation (/state)",
+                "Ready · sandbox '{}' (limited) — /state for details",
                 sandbox.selected_name()
             ),
             _ => "Ready".into(),
@@ -362,6 +374,13 @@ impl UiApp {
             arg_cache_items: Vec::new(),
             known_models: Vec::new(),
             editor_requested: false,
+            transcript_height: 20,
+            last_transcript_rect: Rect::default(),
+            last_composer_rect: Rect::default(),
+            last_palette_rect: None,
+            last_palette_count: 0,
+            transcript_header_rows: Vec::new(),
+            last_transcript_scroll: 0,
         };
         app.sync_mode_from_state();
         app
@@ -418,7 +437,7 @@ impl UiApp {
                         Some(Ok(Event::Mouse(mouse))) => self.handle_mouse(mouse),
                         Some(Ok(_)) => {}
                         Some(Err(error)) => {
-                            self.set_error(format!("input error: {error}"));
+                            self.set_error(format!("Input error: {error}"));
                         }
                         None => {
                             self.quit = true;
@@ -493,7 +512,7 @@ impl UiApp {
                     let names =
                         tool_names(&results.iter().map(|r| r.name.clone()).collect::<Vec<_>>());
                     self.set_status(format!(
-                        "{} tool result(s) [{}] received; continuing…",
+                        "{} result(s) [{}] · continuing…",
                         results.len(),
                         names
                     ));
@@ -509,7 +528,7 @@ impl UiApp {
                     self.backend = backend;
                     self.pending_connection = None;
                     if models.is_empty() {
-                        self.set_status("Connected; provider returned no model list".into());
+                        self.set_status("Connected · no models listed".into());
                         self.persist_connection(None);
                     } else {
                         let cold = models
@@ -523,12 +542,12 @@ impl UiApp {
                             .count();
                         self.set_status(if cold > 0 {
                             format!(
-                                "Connected; choose a model ({} available, {} unloaded — first use loads them)",
+                                "Connected · {} models ({} load on first use)",
                                 models.len(),
                                 cold
                             )
                         } else {
-                            format!("Connected; choose a model ({} available)", models.len())
+                            format!("Connected · {} models", models.len())
                         });
                         let active = self.state.model.clone();
                         let selected = models
@@ -549,14 +568,11 @@ impl UiApp {
                     Ok(command) if self.input.is_empty() => {
                         self.input = format!("!{command}");
                         self.cursor = self.input.len();
-                        self.status =
-                            "Review the proposed command · Enter to run · Esc clears".into();
+                        self.status = "Review — Enter runs · Esc clears".into();
                     }
                     Ok(command) => {
-                        self.push_system(&format!(
-                            "Proposed shell command (composer was busy, run it with !):\n{command}"
-                        ));
-                        self.set_ok("Draft landed as a transcript note".into());
+                        self.push_system(&format!("Composer busy — run with !:\n{command}"));
+                        self.set_ok("Saved to transcript".into());
                     }
                     Err(error) => self.set_error(error),
                 },
@@ -686,7 +702,7 @@ impl UiApp {
     pub(crate) fn start_prompt(&mut self, prompt: String, context: Option<String>) {
         if self.busy {
             self.queue.push_back((prompt, context));
-            self.set_status(format!("Queued prompt ({} waiting)", self.queue.len()));
+            self.set_status(format!("Queued ({} waiting)", self.queue.len()));
             return;
         }
         self.busy = true;
@@ -732,7 +748,7 @@ impl UiApp {
     pub(crate) fn start_continue(&mut self) {
         let Some(cancellation) = self.cancellation.clone() else {
             self.busy = false;
-            self.set_error("Done; continuation unavailable (no active request)".into());
+            self.set_error("Nothing to continue".into());
             self.start_next_queued();
             return;
         };
@@ -1134,7 +1150,7 @@ mod tests {
         let (mut app, _workspace, _skills) = test_app();
         let joined = render_lines(&mut app, 80, 24).join("\n");
         assert!(
-            joined.contains("prompt · ! shell"),
+            joined.contains("Prompt · ! run"),
             "idle hint missing:\n{joined}"
         );
         assert!(app.input.is_empty());
@@ -1145,7 +1161,7 @@ mod tests {
         app.cursor = 0;
         let walking = render_lines(&mut app, 80, 24).join("\n");
         assert!(
-            walking.contains("↑↓ history · Esc restore"),
+            walking.contains("Esc restores"),
             "walk title missing:\n{walking}"
         );
     }
@@ -2031,5 +2047,92 @@ mod tests {
         assert!(!slow_start_due(false, true, false, silent_long, now));
         assert!(!slow_start_due(true, false, false, silent_long, now));
         assert!(!slow_start_due(true, true, false, None, now));
+    }
+
+    #[test]
+    fn word_boundaries_skip_whitespace_and_words() {
+        assert_eq!(prev_word_boundary("git status", 10), 4);
+        assert_eq!(prev_word_boundary("git status", 4), 0);
+        assert_eq!(prev_word_boundary("git status", 3), 0);
+        assert_eq!(next_word_boundary("git status", 0), 3);
+        assert_eq!(next_word_boundary("git status", 3), 10);
+        assert_eq!(page_step(24), 22);
+        assert_eq!(page_step(2), 3);
+    }
+
+    #[test]
+    fn paired_input_closes_and_steps_over() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.insert_paired('(');
+        assert_eq!(app.input, "()");
+        assert_eq!(app.cursor, 1);
+        app.insert_paired(')');
+        assert_eq!(app.input, "()");
+        assert_eq!(app.cursor, 2);
+    }
+
+    #[test]
+    fn delete_word_and_line_edits() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "git status".into();
+        app.cursor = app.input.len();
+        app.delete_prev_word();
+        assert_eq!(app.input, "git ");
+        app.delete_to_start();
+        assert_eq!(app.input, "");
+        app.input = "git status".into();
+        app.cursor = 3;
+        app.delete_to_end();
+        assert_eq!(app.input, "git");
+    }
+
+    #[tokio::test]
+    async fn ctrl_p_toggles_action_palette() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _workspace, _skills) = test_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert_eq!(app.input, "/");
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert!(app.input.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mouse_command_toggles_capture() {
+        let (mut app, _workspace, _skills) = test_app();
+        assert!(app.mouse_enabled);
+        let parsed = command::parse("/mouse off").expect("parses");
+        app.handle_command(parsed).await.expect("dispatches");
+        assert!(!app.mouse_enabled);
+        assert_eq!(app.status, "Mouse off");
+    }
+
+    #[tokio::test]
+    async fn workflows_lists_saved_items() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.custom_commands = vec![test_custom("review")];
+        let parsed = command::parse("/workflows").expect("parses");
+        app.handle_command(parsed).await.expect("dispatches");
+        let content = app
+            .state
+            .history
+            .last()
+            .expect("workflows note")
+            .content
+            .clone();
+        assert!(content.contains("Saved workflows"), "{content}");
+        assert!(content.contains("/review"), "{content}");
+    }
+
+    #[test]
+    fn hash_bang_usage_hint_without_goal() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.submit_classified("!".to_string());
+        assert!(app.input.is_empty());
+        assert!(app.status.contains("#!"), "status: {}", app.status);
     }
 }

@@ -208,7 +208,7 @@ impl UiApp {
                             ));
                         }
                     }
-                    None => self.set_status("No expandable sections in the transcript".into()),
+                    None => self.set_status("Nothing to expand".into()),
                 }
             }
         }
@@ -216,11 +216,9 @@ impl UiApp {
 
     /// Flip one section by id, honoring the failed-tool guard. Returns
     /// the new expanded state, or `None` when the guard refused.
-    fn toggle_section(&mut self, id: &str, default: bool, label: &str) -> Option<bool> {
+    pub(crate) fn toggle_section(&mut self, id: &str, default: bool, label: &str) -> Option<bool> {
         if self.section_failed(id) {
-            self.set_status(format!(
-                "{label} is a failed tool result and stays expanded"
-            ));
+            self.set_status(format!("{label} failed and stays expanded"));
             return None;
         }
         let next = !self.section_expanded(id, default);

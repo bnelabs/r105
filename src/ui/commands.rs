@@ -1,6 +1,11 @@
 //! UiApp commands: Slash-command dispatch and handlers.
 
 use super::*;
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
+};
+use std::io;
 
 impl UiApp {
     pub(crate) async fn handle_command(&mut self, parsed: ParsedCommand) -> Result<()> {
@@ -62,7 +67,7 @@ impl UiApp {
                     .unwrap_or(!self.state.cache_prompt);
                 let enabled = self.state.cache_prompt;
                 self.set_ok(format!(
-                    "llama.cpp prompt caching: {}",
+                    "Prompt cache {}",
                     if enabled { "on" } else { "off" }
                 ));
                 self.persist_config(|config| config.cache_prompt = enabled);
@@ -132,11 +137,13 @@ impl UiApp {
             "/editor" => self.command_editor(),
             "/settings" => {
                 self.overlay = Overlay::Settings { selected: 0 };
-                self.set_status("Settings · ↑↓ move · ←/→ change · Esc close".into());
+                self.set_status("Settings".into());
             }
             "/thinking" => self.command_thinking(&parsed.args),
             "/attention" => self.command_attention(&parsed.args),
+            "/mouse" => self.command_mouse(&parsed.args),
             "/commands" => self.command_custom_commands(&parsed.args),
+            "/workflows" => self.command_workflows(&parsed.args),
             "/sh" => self.command_shell_draft(&parsed.args),
             "/exit" => self.quit = true,
             _ => {
@@ -197,23 +204,23 @@ impl UiApp {
         if args.first().is_some_and(|action| action == "reload") {
             let shadowed = self.refresh_custom_commands();
             self.set_ok(if shadowed == 0 {
-                format!("Reloaded {} custom command(s)", self.custom_commands.len())
+                format!("Reloaded {} workflow(s)", self.custom_commands.len())
             } else {
                 format!(
-                    "Reloaded {} custom command(s); {shadowed} shadowed by built-ins",
+                    "Reloaded {} workflow(s); {shadowed} shadowed by built-ins",
                     self.custom_commands.len()
                 )
             });
         }
         if self.custom_commands.is_empty() {
             self.push_system(&format!(
-                "No custom commands. Drop name.md files in\n  {}\n  {}",
+                "No saved workflows. Add name.md files in\n  {}\n  {}",
                 commands_dir(&self.paths).display(),
                 project_commands_dir(&self.state.workspace).display()
             ));
             return;
         }
-        let mut lines = vec!["Custom commands".to_string(), String::new()];
+        let mut lines = vec!["Saved workflows".to_string(), String::new()];
         for command in &self.custom_commands {
             let shadow = if command::command(&format!("/{}", command.name)).is_some() {
                 " (shadowed by built-in)"
@@ -264,11 +271,11 @@ impl UiApp {
             return;
         }
         if self.state.permission_posture == "off" {
-            self.set_error("Shell drafts are disabled by permission posture 'off'".into());
+            self.set_error("Shell disabled (permissions off)".into());
             return;
         }
         if self.busy {
-            self.set_status("Busy — draft shell commands when idle".into());
+            self.set_status("Busy — try when idle".into());
             return;
         }
         let shell = if cfg!(windows) {
@@ -287,7 +294,7 @@ impl UiApp {
         let mut state = self.state.clone();
         state.history.clear();
         let sender = self.tx.clone();
-        self.set_status("Drafting shell command…".into());
+        self.set_status("Drafting…".into());
         tokio::spawn(async move {
             let outcome = match backend.chat(&state, &prompt, &[]).await {
                 Ok(result) => match clean_shell_draft(&result.content) {
@@ -470,7 +477,12 @@ impl UiApp {
         self.attention_bell = config.attention_bell;
         let mouse_note = if config.mouse != self.mouse_enabled {
             self.mouse_enabled = config.mouse;
-            " · mouse capture applies on restart"
+            if config.mouse {
+                let _ = execute!(io::stdout(), EnableMouseCapture);
+            } else {
+                let _ = execute!(io::stdout(), DisableMouseCapture);
+            }
+            " · mouse updated"
         } else {
             ""
         };
@@ -499,7 +511,7 @@ impl UiApp {
         let enabled = self.state.auto_compact;
         self.persist_config(|config| config.auto_compact = enabled);
         self.set_ok(format!(
-            "Automatic compaction: {}",
+            "Autocompact {}",
             if enabled { "on" } else { "off" }
         ));
     }
@@ -520,7 +532,7 @@ impl UiApp {
         }
         self.state.reasoning_effort = value.clone();
         self.persist_config(|config| config.reasoning_effort = value.clone());
-        self.set_ok(format!("Reasoning effort: {value}"));
+        self.set_ok(format!("Reasoning: {value}"));
     }
 
     pub(crate) fn command_permissions(&mut self, args: &[String]) {
@@ -543,7 +555,7 @@ impl UiApp {
         }
         self.state.permission_posture = value.clone();
         self.persist_config(|config| config.permission_posture = value.clone());
-        self.set_ok(format!("Permission posture: {value}"));
+        self.set_ok(format!("Permissions: {value}"));
     }
 
     pub(crate) fn command_preview(&mut self, args: &[String]) {
@@ -1533,7 +1545,7 @@ impl UiApp {
         let enabled = self.state.show_thinking;
         self.persist_config(|config| config.show_thinking = enabled);
         self.set_ok(format!(
-            "Thinking blocks: {} (display only; effort via /reasoning)",
+            "Thinking {}",
             if enabled { "shown" } else { "hidden" }
         ));
     }
@@ -1542,10 +1554,46 @@ impl UiApp {
         self.attention_bell = toggle_value(args.first(), self.attention_bell);
         let enabled = self.attention_bell;
         self.persist_config(|config| config.attention_bell = enabled);
-        self.set_ok(format!(
-            "Completion bell: {}",
-            if enabled { "on" } else { "off" }
-        ));
+        self.set_ok(format!("Bell {}", if enabled { "on" } else { "off" }));
+    }
+
+    pub(crate) fn set_mouse(&mut self, enabled: bool) {
+        self.mouse_enabled = enabled;
+        self.persist_config(|config| config.mouse = enabled);
+        if enabled {
+            let _ = execute!(io::stdout(), EnableMouseCapture);
+            self.set_ok("Mouse on · Shift+drag selects".into());
+        } else {
+            let _ = execute!(io::stdout(), DisableMouseCapture);
+            self.set_ok("Mouse off".into());
+        }
+    }
+
+    pub(crate) fn command_mouse(&mut self, args: &[String]) {
+        let enabled = toggle_value(args.first(), self.mouse_enabled);
+        self.set_mouse(enabled);
+    }
+
+    /// Saved reusable workflows: the same Markdown commands as
+    /// `/commands`, presented as runnable workflows. `reload` refreshes
+    /// both scopes first.
+    pub(crate) fn command_workflows(&mut self, args: &[String]) {
+        if args.first().is_some_and(|action| action == "reload") {
+            self.refresh_custom_commands();
+        }
+        if self.custom_commands.is_empty() {
+            self.push_system(
+                "No saved workflows yet. Add name.md files to the commands directories, then /workflows reload.",
+            );
+            return;
+        }
+        let mut lines = vec!["Saved workflows".to_string(), String::new()];
+        for command in &self.custom_commands {
+            lines.push(format!("/{:<18} {}", command.name, command.description));
+        }
+        lines.push(String::new());
+        lines.push("Run with /<name> [args] · Ctrl+P to find".to_string());
+        self.push_system(&lines.join("\n"));
     }
 
     pub(crate) fn command_export(&mut self, args: &[String]) {
@@ -1680,8 +1728,16 @@ impl UiApp {
                 },
             ),
             (
-                "Bell on done".into(),
+                "Bell".into(),
                 if self.attention_bell {
+                    "on".into()
+                } else {
+                    "off".into()
+                },
+            ),
+            (
+                "Mouse".into(),
+                if self.mouse_enabled {
                     "on".into()
                 } else {
                     "off".into()
@@ -1721,7 +1777,7 @@ impl UiApp {
                 let value = VALID[next].to_string();
                 self.state.permission_posture = value.clone();
                 self.persist_config(|config| config.permission_posture = value.clone());
-                self.set_ok(format!("Permission posture: {value}"));
+                self.set_ok(format!("Permissions: {value}"));
             }
             2 => {
                 const VALID: [&str; 5] = ["auto", "off", "low", "medium", "high"];
@@ -1737,14 +1793,14 @@ impl UiApp {
                 let value = VALID[next].to_string();
                 self.state.reasoning_effort = value.clone();
                 self.persist_config(|config| config.reasoning_effort = value.clone());
-                self.set_ok(format!("Reasoning effort: {value}"));
+                self.set_ok(format!("Reasoning: {value}"));
             }
             3 => {
                 self.state.auto_compact = !self.state.auto_compact;
                 let enabled = self.state.auto_compact;
                 self.persist_config(|config| config.auto_compact = enabled);
                 self.set_status(format!(
-                    "Automatic compaction: {}",
+                    "Autocompact {}",
                     if enabled { "on" } else { "off" }
                 ));
             }
@@ -1753,7 +1809,7 @@ impl UiApp {
                 let enabled = self.state.show_thinking;
                 self.persist_config(|config| config.show_thinking = enabled);
                 self.set_ok(format!(
-                    "Thinking blocks: {}",
+                    "Thinking {}",
                     if enabled { "shown" } else { "hidden" }
                 ));
             }
@@ -1761,10 +1817,10 @@ impl UiApp {
                 self.attention_bell = !self.attention_bell;
                 let enabled = self.attention_bell;
                 self.persist_config(|config| config.attention_bell = enabled);
-                self.set_ok(format!(
-                    "Completion bell: {}",
-                    if enabled { "on" } else { "off" }
-                ));
+                self.set_ok(format!("Bell {}", if enabled { "on" } else { "off" }));
+            }
+            6 => {
+                self.set_mouse(!self.mouse_enabled);
             }
             _ => {}
         }

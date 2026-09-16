@@ -84,8 +84,9 @@ pub struct Config {
     pub thinking_default_expanded: bool,
     /// Ring the terminal bell when a request fully settles.
     pub attention_bell: bool,
-    /// Capture the mouse for transcript wheel-scrolling. Off by default so
-    /// the terminal keeps native selection behavior.
+    /// Capture the mouse for wheel scrolling and click actions.
+    /// On by default; Shift+drag still gives native terminal selection.
+    /// Toggle live with `/mouse`.
     pub mouse: bool,
     pub model_contexts: BTreeMap<String, u64>,
     pub context_tokens: Option<u64>,
@@ -150,7 +151,7 @@ impl Default for Config {
             show_thinking: true,
             thinking_default_expanded: false,
             attention_bell: true,
-            mouse: false,
+            mouse: true,
             model_contexts: BTreeMap::new(),
             context_tokens: None,
             model_families: BTreeMap::new(),
@@ -407,6 +408,6 @@ mod tests {
         assert!(config.auto_compact);
         assert_eq!(config.timeout_seconds, 120);
         assert!(config.attention_bell);
-        assert!(!config.mouse);
+        assert!(config.mouse);
     }
 }

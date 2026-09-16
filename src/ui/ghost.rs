@@ -103,17 +103,16 @@ impl UiApp {
                 self.ghost_text = None;
                 let path = self.history_path();
                 let _ = self.shell_history.save(&path);
-                self.set_status("Ghost history cleared".into());
+                self.set_status("Suggestions cleared".into());
             }
             "status" => {
                 self.set_status(if self.completion_on {
                     format!(
-                        "Ghost on · {} shell command(s) remembered · debounce {}ms · Tab accepts · Esc dismisses",
+                        "Suggestions on · {} remembered · Tab accepts",
                         self.shell_history.len(),
-                        self.ghost_debounce.as_millis(),
                     )
                 } else {
-                    "Ghost completion disabled (completion_enabled=false)".into()
+                    "Suggestions off".into()
                 });
             }
             other => self.set_error(format!("Usage: /completion [status|clear] (got {other})")),

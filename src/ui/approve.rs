@@ -106,7 +106,7 @@ impl UiApp {
                 let _ = self.tx.send(crate::ui::events::UiEvent::ToolsDone(merged));
                 return;
             }
-            self.set_status(format!("Running {} tool call(s)…", approved.len()));
+            self.set_status(format!("Running {}…", approved.len()));
             self.spawn_tool_calls(context, approved, results);
             return;
         }
@@ -158,12 +158,12 @@ impl UiApp {
         match verdict {
             ApprovalVerdict::Once => {
                 pending.approved.push((item.index, call));
-                self.set_ok(format!("Approved `{}` once", item.summary));
+                self.set_ok(format!("Approved `{}`", item.summary));
             }
             ApprovalVerdict::Always => {
                 self.policy.allow_session(&item.summary);
                 pending.approved.push((item.index, call));
-                self.set_ok(format!("Always allowing `{}` this run", item.summary));
+                self.set_ok(format!("Always allow `{}`", item.summary));
             }
             ApprovalVerdict::Deny => {
                 pending.results[item.index] = Some(denied_result(&call, "denied by user".into()));
@@ -217,7 +217,7 @@ impl UiApp {
         if !results.iter().any(Option::is_none) && calls.is_empty() {
             return;
         }
-        self.set_status(format!("Running {} tool call(s)…", calls.len()));
+        self.set_status(format!("Running {}…", calls.len()));
         let sender = self.tx.clone();
         tokio::spawn(async move {
             match tool::execute_calls(&calls, &context, None).await {

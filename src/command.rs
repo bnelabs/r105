@@ -73,7 +73,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/completion",
         usage: "/completion [status|clear]",
-        description: "ghost-text history status and control",
+        description: "suggestion status and control",
     },
     CommandSpec {
         name: "/profiles",
@@ -133,7 +133,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/tokens",
         usage: "/tokens",
-        description: "show context usage and estimate confidence",
+        description: "show context usage",
     },
     CommandSpec {
         name: "/quality",
@@ -203,7 +203,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/theme",
         usage: "/theme [name]",
-        description: "pick a theme (live preview) or switch directly",
+        description: "switch theme",
     },
     CommandSpec {
         name: "/autocompact",
@@ -283,12 +283,22 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/commands",
         usage: "/commands [reload]",
-        description: "list Markdown-backed custom commands",
+        description: "list saved workflows",
     },
     CommandSpec {
         name: "/sh",
         usage: "/sh <request>",
         description: "draft a shell command from plain words",
+    },
+    CommandSpec {
+        name: "/mouse",
+        usage: "/mouse [on|off]",
+        description: "toggle mouse capture",
+    },
+    CommandSpec {
+        name: "/workflows",
+        usage: "/workflows [reload]",
+        description: "list saved reusable workflows",
     },
     CommandSpec {
         name: "/exit",
@@ -422,7 +432,7 @@ pub fn static_arg_values(name: &str) -> Option<&'static [&'static str]> {
         "/quality" => Some(&["fast", "balanced", "best"]),
         "/reasoning" => Some(&["auto", "off", "low", "medium", "high"]),
         "/permissions" => Some(&["full-access", "restricted", "sandboxed", "off"]),
-        "/json" | "/cache-prompt" | "/autocompact" | "/thinking" | "/attention" => {
+        "/json" | "/cache-prompt" | "/autocompact" | "/thinking" | "/attention" | "/mouse" => {
             Some(&["on", "off"])
         }
         "/profile" => Some(&[
@@ -659,7 +669,14 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "Modes & guardrails",
-        &["/build", "/plan", "/ask", "/permissions", "/settings"],
+        &[
+            "/build",
+            "/plan",
+            "/ask",
+            "/permissions",
+            "/settings",
+            "/mouse",
+        ],
     ),
     (
         "Ask & answer",
@@ -684,6 +701,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
             "/skills",
             "/skill",
             "/commands",
+            "/workflows",
             "/workspace",
             "/map",
             "/preview",
@@ -736,7 +754,7 @@ pub fn help_text_with(customs: &[crate::custom::CustomCommand]) -> String {
         .collect();
     customs.sort_by(|left, right| left.name.cmp(&right.name));
     if !customs.is_empty() {
-        output.push_str("\nCustom commands (*)\n\n");
+        output.push_str("\nSaved workflows (*)\n\n");
         for command in customs {
             output.push_str(&format!(
                 "  /{:<41} {} ({})\n",
@@ -745,7 +763,7 @@ pub fn help_text_with(customs: &[crate::custom::CustomCommand]) -> String {
         }
     }
     output.push_str(
-        "Keys\n  Enter send · Alt/Shift+Enter newline · Tab ghost/mode/complete · Esc dismiss/cancel · ↑↓ history/pick\n  Ctrl+C quit · Ctrl+X cancel · Ctrl+O details · Ctrl+T tasks · Ctrl+R history · y/a/n approve card · @file attach · !cmd shell · /sh draft\n\nTip: /help <command> shows one command.\n",
+        "Keys\n  Enter send · Alt/Shift+Enter newline · Tab complete · Esc dismiss/cancel · ↑↓ history/pick · PgUp/PgDn scroll · Ctrl+Home/End top/latest\n  Ctrl+C quit · Ctrl+X cancel · Ctrl+P palette · Ctrl+O details · Ctrl+T tasks · Ctrl+R history · y/a/n approve card · @file attach · !cmd run · /sh draft · #! describe\n\nTip: /help <command> shows one command.\n",
     );
     output
 }

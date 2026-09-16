@@ -6,14 +6,20 @@ impl UiApp {
     pub(crate) async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             if self.busy {
-                self.cancel_work("Cancelling…");
+                self.cancel_work("Stopping…");
             } else {
                 self.quit = true;
             }
             return Ok(());
         }
         if self.action_key("cancel", &key) {
-            self.cancel_work("Cancelling current work…");
+            self.cancel_work("Stopping…");
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('p') | KeyCode::Char('P'))
+        {
+            self.open_palette();
             return Ok(());
         }
         if key.code == KeyCode::Esc {
@@ -21,7 +27,7 @@ impl UiApp {
                 // A history walk owns Esc: restore the draft, cancel the
                 // walk, and leave any ghost/cancel handling alone.
                 self.end_history_walk(false);
-                self.set_status("Draft restored".into());
+                self.set_status("Restored".into());
             } else if matches!(self.overlay, Overlay::Approval) {
                 // Dismissing the card must decide it, or the paused
                 // round would hang busy forever.
@@ -30,7 +36,7 @@ impl UiApp {
                 if !self.busy && self.dismiss_ghost() {
                     return Ok(());
                 }
-                self.cancel_work("Cancelled");
+                self.cancel_work("Stopped");
             } else {
                 self.overlay = Overlay::None;
                 self.input.clear();
@@ -45,9 +51,9 @@ impl UiApp {
         if self.action_key("details", &key) {
             self.show_details = !self.show_details;
             self.set_status(if self.show_details {
-                "Details expanded".into()
+                "Details on".into()
             } else {
-                "Details collapsed".into()
+                "Details off".into()
             });
             return Ok(());
         }
@@ -65,13 +71,44 @@ impl UiApp {
             return Ok(());
         }
         if self.action_key("history", &key) {
-            self.set_status("History search: type /session search <term>".into());
+            self.set_status("Search: /session search <term>".into());
             return Ok(());
         }
         if self.action_key("redraw", &key) {
             self.transcript_scroll = 0;
             self.follow_transcript = true;
-            self.set_status("Redrawn".into());
+            self.set_status("Top".into());
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A'))
+            && matches!(self.overlay, Overlay::None)
+        {
+            self.cursor = 0;
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('e') | KeyCode::Char('E'))
+        {
+            self.cursor = self.input.len();
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+        {
+            self.delete_to_end();
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U'))
+        {
+            self.delete_to_start();
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('w') | KeyCode::Char('W'))
+        {
+            self.delete_prev_word();
             return Ok(());
         }
         if key.code == KeyCode::Tab && self.at_menu_open() {
@@ -96,6 +133,18 @@ impl UiApp {
                 Mode::Ask => Mode::Build,
             };
             self.set_mode(next);
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Up | KeyCode::Down)
+        {
+            let step = page_step(self.transcript_height).clamp(4, 10);
+            if key.code == KeyCode::Up {
+                self.transcript_scroll = self.transcript_scroll.saturating_sub(step);
+            } else {
+                self.transcript_scroll = self.transcript_scroll.saturating_add(step);
+            }
+            self.follow_transcript = false;
             return Ok(());
         }
         if self.at_menu_active() && matches!(key.code, KeyCode::Up | KeyCode::Down) {
@@ -133,6 +182,14 @@ impl UiApp {
             }
             return Ok(());
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Home) {
+            self.jump_top();
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::End) {
+            self.jump_bottom();
+            return Ok(());
+        }
         match key.code {
             KeyCode::Enter
                 if key
@@ -142,21 +199,46 @@ impl UiApp {
                 self.insert_text("\n");
             }
             KeyCode::Enter => self.submit().await?,
-            KeyCode::Char(character) => self.insert_text(&character.to_string()),
+            KeyCode::Char(character) => {
+                if key.modifiers.contains(KeyModifiers::ALT) {
+                    match character {
+                        'f' | 'F' => {
+                            self.cursor = next_word_boundary(&self.input, self.cursor);
+                            return Ok(());
+                        }
+                        'b' | 'B' => {
+                            self.cursor = prev_word_boundary(&self.input, self.cursor);
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+                self.insert_paired(character);
+            }
             KeyCode::Backspace => self.backspace(),
             KeyCode::Delete => self.delete(),
-            KeyCode::Left => self.cursor = previous_boundary(&self.input, self.cursor),
-            KeyCode::Right => self.cursor = next_boundary(&self.input, self.cursor),
+            KeyCode::Left => {
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    || key.modifiers.contains(KeyModifiers::ALT)
+                {
+                    self.cursor = prev_word_boundary(&self.input, self.cursor);
+                } else {
+                    self.cursor = previous_boundary(&self.input, self.cursor);
+                }
+            }
+            KeyCode::Right => {
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    || key.modifiers.contains(KeyModifiers::ALT)
+                {
+                    self.cursor = next_word_boundary(&self.input, self.cursor);
+                } else {
+                    self.cursor = next_boundary(&self.input, self.cursor);
+                }
+            }
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input.len(),
-            KeyCode::PageUp => {
-                self.transcript_scroll = self.transcript_scroll.saturating_sub(8);
-                self.follow_transcript = false;
-            }
-            KeyCode::PageDown => {
-                self.transcript_scroll = self.transcript_scroll.saturating_add(8);
-                self.follow_transcript = false;
-            }
+            KeyCode::PageUp => self.page_up(),
+            KeyCode::PageDown => self.page_down(),
             KeyCode::Up => self.history_previous(),
             KeyCode::Down => self.history_next(),
             _ => {}
@@ -225,7 +307,7 @@ impl UiApp {
                             self.state.model = model.id.clone();
                             let model = model.id.clone();
                             self.persist_connection(Some(&model));
-                            self.set_ok(format!("Model selected: {model}"));
+                            self.set_ok(format!("Model: {model}"));
                         }
                         keep = false;
                     }
@@ -353,7 +435,7 @@ impl UiApp {
                 }
             }
             Overlay::Settings { mut selected } => {
-                const COUNT: usize = 6;
+                const COUNT: usize = 7;
                 let mut keep = true;
                 match key.code {
                     KeyCode::Up => selected = selected.saturating_sub(1),
@@ -419,7 +501,7 @@ impl UiApp {
         if let Some(shell) = value.strip_prefix('!') {
             let shell = shell.trim().to_string();
             if shell.is_empty() {
-                self.set_status("Usage: !<shell command>".into());
+                self.set_status("Usage: !<command>".into());
                 return Ok(());
             }
             self.redo_stack.clear();
@@ -440,21 +522,32 @@ impl UiApp {
 
     /// `#`-prefixed input: cheap local routing before any model call.
     /// Shell-shaped input prefills `!` for one-keystroke confirmation
-    /// (never auto-runs); agent-shaped input submits directly; ambiguous
-    /// input stays in the composer with a routing hint. Owns the composer:
-    /// every arm leaves `input` in its final state.
+    /// (never auto-runs); `#!` drafts a command from plain words via the
+    /// model; agent-shaped input submits directly; ambiguous input stays
+    /// in the composer with a routing hint. Owns the composer: every arm
+    /// leaves `input` in its final state.
     pub(crate) fn submit_classified(&mut self, text: String) {
         if text.is_empty() {
             self.input.clear();
-            self.set_status("Usage: # <text to classify as shell or prompt>".into());
+            self.set_status("Usage: # <text> · #! <goal> drafts a command".into());
+            return;
+        }
+        if let Some(goal) = text.strip_prefix('!') {
+            let goal = goal.trim().to_string();
+            if goal.is_empty() {
+                self.input.clear();
+                self.set_status("Usage: #! <goal> drafts a command".into());
+                return;
+            }
+            self.input.clear();
+            self.cursor = 0;
+            self.command_shell_draft(&[goal]);
             return;
         }
         match command::classify_input(&text) {
             command::Route::Shell => {
                 self.input = format!("!{text}");
-                self.set_status(
-                    "Looks like shell — Enter to run, delete ! to send as a prompt".into(),
-                );
+                self.set_status("Looks like shell — Enter runs · remove ! to ask".into());
             }
             command::Route::Agent => {
                 self.input.clear();
@@ -462,9 +555,7 @@ impl UiApp {
             }
             command::Route::Ambiguous => {
                 self.input = text;
-                self.set_status(
-                    "Ambiguous — Enter sends to the agent, prefix ! to run shell".into(),
-                );
+                self.set_status("Ambiguous — Enter asks · ! runs · #! drafts".into());
             }
         }
     }
@@ -482,10 +573,7 @@ impl UiApp {
             }
         }
         if !unknown.is_empty() {
-            self.set_error(format!(
-                "Unknown @ref(s) sent literally: {}",
-                unknown.join(", ")
-            ));
+            self.set_error(format!("Unknown @refs: {}", unknown.join(", ")));
         }
         let context = if blocks.is_empty() {
             None
@@ -501,10 +589,7 @@ impl UiApp {
             }
             self.drop_next_restore = true;
             self.queue.push_front((value, context));
-            self.set_status(format!(
-                "Steering… ({} queued behind)",
-                self.queue.len() - 1
-            ));
+            self.set_status(format!("Steering… ({} behind)", self.queue.len() - 1));
             return;
         }
         self.start_prompt(value, context);
@@ -550,7 +635,7 @@ impl UiApp {
     /// conversation so the next turn can use it.
     pub(crate) fn run_shell_command(&mut self, command: String) {
         if self.state.permission_posture == "off" {
-            self.set_error("Shell (!) is disabled by permission posture 'off'".into());
+            self.set_error("Shell disabled (permissions off)".into());
             return;
         }
         let workspace = self.state.workspace.clone();
@@ -560,7 +645,7 @@ impl UiApp {
         let cancellation = self.cancellation.clone().unwrap_or_default();
         let sender = self.tx.clone();
         let preview: String = command.chars().take(60).collect();
-        self.set_status(format!("Running shell: {preview}"));
+        self.set_status(format!("Running: {preview}"));
         tokio::spawn(async move {
             let (program, args) = if cfg!(windows) {
                 ("cmd", vec!["/C".to_string(), command.clone()])
@@ -641,13 +726,146 @@ impl UiApp {
     pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                self.transcript_scroll = self.transcript_scroll.saturating_sub(3);
+                let mut step = 4usize;
+                if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                    step = 12;
+                }
+                self.transcript_scroll = self.transcript_scroll.saturating_sub(step);
                 self.follow_transcript = false;
             }
             MouseEventKind::ScrollDown => {
-                self.transcript_scroll = self.transcript_scroll.saturating_add(3);
+                let mut step = 4usize;
+                if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                    step = 12;
+                }
+                self.transcript_scroll = self.transcript_scroll.saturating_add(step);
+                self.follow_transcript = false;
+            }
+            MouseEventKind::Down(_) => {
+                if !matches!(self.overlay, Overlay::None) {
+                    return;
+                }
+                let col = mouse.column;
+                let row = mouse.row;
+                if self.click_palette(col, row) {
+                    return;
+                }
+                if self.click_composer(col, row) {
+                    return;
+                }
+                self.click_transcript(col, row);
             }
             _ => {}
+        }
+    }
+
+    fn click_palette(&mut self, col: u16, row: u16) -> bool {
+        let Some(rect) = self.last_palette_rect else {
+            return false;
+        };
+        if col < rect.x
+            || col >= rect.x + rect.width
+            || row < rect.y
+            || row >= rect.y + rect.height
+            || self.last_palette_count == 0
+        {
+            return false;
+        }
+        let viewport = rect.height.saturating_sub(2) as usize;
+        let offset = (row.saturating_sub(rect.y).saturating_sub(1)) as usize;
+        if offset >= viewport {
+            return false;
+        }
+        let index = self.palette_scroll + offset;
+        if index >= self.last_palette_count {
+            return false;
+        }
+        if self.palette_selected == index {
+            let items = self.palette_items();
+            if let Some(item) = items.get(index) {
+                self.input = format!("{} ", item.name);
+                self.cursor = self.input.len();
+                self.palette_selected = 0;
+                self.palette_scroll = 0;
+            }
+        } else {
+            self.palette_selected = index;
+        }
+        true
+    }
+
+    fn click_composer(&mut self, col: u16, row: u16) -> bool {
+        let rect = self.last_composer_rect;
+        if rect.width == 0
+            || col < rect.x
+            || col >= rect.x + rect.width
+            || row < rect.y
+            || row >= rect.y + rect.height
+        {
+            return false;
+        }
+        let inner_w = rect.width.saturating_sub(2).max(1) as usize;
+        let rx = (col.saturating_sub(rect.x).saturating_sub(1)) as usize;
+        let ry = (row.saturating_sub(rect.y).saturating_sub(1)) as usize;
+        // Visual offset of the click inside the wrapped "> input" text.
+        let target = ry.saturating_mul(inner_w).saturating_add(rx);
+        // Walk the rendered text ("> " prefix + input with wrapping and
+        // newlines) and stop at the byte index closest to the click.
+        let rendered = format!("> {}", self.input);
+        let mut visual = 0usize;
+        let mut byte = 0usize;
+        for (offset, ch) in rendered.char_indices() {
+            if visual >= target {
+                byte = offset;
+                break;
+            }
+            byte = offset + ch.len_utf8();
+            if ch == '\n' {
+                visual = (visual / inner_w + 1) * inner_w;
+            } else {
+                visual += 1;
+            }
+        }
+        // Strip the "> " prefix; clamp to a char boundary.
+        let index = byte.saturating_sub(2).min(self.input.len());
+        let mut snapped = index;
+        while snapped > 0 && !self.input.is_char_boundary(snapped) {
+            snapped -= 1;
+        }
+        self.cursor = snapped;
+        self.end_history_walk(true);
+        true
+    }
+
+    fn click_transcript(&mut self, col: u16, row: u16) {
+        let rect = self.last_transcript_rect;
+        if rect.width == 0
+            || col < rect.x
+            || col >= rect.x + rect.width
+            || row < rect.y
+            || row >= rect.y + rect.height
+        {
+            return;
+        }
+        let line = self.last_transcript_scroll + (row.saturating_sub(rect.y)) as usize;
+        let id = self
+            .transcript_header_rows
+            .get(line)
+            .and_then(|entry| entry.clone());
+        let Some(id) = id else {
+            return;
+        };
+        let default = self
+            .section_order
+            .iter()
+            .find(|(sid, _)| *sid == id)
+            .map(|(_, default)| *default)
+            .unwrap_or(false);
+        if let Some(next) = self.toggle_section(&id, default, "Section") {
+            self.set_status(format!(
+                "Section {}",
+                if next { "expanded" } else { "collapsed" }
+            ));
         }
     }
 
@@ -672,6 +890,117 @@ impl UiApp {
         self.end_history_walk(true);
         self.input.insert_str(self.cursor, value);
         self.cursor += value.len();
+    }
+
+    /// IDE-style paired input: typing an opener inserts its closer and
+    /// steps inside; typing a closer over itself steps over it.
+    pub(crate) fn insert_paired(&mut self, character: char) {
+        let closer = match character {
+            '(' => Some(')'),
+            '[' => Some(']'),
+            '{' => Some('}'),
+            _ => None,
+        };
+        if let Some(close) = closer {
+            let next = self.input[self.cursor..].chars().next();
+            if self.cursor == self.input.len()
+                || next
+                    .is_some_and(|c| c.is_whitespace() || matches!(c, ')' | ']' | '}' | '"' | '\''))
+            {
+                self.end_history_walk(true);
+                self.input.insert(self.cursor, character);
+                self.input.insert(self.cursor + 1, close);
+                self.cursor += character.len_utf8();
+                return;
+            }
+        }
+        if matches!(character, ')' | ']' | '}' | '"' | '\'')
+            && self.input[self.cursor..].starts_with(character)
+        {
+            self.end_history_walk(true);
+            self.cursor += character.len_utf8();
+            return;
+        }
+        if matches!(character, '"' | '\'') {
+            let next = self.input[self.cursor..].chars().next();
+            if self.cursor == self.input.len()
+                || next.is_some_and(|c| c.is_whitespace() || matches!(c, ')' | ']' | '}'))
+            {
+                self.end_history_walk(true);
+                self.input.insert(self.cursor, character);
+                self.input.insert(self.cursor + 1, character);
+                self.cursor += character.len_utf8();
+                return;
+            }
+        }
+        self.insert_text(&character.to_string());
+    }
+
+    pub(crate) fn delete_prev_word(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.end_history_walk(true);
+        let start = prev_word_boundary(&self.input, self.cursor);
+        self.input.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    pub(crate) fn delete_to_start(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.end_history_walk(true);
+        self.input.drain(..self.cursor);
+        self.cursor = 0;
+    }
+
+    pub(crate) fn delete_to_end(&mut self) {
+        if self.cursor >= self.input.len() {
+            return;
+        }
+        self.end_history_walk(true);
+        self.input.truncate(self.cursor);
+    }
+
+    pub(crate) fn open_palette(&mut self) {
+        if self.input.starts_with('/')
+            && self.input.len() <= 24
+            && !self.input.contains([' ', '\n'])
+        {
+            self.input.clear();
+            self.cursor = 0;
+            self.palette_selected = 0;
+        } else {
+            self.input = "/".to_string();
+            self.cursor = 1;
+            self.palette_selected = 0;
+            self.palette_scroll = 0;
+            self.set_status("Palette — type to filter · Enter opens".into());
+        }
+    }
+
+    pub(crate) fn page_up(&mut self) {
+        let step = page_step(self.transcript_height);
+        self.transcript_scroll = self.transcript_scroll.saturating_sub(step);
+        self.follow_transcript = false;
+    }
+
+    pub(crate) fn page_down(&mut self) {
+        let step = page_step(self.transcript_height);
+        self.transcript_scroll = self.transcript_scroll.saturating_add(step);
+        self.follow_transcript = false;
+    }
+
+    pub(crate) fn jump_top(&mut self) {
+        self.transcript_scroll = 0;
+        self.follow_transcript = false;
+        self.set_status("Top".into());
+    }
+
+    pub(crate) fn jump_bottom(&mut self) {
+        self.follow_transcript = true;
+        self.set_status("Latest".into());
     }
 
     pub(crate) fn backspace(&mut self) {
@@ -884,4 +1213,36 @@ pub(crate) fn next_boundary(input: &str, cursor: usize) -> usize {
         .next()
         .map(|value| cursor + value.len_utf8())
         .unwrap_or(cursor)
+}
+
+fn is_word_char(value: char) -> bool {
+    value.is_alphanumeric() || value == '_'
+}
+
+pub(crate) fn prev_word_boundary(input: &str, cursor: usize) -> usize {
+    let bytes = input.as_bytes();
+    let mut index = cursor.min(bytes.len());
+    while index > 0 && !is_word_char(input[..index].chars().next_back().unwrap_or(' ')) {
+        index = previous_boundary(input, index);
+    }
+    while index > 0 && is_word_char(input[..index].chars().next_back().unwrap_or(' ')) {
+        index = previous_boundary(input, index);
+    }
+    index
+}
+
+pub(crate) fn next_word_boundary(input: &str, cursor: usize) -> usize {
+    let len = input.len();
+    let mut index = cursor.min(len);
+    while index < len && !is_word_char(input[index..].chars().next().unwrap_or(' ')) {
+        index = next_boundary(input, index);
+    }
+    while index < len && is_word_char(input[index..].chars().next().unwrap_or(' ')) {
+        index = next_boundary(input, index);
+    }
+    index
+}
+
+pub(crate) fn page_step(height: u16) -> usize {
+    (height as usize).saturating_sub(2).max(3)
 }
