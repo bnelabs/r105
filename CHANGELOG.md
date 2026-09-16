@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rest — applied only if it truly extends the typed text, dropped on
   any edit, dismissal, or local ghost. `ai_suggest` config (default
   on) and `/completion ai on|off` control it.
+- Warp-style Enter: a shell-looking line runs when submitted, no `!`
+  needed. `cd <dir>` retargets the workspace (a sandboxed subshell
+  cannot keep a directory change); prose, questions, `#`-routed
+  input, and `/` commands keep their existing paths.
+- Composer polish: shell lines color as you type (command cyan, flags
+  yellow, quoted strings green, operators magenta), a reversed cursor
+  cell shows the caret, and the block title reads `Shell · Enter runs`
+  whenever the line would execute.
 
 ## [2.2.0] — 2026-09-16
 

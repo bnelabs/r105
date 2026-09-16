@@ -566,12 +566,17 @@ impl UiApp {
                 self.set_status("Usage: !<command>".into());
                 return Ok(());
             }
-            self.redo_stack.clear();
-            self.state.history.push(Message::user(value));
-            self.follow_transcript = true;
-            // Frequency layer: every run teaches the ghost.
-            self.record_shell(&shell);
-            self.run_shell_command(shell);
+            self.submit_shell(value, shell);
+            return Ok(());
+        }
+        // Warp-style Enter: a line that reads as a shell command runs
+        // it. The detection is the same one behind completion, so prose
+        // and questions still reach the model; `#` forces the router
+        // and a trailing `?` stays a prompt.
+        let cwd = self.state.workspace.clone();
+        self.ctx_cache.refresh_for(&value, &cwd);
+        if crate::suggest::looks_like_shell(&value, &self.ctx_cache.aliases) {
+            self.submit_shell(value.clone(), value);
             return Ok(());
         }
         if let Some(parsed) = command::parse(&value) {
@@ -580,6 +585,60 @@ impl UiApp {
             self.submit_prompt(value);
             Ok(())
         }
+    }
+
+    /// Shared shell entry for `!` lines and Warp-style bare commands:
+    /// `cd <dir>` moves the workspace (a sandboxed subshell cannot keep
+    /// a directory change), everything else runs in the sandbox and its
+    /// output joins the conversation.
+    pub(crate) fn submit_shell(&mut self, display: String, command: String) {
+        if self.try_cd(&command) {
+            return;
+        }
+        self.redo_stack.clear();
+        self.state.history.push(Message::user(display));
+        self.follow_transcript = true;
+        // Frequency layer: every run teaches the ghost.
+        self.record_shell(&command);
+        self.run_shell_command(command);
+    }
+
+    /// Bare `cd <dir>` retargets the workspace, terminal-style. Returns
+    /// false for compound lines and non-`cd` commands, which run in the
+    /// shell as usual.
+    fn try_cd(&mut self, command: &str) -> bool {
+        let mut words = command.split_whitespace();
+        if words.next() != Some("cd") {
+            return false;
+        }
+        let Some(target) = words.next() else {
+            return false;
+        };
+        if words.next().is_some() {
+            return false;
+        }
+        let path = PathBuf::from(target).expanduser();
+        let resolved = if path.is_absolute() {
+            path
+        } else {
+            self.state.workspace.join(path)
+        };
+        let Ok(canonical) = std::fs::canonicalize(&resolved) else {
+            self.set_error(format!("cd: no such directory: {target}"));
+            return true;
+        };
+        if !canonical.is_dir() {
+            self.set_error(format!("cd: not a directory: {target}"));
+            return true;
+        }
+        self.state.workspace = canonical;
+        self.refresh_git_branch();
+        self.refresh_custom_commands();
+        let workspace = self.state.workspace.clone();
+        self.note_workspace(&workspace);
+        self.refresh_sidebar();
+        self.set_ok(format!("Workspace: {}", self.state.workspace.display()));
+        true
     }
 
     /// `#`-prefixed input: cheap local routing before any model call.

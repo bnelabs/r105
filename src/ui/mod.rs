@@ -1269,7 +1269,7 @@ mod tests {
         let (mut app, _workspace, _skills) = test_app();
         let joined = render_lines(&mut app, 80, 24).join("\n");
         assert!(
-            joined.contains("Prompt · ! run"),
+            joined.contains("Prompt · shell Enter runs"),
             "idle hint missing:\n{joined}"
         );
         assert!(app.input.is_empty());
@@ -1283,6 +1283,83 @@ mod tests {
             walking.contains("Esc restores"),
             "walk title missing:\n{walking}"
         );
+    }
+
+    /// Warp-style Enter: bare shell-looking lines run (with a shell
+    /// title on the composer), prose still reaches the model.
+    #[tokio::test]
+    async fn enter_runs_bare_shell_lines() {
+        let (mut app, _workspace, _skills, _dirs) = sidebar_app();
+        let learned = app.shell_history.len();
+        app.input = "echo hi".to_string();
+        app.cursor = app.input.len();
+        let rendered = render_lines(&mut app, 80, 24).join("\n");
+        assert!(
+            rendered.contains("Shell · Enter runs"),
+            "shell affordance missing:\n{rendered}"
+        );
+        app.submit().await.unwrap();
+        assert!(app.input.is_empty());
+        assert!(app.status.starts_with("Running:"), "status: {}", app.status);
+        assert!(
+            app.state.history.iter().any(|m| m.content == "echo hi"),
+            "command not in transcript"
+        );
+        assert_eq!(
+            app.shell_history.len(),
+            learned + 1,
+            "history teaches the ghost"
+        );
+
+        // Prose stays a prompt: the composer clears for a request.
+        app.input = "explain this codebase".to_string();
+        app.cursor = app.input.len();
+        app.submit().await.unwrap();
+        assert!(app.busy, "prose must start a request");
+    }
+
+    /// Bare `cd` retargets the workspace like a terminal; a missing
+    /// directory errors without touching it.
+    #[tokio::test]
+    async fn enter_cd_changes_workspace() {
+        let (mut app, workspace, _skills) = test_app();
+        let sub = workspace.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        app.input = "cd sub".to_string();
+        app.cursor = app.input.len();
+        app.submit().await.unwrap();
+        assert_eq!(app.state.workspace, std::fs::canonicalize(&sub).unwrap());
+        assert!(
+            app.status.starts_with("Workspace:"),
+            "status: {}",
+            app.status
+        );
+        app.input = "cd nope".to_string();
+        app.cursor = app.input.len();
+        app.submit().await.unwrap();
+        assert_eq!(app.state.workspace, std::fs::canonicalize(&sub).unwrap());
+        assert!(
+            app.status.contains("no such directory"),
+            "status: {}",
+            app.status
+        );
+    }
+
+    /// The composer carries a visible reversed cursor cell.
+    #[test]
+    fn composer_draws_cursor_cell() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "git status".to_string();
+        app.cursor = 4;
+        let terminal = render_terminal(&mut app, 80, 24);
+        let reversed = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| cell.modifier.contains(Modifier::REVERSED))
+            .count();
+        assert!(reversed >= 1, "cursor cell missing");
     }
 
     /// `/filter` parsing: flags, `#n` form, clear, bad regex, missing

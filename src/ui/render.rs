@@ -587,15 +587,36 @@ impl UiApp {
         );
     }
 
+    /// Composer with a visible cell cursor and Warp-style shell colors:
+    /// a shell-looking line renders commands cyan, flags yellow, quoted
+    /// strings green, operators magenta, and the block title announces
+    /// that Enter will run it.
     pub(crate) fn draw_composer(&self, frame: &mut Frame<'_>, area: Rect) {
+        let shell = self.shell_line();
         let title = if self.hist_depth.is_some() {
             " History · Esc restores ".into()
         } else if self.busy {
             format!(" Working · {} queued · Esc stops ", self.queue.len())
+        } else if shell.is_some() {
+            " Shell · Enter runs ".into()
         } else {
             " Message ".into()
         };
-        let mut composer = vec![Span::raw(format!("> {}", self.input))];
+        let mut composer: Vec<Span<'_>> = vec![Span::raw("> ")];
+        match &shell {
+            Some((marker_len, _)) if *marker_len > 0 && self.cursor >= *marker_len => {
+                composer.push(Span::styled(
+                    self.input[..*marker_len].to_string(),
+                    Style::default().fg(Color::Yellow),
+                ));
+                composer.extend(composer_spans(
+                    &self.input[*marker_len..],
+                    self.cursor - *marker_len,
+                    true,
+                ));
+            }
+            _ => composer.extend(composer_spans(&self.input, self.cursor, shell.is_some())),
+        }
         if self.cursor == self.input.len()
             && let Some(ghost) = &self.ghost_text
         {
@@ -609,7 +630,7 @@ impl UiApp {
             let hint = if self.busy {
                 "Working — Enter queues · Esc stops"
             } else {
-                "Prompt · ! run · / act · #! draft · ↑ recall"
+                "Prompt · shell Enter runs · / act · # route · ↑ recall"
             };
             composer.push(Span::styled(
                 hint.to_string(),
@@ -839,6 +860,172 @@ impl UiApp {
             }
         }
     }
+}
+
+/// One classified piece of a shell line for composer colors.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellPiece {
+    Plain,
+    Command,
+    Flag,
+    Str,
+    Op,
+}
+
+fn piece_style(piece: ShellPiece) -> Style {
+    match piece {
+        ShellPiece::Plain => Style::default(),
+        ShellPiece::Command => Style::default().fg(Color::Cyan),
+        ShellPiece::Flag => Style::default().fg(Color::Yellow),
+        ShellPiece::Str => Style::default().fg(Color::Green),
+        ShellPiece::Op => Style::default().fg(Color::Magenta),
+    }
+}
+
+/// Composer spans with a visible cell cursor: a reversed block sits on
+/// the character under the cursor (or just past the end), and shell
+/// lines get Warp-style colors. Concatenating the spans reproduces the
+/// input exactly, plus the cursor cell when the cursor is at the end.
+fn composer_spans(input: &str, cursor: usize, highlight: bool) -> Vec<Span<'static>> {
+    let cursor = cursor.min(input.len());
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut cursor_drawn = false;
+    if highlight {
+        for (range, piece) in shell_pieces(input) {
+            push_piece(&mut spans, input, range, piece, cursor, &mut cursor_drawn);
+        }
+    } else {
+        push_piece(
+            &mut spans,
+            input,
+            0..input.len(),
+            ShellPiece::Plain,
+            cursor,
+            &mut cursor_drawn,
+        );
+    }
+    if !cursor_drawn {
+        spans.push(Span::styled(
+            " ",
+            Style::default().add_modifier(Modifier::REVERSED),
+        ));
+    }
+    spans
+}
+
+/// One classified range, splitting at the cursor so the cell under it
+/// can carry the reversed style.
+fn push_piece(
+    spans: &mut Vec<Span<'static>>,
+    input: &str,
+    range: std::ops::Range<usize>,
+    piece: ShellPiece,
+    cursor: usize,
+    cursor_drawn: &mut bool,
+) {
+    let style = piece_style(piece);
+    let text = &input[range.clone()];
+    if !*cursor_drawn
+        && input.is_char_boundary(cursor)
+        && cursor >= range.start
+        && cursor < range.end
+    {
+        let before = &input[range.start..cursor];
+        if !before.is_empty() {
+            spans.push(Span::styled(before.to_string(), style));
+        }
+        let after = &input[cursor..range.end];
+        let mut chars = after.chars();
+        if let Some(ch) = chars.next() {
+            spans.push(Span::styled(
+                ch.to_string(),
+                style.add_modifier(Modifier::REVERSED),
+            ));
+            let rest = chars.as_str();
+            if !rest.is_empty() {
+                spans.push(Span::styled(rest.to_string(), style));
+            }
+        }
+        *cursor_drawn = true;
+    } else if !text.is_empty() {
+        spans.push(Span::styled(text.to_string(), style));
+    }
+}
+
+/// Classify a shell line into colored ranges: command words (including
+/// behind wrappers) cyan, flags yellow, quoted strings green, operators
+/// magenta, everything else plain. Never changes the text.
+fn shell_pieces(input: &str) -> Vec<(std::ops::Range<usize>, ShellPiece)> {
+    const WRAPPERS: &[&str] = &["sudo", "doas", "env", "nice", "time", "nohup"];
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    let mut piece = ShellPiece::Plain;
+    let mut in_word = false;
+    let mut expect_command = true;
+    let mut last_word = String::new();
+    let flush = |pieces: &mut Vec<(std::ops::Range<usize>, ShellPiece)>,
+                 start: usize,
+                 end: usize,
+                 piece: ShellPiece| {
+        if end > start {
+            pieces.push((start..end, piece));
+        }
+    };
+    let mut chars = input.char_indices().peekable();
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '\'' | '"' => {
+                flush(&mut pieces, start, index, piece);
+                start = index;
+                piece = ShellPiece::Str;
+                for (_, next) in chars.by_ref() {
+                    if next == ch {
+                        break;
+                    }
+                }
+                in_word = true;
+                expect_command = false;
+            }
+            '|' | '&' | ';' | '>' | '<' => {
+                flush(&mut pieces, start, index, piece);
+                start = index;
+                piece = ShellPiece::Op;
+                if chars.peek().is_some_and(|(_, next)| *next == ch) {
+                    chars.next();
+                }
+                in_word = false;
+                // A pipe or sequence starts a new command; a redirect is
+                // followed by a file name, not a command.
+                expect_command = matches!(ch, '|' | '&' | ';');
+            }
+            c if c.is_whitespace() => {
+                flush(&mut pieces, start, index, piece);
+                start = index;
+                piece = ShellPiece::Plain;
+                in_word = false;
+            }
+            _ => {
+                if !in_word {
+                    flush(&mut pieces, start, index, piece);
+                    start = index;
+                    let wrapper = WRAPPERS.contains(&last_word.as_str());
+                    if expect_command || wrapper {
+                        piece = ShellPiece::Command;
+                        expect_command = wrapper;
+                    } else if ch == '-' {
+                        piece = ShellPiece::Flag;
+                    } else {
+                        piece = ShellPiece::Plain;
+                    }
+                    in_word = true;
+                    last_word.clear();
+                }
+                last_word.push(ch);
+            }
+        }
+    }
+    flush(&mut pieces, start, input.len(), piece);
+    pieces
 }
 
 /// Named theme palette: accent drives the header + selection highlight,

@@ -232,8 +232,15 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
   and git aliases expand before lookup, so `g st` completes as git.
   No weights, no server, microseconds. Tab or → accepts
   (continuations chain), Ctrl+→ takes one word, Esc dismisses until
-  the next edit. `!` and `/sh ` still work and gate execution; Enter
-  on a marker-free line stays a prompt.
+  the next edit. The composer colors shell input as you type
+  (commands cyan, flags yellow, strings green, operators magenta),
+  keeps a visible cursor cell, and titles itself `Shell · Enter runs`
+  when the line will execute.
+- Enter on a shell-looking line runs it, Warp-style: `git status`
+  executes without a `!`. Prose and questions still go to the model
+  (a trailing `?` is the sure way to ask), `#` forces the router, and
+  `cd <dir>` retargets the workspace like a terminal. `!` and `/sh `
+  remain for explicit execution and drafting.
 - When nothing local extends a shell line and the composer sits idle,
   the active model may propose the rest (`ai_suggest` in config, or
   `/completion ai off`, disables it). Idle-only, debounced, one flight
