@@ -79,6 +79,11 @@ pub struct Config {
     pub completion_debounce_ms: u64,
     #[serde(default = "default_completion_history_max")]
     pub completion_history_max: u64,
+    /// Model ghost behind the local completion cascade: when nothing
+    /// local extends a shell line, the active model may propose the
+    /// rest (idle-only, debounced, never blocks typing).
+    #[serde(default = "default_ai_suggest")]
+    pub ai_suggest: bool,
     pub reasoning_effort: String,
     pub show_thinking: bool,
     pub thinking_default_expanded: bool,
@@ -120,6 +125,10 @@ fn default_completion_debounce_ms() -> u64 {
     250
 }
 
+fn default_ai_suggest() -> bool {
+    true
+}
+
 impl Default for Config {
     fn default() -> Self {
         let paths = ConfigPaths::discover();
@@ -147,6 +156,7 @@ impl Default for Config {
             completion_enabled: true,
             completion_debounce_ms: default_completion_debounce_ms(),
             completion_history_max: default_completion_history_max(),
+            ai_suggest: default_ai_suggest(),
             reasoning_effort: "auto".to_string(),
             show_thinking: true,
             thinking_default_expanded: false,
@@ -243,6 +253,7 @@ impl Config {
                 "completion_enabled": {"type": "boolean"},
                 "completion_debounce_ms": {"type": "integer", "minimum": 0, "maximum": 5000},
                 "completion_history_max": {"type": "integer", "minimum": 1, "maximum": 5000},
+                "ai_suggest": {"type": "boolean"},
                 "reasoning_effort": {"type": "string", "enum": ["auto", "off", "low", "medium", "high"]},
                 "show_thinking": {"type": "boolean"},
                 "thinking_default_expanded": {"type": "boolean"},
@@ -288,6 +299,7 @@ fn known_keys() -> BTreeSet<&'static str> {
         "completion_enabled",
         "completion_debounce_ms",
         "completion_history_max",
+        "ai_suggest",
         "reasoning_effort",
         "show_thinking",
         "thinking_default_expanded",

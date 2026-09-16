@@ -445,13 +445,17 @@ impl UiApp {
                 } else {
                     Style::default().fg(Color::White)
                 };
-                Line::from(vec![
-                    Span::styled(format!(" {}", item.text), style),
-                    Span::styled(
-                        format!(" · {}", item.kind),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ])
+                let mut spans = vec![Span::styled(format!(" {}", item.text), style)];
+                let detail = if item.detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", item.detail)
+                };
+                spans.push(Span::styled(
+                    format!(" · {}{detail}", item.kind),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                Line::from(spans)
             })
             .collect::<Vec<_>>();
         frame.render_widget(

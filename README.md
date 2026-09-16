@@ -221,22 +221,30 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 - Tab cycles through build, plan, and ask modes. Modes are enforced:
   plan allows reads and web research but refuses writes and execution,
   ask answers without tools; the session file remembers the mode.
-- Start a `!` shell line or `/sh` draft and pause: the cascade suggests
-  the rest dimmed — shell-history frequency first (same-directory runs
-  win), context-aware arguments second (`git checkout` offers branches,
-  `npm run` offers scripts, `make` offers targets, `ssh` offers hosts,
-  `kubectl get` offers resource types, flags complete after `-`,
-  nested verbs complete deeper like `gh issue list`), command names
-  (builtins plus PATH executables) third, path top-hit last. Shell
-  aliases (`~/.bashrc`, `~/.zshrc`) and git aliases expand before
-  lookup, so `g st` completes as git. No weights, no server,
-  microseconds. Tab or → accepts (continuations chain), Ctrl+→ takes
-  one word, Esc dismisses until the next edit.
-  `/completion` shows history counts or clears them.
+- Type a shell command and pause: the cascade suggests the rest
+  dimmed, no `!` or `/sh` marker needed. Shell-history frequency comes
+  first (same-directory runs win), context-aware arguments second
+  (`git checkout` offers branches, `npm run` offers scripts, `make`
+  offers targets, `ssh` offers hosts, `kubectl get` offers resource
+  types, flags complete after `-`, nested verbs complete deeper like
+  `gh issue list`), command names (builtins plus PATH executables)
+  third, path top-hit last. Shell aliases (`~/.bashrc`, `~/.zshrc`)
+  and git aliases expand before lookup, so `g st` completes as git.
+  No weights, no server, microseconds. Tab or → accepts
+  (continuations chain), Ctrl+→ takes one word, Esc dismisses until
+  the next edit. `!` and `/sh ` still work and gate execution; Enter
+  on a marker-free line stays a prompt.
+- When nothing local extends a shell line and the composer sits idle,
+  the active model may propose the rest (`ai_suggest` in config, or
+  `/completion ai off`, disables it). Idle-only, debounced, one flight
+  per input; a dismissal sticks.
 - Tab on a shell line opens a completion menu when ambiguous (history,
-  subcommands, flags, branches, files — each tagged with its kind):
-  ↑↓ move, Tab fills, Enter runs, Esc closes, click selects (click
-  again fills). One match applies at once without opening.
+  subcommands, flags, branches, scripts, files — each tagged with its
+  kind and a one-line description when curated; live pod, container,
+  namespace, context, and unit values join from a background cache
+  refreshed off the keystroke path). ↑↓ move, Tab fills, Enter runs,
+  Esc closes, click selects (click again fills). One match applies at
+  once without opening.
 - A failed `!` line offers fixes when local rules match (mistyped
   command, git subcommand/branch/flag, missing upstream, `chmod +x`,
   mistyped path): `Did you mean ...?` — → applies the best into the
@@ -285,7 +293,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /profiles | List llama-router profiles |
 | /profile [name|auto] | Set or clear the llama-router profile |
 | /build, /plan, /ask | Switch working mode (enforced, persisted) |
-| /completion [status\|clear] | Suggestion status; clear remembered commands |
+| /completion [status\|clear\|ai on\|ai off] | Suggestion status; clear history; model ghost toggle |
 | /history | Show a transcript preview |
 | /skills | List Markdown skills |
 | /skill use <name> [key=value] | Activate a skill |
@@ -508,6 +516,7 @@ The default file is ~/.config/r105/config.json:
   "model": "local-model",
   "auto_compact": true,
   "cache_prompt": true,
+  "ai_suggest": true,
   "permission_posture": "sandboxed",
   "sandbox_backend": "auto",
   "timeout_seconds": 120

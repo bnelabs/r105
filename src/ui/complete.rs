@@ -294,6 +294,30 @@ impl UiApp {
             && format!("{}:{}", self.input, self.cursor) == self.arg_cache_key
     }
 
+    /// Resolve the composer to bare shell text plus its marker width:
+    /// explicit `!` and `/sh ` lines first, then marker-free lines that
+    /// read as shell (`git status` completes like `!git status`). `/`
+    /// commands, `#` routes, `@` refs, and multiline drafts never
+    /// qualify — their own menus own those keystrokes.
+    pub(crate) fn shell_line(&self) -> Option<(usize, String)> {
+        if self.input.contains('\n') || self.at_token().is_some() {
+            return None;
+        }
+        if let Some(rest) = self.input.strip_prefix("/sh ") {
+            return (!rest.trim().is_empty()).then(|| (4, rest.to_string()));
+        }
+        if let Some(rest) = self.input.strip_prefix('!') {
+            return (!rest.trim().is_empty()).then(|| (1, rest.to_string()));
+        }
+        if self.input.starts_with(['/', '#', '@']) {
+            return None;
+        }
+        if crate::suggest::looks_like_shell(&self.input, &self.ctx_cache.aliases) {
+            return Some((0, self.input.clone()));
+        }
+        None
+    }
+
     /// Shell-line Tab menu rows: history plus the context-aware
     /// candidates behind the ghost (subcommands, flags, branches,
     /// scripts, files). Tab-invoked only — the ghost is the as-you-type
@@ -320,21 +344,22 @@ impl UiApp {
     /// it to decide between direct apply (1 row), opening (2+), and
     /// falling through to the ghost (none).
     pub(crate) fn sh_candidates_uncached(&mut self) -> Vec<crate::suggest::ShellCandidate> {
-        // `ghost_prefix` admits exactly the shell lines (`!`, `/sh `);
-        // every other `/` line belongs to the palette or arg menu.
         if !matches!(self.overlay, Overlay::None)
             || self.palette_active()
             || self.cursor != self.input.len()
-            || self.input.contains('\n')
-            || self.at_token().is_some()
         {
             return Vec::new();
         }
-        let Some(prefix) = crate::suggest::ghost_prefix(&self.input) else {
+        // Markers, then marker-free shell lines; every other line
+        // belongs to the palette, the arg menu, or the model. The alias
+        // table warms first so `g st` is detected as shell.
+        let cwd = self.state.workspace.clone();
+        self.ctx_cache.refresh_for(&self.input, &cwd);
+        let Some((_, prefix)) = self.shell_line() else {
             return Vec::new();
         };
-        let cwd = self.state.workspace.clone();
         self.ctx_cache.refresh_for(&prefix, &cwd);
+        self.kick_live_refresh(&prefix);
         crate::suggest::shell_candidates(
             &prefix,
             &self.shell_history,
@@ -402,13 +427,13 @@ impl UiApp {
         true
     }
 
-    /// Swap one candidate into the composer, keeping the `!`/`/sh `
-    /// marker. False when the input stopped being a shell line.
+    /// Swap one candidate into the composer, keeping any `!`/`/sh `
+    /// marker (marker-free lines swap in place). False when the input
+    /// stopped being a shell line.
     pub(crate) fn apply_sh_pick(&mut self, pick: &crate::suggest::ShellCandidate) -> bool {
-        let Some(prefix) = crate::suggest::ghost_prefix(&self.input) else {
+        let Some((marker_len, prefix)) = self.shell_line() else {
             return false;
         };
-        let marker_len = self.input.len() - prefix.len();
         let swapped = crate::suggest::apply_shell_candidate(&prefix, pick);
         self.input = format!("{}{}", &self.input[..marker_len], swapped);
         self.cursor = self.input.len();

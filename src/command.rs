@@ -72,7 +72,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/completion",
-        usage: "/completion [status|clear]",
+        usage: "/completion [status|clear|ai on|ai off]",
         description: "suggestion status and control",
     },
     CommandSpec {
@@ -448,6 +448,7 @@ pub fn static_arg_values(name: &str) -> Option<&'static [&'static str]> {
         "/session" => Some(&[
             "save", "load", "list", "search", "delete", "diff", "fork", "tree",
         ]),
+        "/completion" => Some(&["status", "clear", "ai"]),
         "/expand" => Some(&["all", "none"]),
         "/export" => Some(&["markdown", "text", "json", "html", "md", "txt", "pdf"]),
         "/mcp" => Some(&["list", "tools", "reconnect"]),
@@ -471,7 +472,8 @@ pub enum Route {
 }
 
 /// First tokens that are always shell invocations, never prose.
-const SHELL_ONE_OFFS: &[&str] = &[
+/// Shared with the suggestion layer's marker-free shell detection.
+pub(crate) const SHELL_ONE_OFFS: &[&str] = &[
     "ls",
     "cd",
     "pwd",
@@ -549,12 +551,22 @@ const SHELL_ONE_OFFS: &[&str] = &[
     "nslookup",
     "ifconfig",
     "ip",
+    "vim",
+    "nvim",
+    "vi",
+    "code",
+    "jq",
+    "fd",
+    "bat",
+    "eza",
+    "fzf",
+    "just",
 ];
 
 /// Characters that mark shell syntax rather than prose. Deliberately
 /// narrow: `-` (hyphenated words) and `=` (prose comparisons) are
 /// excluded so plain English rarely trips the gate.
-fn has_shell_syntax(text: &str) -> bool {
+pub(crate) fn has_shell_syntax(text: &str) -> bool {
     text.contains(['|', '&', '>', '<', '$', '`', '\\', ';'])
         || text.contains("&&")
         || text.contains("||")

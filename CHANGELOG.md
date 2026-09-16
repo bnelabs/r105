@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Marker-free shell completion: plain lines like `git check` now ghost
+  and open Tab menus exactly like `!`/`/sh` lines — no marker needed.
+  Detection is conservative (a fully typed command word, a curated
+  prefix at 3+ characters, shell syntax, or a path) so prose never
+  flashes command ghosts; `!` and `/sh ` still gate execution.
+- Curated one-line docs on completion rows: command summaries
+  (`git — distributed version control`, `docker — containers: build,
+  run, manage`), subcommand summaries (`checkout — switch branches or
+  restore files`), and per-command flag summaries (`--namespace —
+  target namespace (-n)`), with a generic flag table behind them.
+  Rows without a curated doc show their kind tag alone.
+- Live values from background daemon queries, never on the keystroke
+  path: `kubectl logs <Tab>` completes pods, `kubectl get pods <Tab>`
+  pods, `kubectl get namespaces <Tab>` namespaces, `docker logs <Tab>`
+  containers, `docker rmi <Tab>` images. Queries run off a 60s TTL
+  with failure backoff and land as events; the menu reads the cache
+  and never waits. Kubeconfig contexts and systemd units complete
+  synchronously from files (`kubectl config use-context <Tab>`,
+  `systemctl status <Tab>`).
+- Model ghost behind the local cascade: when nothing local extends a
+  shell line and the composer sits idle, the active model proposes the
+  rest — applied only if it truly extends the typed text, dropped on
+  any edit, dismissal, or local ghost. `ai_suggest` config (default
+  on) and `/completion ai on|off` control it.
+
 ## [2.2.0] — 2026-09-16
 
 ### Added

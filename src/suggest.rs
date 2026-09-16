@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 /// Whether the composer text qualifies for ghost completion; returns
 /// the model prefix (`!` and `/sh ` markers strip to the raw command).
-/// Single-line shell drafts only.
+/// Single-line shell drafts only. The UI resolves markers through
+/// `shell_line` now; this stays as the tested marker contract.
+#[cfg(test)]
 pub fn ghost_prefix(input: &str) -> Option<String> {
     if input.len() < 3 {
         return None;
@@ -23,6 +25,59 @@ pub fn ghost_prefix(input: &str) -> Option<String> {
         return (!rest.trim().is_empty()).then(|| rest.to_string());
     }
     None
+}
+
+/// Bare-line shell detection: does this composer line read as a shell
+/// command without any `!` or `/sh ` marker? A fully typed command
+/// word (spec, builtin, curated one-off, alias) qualifies — with or
+/// without arguments. A lone partial word qualifies only for the
+/// curated sets at 3+ characters, so ordinary prose never flashes
+/// command ghosts (`helm` from "hel" is intended, `lsof` from "ls"
+/// is not). PATH binaries are deliberately excluded from multi-word
+/// detection: "write a test" must stay a prompt even though
+/// /usr/bin/write exists. Questions stay prompts too.
+pub fn looks_like_shell(line: &str, aliases: &[(String, String)]) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') || trimmed.ends_with('?') {
+        return false;
+    }
+    if trimmed.starts_with(['/', '#', '!', '@']) {
+        return false;
+    }
+    let tokens = split_shell_tokens(trimmed);
+    if tokens.is_empty() {
+        return false;
+    }
+    // Transparent wrappers imply shell on their own (`sudo …`).
+    if WRAPPERS.contains(&tokens[0].as_str()) {
+        return true;
+    }
+    let first = tokens[0].as_str();
+    if first.starts_with("./") || first.starts_with('/') || first.starts_with("~/") {
+        return true;
+    }
+    if crate::command::has_shell_syntax(trimmed) {
+        return true;
+    }
+    if shell_spec(first).is_some()
+        || SHELL_BUILTINS.contains(&first)
+        || crate::command::SHELL_ONE_OFFS.contains(&first.to_ascii_lowercase().as_str())
+        || aliases.iter().any(|(name, _)| name == first)
+    {
+        return true;
+    }
+    // A lone partial word leans shell only for curated prefixes.
+    tokens.len() == 1
+        && first.len() >= 3
+        && (SHELL_SPECS
+            .iter()
+            .any(|(name, _)| name.starts_with(first) && name.len() > first.len())
+            || SHELL_BUILTINS
+                .iter()
+                .any(|name| name.starts_with(first) && name.len() > first.len())
+            || crate::command::SHELL_ONE_OFFS
+                .iter()
+                .any(|name| name.starts_with(first) && name.len() > first.len()))
 }
 
 /// One executed shell line with the workspace it ran in.
@@ -182,6 +237,30 @@ pub fn path_guess(
 /// completion (subcommands, flags, branches, scripts, files), then
 /// command-name (builtins + PATH executables), then path top-hit.
 /// Returns the suffix to render dimmed after the composer text.
+/// `line` is bare shell text — markers are resolved by the caller.
+pub fn suggest_shell(
+    line: &str,
+    history: &ShellHistory,
+    cwd: &std::path::Path,
+    bins: &[String],
+    ctx: &ContextCache,
+    score: impl Fn(&str, &str) -> Option<i32>,
+) -> Option<String> {
+    if let Some(suffix) = history.suggest(line, &cwd.to_string_lossy()) {
+        return Some(suffix);
+    }
+    if let Some(suffix) = context_suggest(line, cwd, ctx) {
+        return Some(suffix);
+    }
+    if let Some(suffix) = command_guess(line, bins) {
+        return Some(suffix);
+    }
+    path_guess(line, cwd, score)
+}
+
+/// Marker-gated cascade (`!`, `/sh `): the historical entry point,
+/// kept as the tested wrapper over `suggest_shell`.
+#[cfg(test)]
 pub fn suggest(
     input: &str,
     history: &ShellHistory,
@@ -191,16 +270,7 @@ pub fn suggest(
     score: impl Fn(&str, &str) -> Option<i32>,
 ) -> Option<String> {
     let prefix = ghost_prefix(input)?;
-    if let Some(suffix) = history.suggest(&prefix, &cwd.to_string_lossy()) {
-        return Some(suffix);
-    }
-    if let Some(suffix) = context_suggest(&prefix, cwd, ctx) {
-        return Some(suffix);
-    }
-    if let Some(suffix) = command_guess(&prefix, bins) {
-        return Some(suffix);
-    }
-    path_guess(&prefix, cwd, score)
+    suggest_shell(&prefix, history, cwd, bins, ctx, score)
 }
 
 /// POSIX-ish shell builtins worth a ghost (the rest come from PATH).
@@ -386,6 +456,18 @@ pub enum ValueKind {
     MakeTargets,
     SshHosts,
     K8sResources,
+    /// Kubeconfig contexts (file-local, synchronous).
+    KubeContexts,
+    /// Cluster namespaces (daemon, background cache).
+    KubeNamespaces,
+    /// Pods in scope (daemon, background cache).
+    KubePods,
+    /// Running container names (daemon, background cache).
+    DockerContainers,
+    /// Local image refs (daemon, background cache).
+    DockerImages,
+    /// Installed unit names (unit dirs, synchronous).
+    SystemdUnits,
 }
 
 /// Kubernetes resource types for `kubectl get <Tab>` and friends.
@@ -1445,9 +1527,415 @@ static SHELL_SPECS: &[(&str, &ShellSpec)] = &[
     ),
 ];
 
-/// Git refs, npm scripts, make targets, and ssh hosts behind the value
-/// layer, refreshed on a TTL (and on directory change) rather than per
-/// keystroke — same discipline as the PATH binary cache.
+/// One-line command summaries for completion rows. Curated for the
+/// commands people actually pause on; unknown commands show the kind
+/// tag alone rather than a guessed description.
+pub fn command_desc(command: &str) -> Option<&'static str> {
+    Some(match command {
+        "git" => "distributed version control",
+        "cargo" => "Rust package manager and build tool",
+        "npm" => "Node package manager",
+        "node" => "run JavaScript with Node.js",
+        "yarn" => "Node package manager (Yarn)",
+        "pnpm" => "fast Node package manager",
+        "python" => "run Python scripts",
+        "pip" => "Python package installer",
+        "go" => "Go toolchain",
+        "docker" => "containers: build, run, manage",
+        "kubectl" => "talk to a Kubernetes cluster",
+        "helm" => "Kubernetes package manager",
+        "gh" => "GitHub CLI: issues, PRs, releases",
+        "ssh" => "remote shell over SSH",
+        "scp" => "copy files over SSH",
+        "make" => "run Makefile targets",
+        "brew" => "macOS/Linux package manager",
+        "tmux" => "terminal multiplexer",
+        "terraform" => "infrastructure as code",
+        "systemctl" => "control systemd services",
+        "ls" => "list directory contents",
+        "cd" => "change directory",
+        "pwd" => "print working directory",
+        "cat" => "print file contents",
+        "cp" => "copy files",
+        "mv" => "move or rename files",
+        "rm" => "remove files",
+        "mkdir" => "create directories",
+        "touch" => "create files / update times",
+        "chmod" => "change file permissions",
+        "chown" => "change file ownership",
+        "ln" => "create links",
+        "find" => "search for files",
+        "grep" => "search text with patterns",
+        "rg" => "fast recursive search (ripgrep)",
+        "sed" => "stream text editor",
+        "awk" => "pattern scanning language",
+        "head" => "first lines of a file",
+        "tail" => "last lines of a file",
+        "less" => "page through output",
+        "echo" => "print arguments",
+        "ps" => "list running processes",
+        "kill" => "stop a process",
+        "df" => "disk free space",
+        "du" => "directory disk usage",
+        "curl" => "transfer data over HTTP",
+        "wget" => "download files",
+        "tar" => "archive files",
+        "vim" | "nvim" | "vi" => "edit files (modal editor)",
+        "code" => "open in VS Code",
+        "jq" => "query JSON",
+        "fzf" => "fuzzy finder",
+        "bat" => "cat with syntax highlighting",
+        "fd" => "fast file finder",
+        "ping" => "test network reachability",
+        "ssh-keygen" => "create SSH keys",
+        "man" => "read the manual",
+        "which" => "locate a command",
+        "env" => "run with a modified environment",
+        "watch" => "repeat a command periodically",
+        _ => return None,
+    })
+}
+
+/// One-line subcommand summaries, keyed by command. Table order follows
+/// the spec tables; missing pairs fall back to the kind tag.
+pub fn sub_desc(command: &str, sub: &str) -> Option<&'static str> {
+    let desc = match command {
+        "git" => match sub {
+            "status" => "show working tree state",
+            "checkout" => "switch branches or restore files",
+            "branch" => "list, create, or delete branches",
+            "commit" => "record changes to the repository",
+            "log" => "show commit history",
+            "diff" => "show changes between commits",
+            "push" => "upload commits to a remote",
+            "pull" => "fetch and merge from a remote",
+            "add" => "stage changes",
+            "fetch" => "download objects from a remote",
+            "merge" => "join branches together",
+            "clone" => "copy a repository",
+            "show" => "show an object in detail",
+            "stash" => "shelve changes temporarily",
+            "restore" => "restore working tree files",
+            "switch" => "switch branches",
+            "reset" => "reset HEAD and optionally files",
+            "rebase" => "reapply commits on another base",
+            "remote" => "manage remotes",
+            "tag" => "list or create tags",
+            "revert" => "undo a commit with a new commit",
+            "cherry-pick" => "apply selected commits here",
+            "clean" => "remove untracked files",
+            "mv" => "move or rename tracked files",
+            "rm" => "remove tracked files",
+            "grep" => "search tracked files",
+            "describe" => "name a commit from the nearest tag",
+            "init" => "create an empty repository",
+            "blame" => "show who changed each line",
+            "bisect" => "binary-search a regression",
+            "archive" => "export a tree snapshot",
+            "am" => "apply mailbox patches",
+            "worktree" => "manage linked working trees",
+            _ => return None,
+        },
+        "cargo" => match sub {
+            "build" => "compile the package",
+            "run" => "build and run the binary",
+            "test" => "run the test suite",
+            "check" => "typecheck without codegen",
+            "clippy" => "run the linter",
+            "fmt" => "format the code",
+            "add" => "add a dependency",
+            "remove" => "remove a dependency",
+            "update" => "update dependencies",
+            "clean" => "remove build artifacts",
+            "doc" => "build documentation",
+            "new" => "create a new package",
+            "init" => "init a package here",
+            "install" => "install a binary crate",
+            "publish" => "publish to crates.io",
+            "tree" => "show the dependency tree",
+            "fix" => "auto-fix warnings",
+            "bench" => "run benchmarks",
+            "search" => "search crates.io",
+            "metadata" => "machine-readable package info",
+            _ => return None,
+        },
+        "npm" | "yarn" | "pnpm" => match sub {
+            "install" => "install dependencies",
+            "add" => "add a dependency",
+            "remove" => "remove a dependency",
+            "run" => "run a package script",
+            "test" => "run the test script",
+            "start" => "run the start script",
+            "build" => "run the build script",
+            "publish" => "publish the package",
+            "audit" => "audit for vulnerabilities",
+            "outdated" => "list stale dependencies",
+            "init" => "scaffold a package.json",
+            "exec" => "run a binary from node_modules",
+            "login" => "authenticate with the registry",
+            _ => return None,
+        },
+        "docker" => match sub {
+            "run" => "start a new container",
+            "exec" => "run a command inside a container",
+            "ps" => "list containers",
+            "images" => "list images",
+            "build" => "build an image",
+            "pull" => "download an image",
+            "push" => "upload an image",
+            "logs" => "read container logs",
+            "inspect" => "full JSON details",
+            "stop" => "stop a container",
+            "start" => "start a stopped container",
+            "restart" => "restart a container",
+            "rm" => "remove a container",
+            "rmi" => "remove an image",
+            "tag" => "retarget an image name",
+            "cp" => "copy files in or out",
+            "container" => "manage containers",
+            "image" => "manage images",
+            "network" => "manage networks",
+            "volume" => "manage volumes",
+            "system" => "disk usage and prune",
+            "compose" => "multi-container apps",
+            "login" => "authenticate with a registry",
+            _ => return None,
+        },
+        "kubectl" => match sub {
+            "get" => "list resources",
+            "describe" => "detailed resource state",
+            "create" => "create a resource",
+            "apply" => "apply a manifest",
+            "delete" => "delete resources",
+            "edit" => "edit a resource live",
+            "logs" => "read pod logs",
+            "exec" => "run a command in a pod",
+            "port-forward" => "forward a local port",
+            "rollout" => "manage rollouts",
+            "scale" => "set replica count",
+            "top" => "resource usage",
+            "config" => "manage kubeconfig",
+            "cluster-info" => "cluster endpoints",
+            "cordon" => "mark a node unschedulable",
+            "drain" => "evict pods from a node",
+            _ => return None,
+        },
+        "gh" => match sub {
+            "issue" => "manage issues",
+            "pr" => "manage pull requests",
+            "repo" => "manage repositories",
+            "run" => "manage workflow runs",
+            "release" => "manage releases",
+            "browse" => "open in the browser",
+            "search" => "search GitHub",
+            "auth" => "authenticate",
+            "workflow" => "manage Actions workflows",
+            "secret" => "manage secrets",
+            "gist" => "manage gists",
+            "api" => "raw API requests",
+            _ => return None,
+        },
+        "go" => match sub {
+            "build" => "compile packages",
+            "run" => "compile and run",
+            "test" => "run tests",
+            "vet" => "check for mistakes",
+            "fmt" => "format sources",
+            "mod" => "manage go.mod",
+            "get" => "add a dependency",
+            "install" => "install a binary",
+            "list" => "list packages",
+            "env" => "print Go environment",
+            _ => return None,
+        },
+        "pip" => match sub {
+            "install" => "install packages",
+            "uninstall" => "remove packages",
+            "freeze" => "pin installed versions",
+            "list" => "list installed packages",
+            "show" => "package details",
+            "download" => "fetch without installing",
+            "config" => "manage configuration",
+            _ => return None,
+        },
+        "brew" => match sub {
+            "install" => "install a formula",
+            "uninstall" => "remove a formula",
+            "upgrade" => "upgrade packages",
+            "update" => "refresh formulae",
+            "list" => "list installed",
+            "info" => "package details",
+            "search" => "search formulae",
+            "services" => "manage background services",
+            "doctor" => "diagnose the install",
+            "cleanup" => "remove old versions",
+            "deps" => "show dependencies",
+            _ => return None,
+        },
+        "tmux" => match sub {
+            "new" | "new-session" => "start a session",
+            "attach" | "attach-session" => "attach to a session",
+            "detach" => "detach this client",
+            "list-sessions" => "list sessions",
+            "kill-session" => "kill a session",
+            "kill-server" => "kill the server",
+            "split-window" => "split the pane",
+            "new-window" => "open a window",
+            "send-keys" => "type into a pane",
+            "capture-pane" => "grab pane contents",
+            "rename-session" => "rename the session",
+            _ => return None,
+        },
+        "terraform" => match sub {
+            "init" => "init the working directory",
+            "plan" => "preview changes",
+            "apply" => "apply changes",
+            "destroy" => "tear everything down",
+            "validate" => "check configuration",
+            "fmt" => "format configuration",
+            "output" => "show output values",
+            "import" => "adopt existing resources",
+            "state" => "manage state",
+            "workspace" => "manage workspaces",
+            _ => return None,
+        },
+        "helm" => match sub {
+            "install" => "install a chart",
+            "upgrade" => "upgrade a release",
+            "uninstall" => "remove a release",
+            "list" => "list releases",
+            "status" => "release status",
+            "rollback" => "roll back a release",
+            "repo" => "manage chart repos",
+            "search" => "search charts",
+            "template" => "render templates locally",
+            "lint" => "lint a chart",
+            _ => return None,
+        },
+        "systemctl" => match sub {
+            "start" => "start a unit",
+            "stop" => "stop a unit",
+            "restart" => "restart a unit",
+            "status" => "unit status",
+            "enable" => "start at boot",
+            "disable" => "drop from boot",
+            "is-active" => "is it running?",
+            "list-units" => "list loaded units",
+            "daemon-reload" => "reload unit files",
+            "mask" => "forbid a unit entirely",
+            "edit" => "override a unit",
+            "cat" => "show the unit file",
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(desc)
+}
+
+/// One-line flag summaries. Per-command entries first, then the generic
+/// table shared by every command (`--help` means the same everywhere).
+pub fn flag_desc(command: &str, flag: &str) -> Option<&'static str> {
+    let specific = match command {
+        "git" => match flag {
+            "--porcelain" => "machine-readable output",
+            "--oneline" => "one line per commit",
+            "--amend" => "fold into the last commit",
+            "--cached" => "staged changes only",
+            "--set-upstream" => "remember the remote branch",
+            "--single-branch" => "clone one branch only",
+            "--no-verify" => "skip commit hooks",
+            "--dry-run" => "show what would happen",
+            "--decorate" => "annotate refs in log",
+            "--graph" => "draw the branch graph",
+            _ => return generic_flag_desc(flag),
+        },
+        "kubectl" => match flag {
+            "--namespace" => "target namespace (-n)",
+            "--all-namespaces" => "every namespace (-A)",
+            "--output" => "output format (-o)",
+            "--selector" => "label selector (-l)",
+            "--field-selector" => "field selector",
+            "--filename" => "manifest file (-f)",
+            "--previous" => "previous container run",
+            "--container" => "which container (-c)",
+            _ => return generic_flag_desc(flag),
+        },
+        "docker" => match flag {
+            "--detach" => "run in background (-d)",
+            "--interactive" => "keep stdin open (-i)",
+            "--tty" => "allocate a terminal (-t)",
+            "--rm" => "remove when it exits",
+            "--name" => "assign a name",
+            "--volume" => "mount a volume (-v)",
+            "--publish" => "publish a port (-p)",
+            "--env" => "set an env var (-e)",
+            "--env-file" => "env vars from a file",
+            "--all" => "include stopped (-a)",
+            "--filter" => "filter results",
+            "--format" => "Go-template output",
+            "--follow" => "stream new output (-f)",
+            "--tail" => "last N lines",
+            _ => return generic_flag_desc(flag),
+        },
+        "gh" => match flag {
+            "--repo" => "pick a repository (-R)",
+            "--limit" => "max items to fetch",
+            "--json" => "JSON output fields",
+            "--jq" => "filter JSON output",
+            "--web" => "open in the browser (-w)",
+            "--draft" => "mark as draft",
+            _ => return generic_flag_desc(flag),
+        },
+        "cargo" => match flag {
+            "--release" => "optimized build",
+            "--features" => "enable features",
+            "--all-features" => "every feature",
+            "--no-default-features" => "drop the defaults",
+            "--manifest-path" => "path to Cargo.toml",
+            "--target" => "build for a triple",
+            "--frozen" => "no network, lockfile exact",
+            "--locked" => "assert the lockfile",
+            "--offline" => "no network access",
+            "--workspace" => "whole workspace",
+            _ => return generic_flag_desc(flag),
+        },
+        _ => return generic_flag_desc(flag),
+    };
+    Some(specific)
+}
+
+/// Flags that mean the same thing in every tool.
+fn generic_flag_desc(flag: &str) -> Option<&'static str> {
+    Some(match flag {
+        "--help" | "-h" => "show help",
+        "--version" | "-V" => "show the version",
+        "--verbose" | "-v" => "verbose output",
+        "--quiet" | "-q" => "quiet output",
+        "--force" | "-f" => "force it",
+        "--dry-run" => "show what would happen",
+        "--all" | "-a" => "everything",
+        "--recursive" | "-r" => "recurse",
+        "--output" | "-o" => "output format",
+        "--format" => "output format",
+        "--filter" => "filter results",
+        "--follow" => "follow output",
+        "--tail" => "last N lines",
+        "--since" => "only newer than this",
+        "--timeout" => "give up after this long",
+        "--jobs" | "-j" => "parallel jobs",
+        "--target" => "build target",
+        "--features" => "enable features",
+        "--namespace" | "-n" => "namespace",
+        "--global" | "-g" => "global scope",
+        "--silent" => "minimal output",
+        "--debug" => "debug output",
+        "--no-pager" => "no pager",
+        "--user" => "user scope",
+        "--system" => "system scope",
+        "--now" => "apply immediately",
+        _ => return None,
+    })
+}
 #[derive(Debug, Clone, Default)]
 pub struct ContextCache {
     git: GitRefs,
@@ -1461,9 +1949,14 @@ pub struct ContextCache {
     make_at: Option<std::time::Instant>,
     hosts: Vec<String>,
     ssh_at: Option<std::time::Instant>,
-    aliases: Vec<(String, String)>,
+    pub aliases: Vec<(String, String)>,
     aliases_at: Option<std::time::Instant>,
-    git_alias_list: Vec<(String, String)>,
+    pub git_alias_list: Vec<(String, String)>,
+    pub kube: Vec<String>,
+    kube_at: Option<std::time::Instant>,
+    pub units: Vec<String>,
+    units_at: Option<std::time::Instant>,
+    pub live: LiveCache,
 }
 
 const CTX_TTL: std::time::Duration = std::time::Duration::from_secs(15);
@@ -1503,6 +1996,14 @@ impl ContextCache {
             "ssh" | "scp" if stale(self.ssh_at) => {
                 self.hosts = ssh_hosts();
                 self.ssh_at = Some(now);
+            }
+            "kubectl" if stale(self.kube_at) => {
+                self.kube = kube_contexts();
+                self.kube_at = Some(now);
+            }
+            "systemctl" if stale(self.units_at) => {
+                self.units = systemd_units();
+                self.units_at = Some(now);
             }
             _ => {}
         }
@@ -1745,6 +2246,141 @@ pub fn ssh_hosts() -> Vec<String> {
     hosts.sort();
     hosts
 }
+
+/// Kubernetes context names from kubeconfig files: the `name:` entries
+/// under the top-level `contexts:` section, current context first.
+/// Pure file reads — no cluster round-trip, so `kubectl config
+/// use-context <Tab>` completes synchronously.
+pub fn kube_contexts_from(files: &[std::path::PathBuf]) -> Vec<String> {
+    let mut contexts = Vec::new();
+    let mut current = Vec::new();
+    for file in files {
+        let Ok(content) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let mut section = String::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let indent = line.len() - line.trim_start().len();
+            if indent == 0 && !trimmed.starts_with('-') {
+                // Top-level entry: switch sections, or record the
+                // current context; anything else ends the section.
+                if let Some(name) = trimmed.strip_prefix("current-context:") {
+                    let name = name.trim().trim_matches(['"', '\'']);
+                    if !name.is_empty() {
+                        current.push(name.to_string());
+                    }
+                } else if let Some(name) = trimmed.strip_suffix(':') {
+                    section = name.trim().to_string();
+                } else {
+                    section.clear();
+                }
+                continue;
+            }
+            if section != "contexts" {
+                continue;
+            }
+            let value = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+            if let Some(name) = value.strip_prefix("name:") {
+                let name = name.trim().trim_matches(['"', '\'']);
+                if !name.is_empty() && !contexts.contains(&name.to_string()) {
+                    contexts.push(name.to_string());
+                }
+            }
+        }
+    }
+    let mut ordered = current;
+    for name in contexts {
+        if !ordered.contains(&name) {
+            ordered.push(name);
+        }
+    }
+    ordered.truncate(100);
+    ordered
+}
+
+/// Kubeconfig search paths: `$KUBECONFIG` (colon-separated) or the
+/// default `~/.kube/config`.
+pub fn kube_contexts() -> Vec<String> {
+    let mut files = Vec::new();
+    if let Ok(kubeconfig) = std::env::var("KUBECONFIG")
+        && !kubeconfig.trim().is_empty()
+    {
+        files.extend(std::env::split_paths(&kubeconfig));
+    } else if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
+        && !home.is_empty()
+    {
+        files.push(std::path::Path::new(&home).join(".kube").join("config"));
+    }
+    kube_contexts_from(&files)
+}
+
+/// Installed systemd unit names from the unit directories (system plus
+/// user): `systemctl status ngi<Tab>` completes without the daemon.
+pub fn systemd_units_from(dirs: &[std::path::PathBuf]) -> Vec<String> {
+    const SUFFIXES: &[&str] = &[".service", ".socket", ".timer", ".target", ".path"];
+    let mut units = Vec::new();
+    for dir in dirs {
+        let Ok(listing) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in listing.flatten().take(400) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) && !units.contains(&name) {
+                units.push(name);
+            }
+        }
+    }
+    units.sort();
+    units.truncate(300);
+    units
+}
+
+/// Standard unit directories, system-wide plus the user's.
+pub fn systemd_units() -> Vec<String> {
+    let mut dirs = vec![
+        std::path::PathBuf::from("/etc/systemd/system"),
+        std::path::PathBuf::from("/run/systemd/system"),
+        std::path::PathBuf::from("/usr/lib/systemd/system"),
+        std::path::PathBuf::from("/usr/local/lib/systemd/system"),
+    ];
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
+        && !home.is_empty()
+    {
+        let home = std::path::Path::new(&home);
+        dirs.push(home.join(".config").join("systemd").join("user"));
+        dirs.push(
+            home.join(".local")
+                .join("share")
+                .join("systemd")
+                .join("user"),
+        );
+    }
+    systemd_units_from(&dirs)
+}
+
+/// Daemon-sourced values (pods, namespaces, containers, images).
+/// Written only by background refresh events; the keystroke path reads
+/// whatever is cached, possibly nothing. `at`/`failed_at` gate refresh
+/// pacing, `inflight` stops duplicate spawns.
+#[derive(Debug, Clone, Default)]
+pub struct LiveCache {
+    pub namespaces: Vec<String>,
+    pub pods: Vec<String>,
+    pub containers: Vec<String>,
+    pub images: Vec<String>,
+    pub at: HashMap<String, std::time::Instant>,
+    pub inflight: HashSet<String>,
+    pub failed_at: HashMap<String, std::time::Instant>,
+}
+
+/// How long live values stay fresh, and how long a failed daemon stays
+/// quiet before the next attempt.
+pub const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+pub const LIVE_FAIL_QUIET: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Shell aliases (`name=value`) from the usual rc files, for expanding
 /// the command word before spec lookup (`g st` completes as git).
@@ -1993,10 +2629,36 @@ pub fn value_candidates(
         ValueKind::NpmScripts => &cache.scripts,
         ValueKind::MakeTargets => &cache.targets,
         ValueKind::SshHosts => &cache.hosts,
+        ValueKind::KubeContexts => &cache.kube,
+        ValueKind::KubeNamespaces => &cache.live.namespaces,
+        ValueKind::KubePods => &cache.live.pods,
+        ValueKind::DockerContainers => &cache.live.containers,
+        ValueKind::DockerImages => &cache.live.images,
+        ValueKind::SystemdUnits => &cache.units,
         ValueKind::K8sResources => unreachable!("handled above"),
         ValueKind::Files | ValueKind::Dirs => unreachable!("handled above"),
     };
     prefix_matches(cached.iter().map(String::as_str), token, quoted)
+}
+
+/// A line whose final token is an exact spec subcommand or flag reads
+/// as complete; the model ghost has nothing to add (`git status`,
+/// `docker ps`, `git --version`), saving an idle model round-trip.
+pub fn line_looks_complete(line: &str, ctx: &ContextCache) -> bool {
+    let Some(context) = shell_context(line, &ctx.aliases, &ctx.git_alias_list) else {
+        return false;
+    };
+    if context.token.is_empty() {
+        return false;
+    }
+    let Some(spec) = shell_spec(&context.command) else {
+        return false;
+    };
+    let token = context.token.as_str();
+    if token.starts_with('-') {
+        return spec.flags.contains(&token);
+    }
+    context.position == 1 && spec.subcommands.contains(&token)
 }
 
 /// Ordered prefix matches (strictly longer, quote-aware), capped.
@@ -2049,6 +2711,9 @@ pub struct ShellContext {
     pub position: usize,
     pub token: String,
     pub subcommand: String,
+    /// Second argument (`pods` in `kubectl get pods …`): selects live
+    /// values at deeper positions.
+    pub resource: String,
 }
 
 pub fn shell_context(
@@ -2106,11 +2771,13 @@ pub fn shell_context(
     } else {
         raw_sub
     };
+    let resource = expanded.get(2).cloned().unwrap_or_default();
     Some(ShellContext {
         command,
         position,
         token,
         subcommand,
+        resource,
     })
 }
 
@@ -2158,6 +2825,18 @@ pub fn context_suggest(line: &str, cwd: &std::path::Path, cache: &ContextCache) 
     {
         return Some(hit[token.len()..].to_string());
     }
+    // Live values at deeper positions (`docker logs ub` → `untu`).
+    if context.position >= 2
+        && let Some(kind) = live_kind(
+            &context.command,
+            &context.subcommand,
+            &context.resource,
+            context.position,
+        )
+        && let Some(suffix) = complete_values(token, line, cwd, cache, &[kind])
+    {
+        return Some(suffix);
+    }
     // Value position: kinds keyed by the subcommand in first position.
     let kinds: &[ValueKind] = spec
         .and_then(|spec| {
@@ -2174,14 +2853,16 @@ pub fn context_suggest(line: &str, cwd: &std::path::Path, cache: &ContextCache) 
 }
 
 /// One Tab-menu row for a shell line: the full replacement text, its
-/// kind tag (`history`, `subcommand`, `flag`, `branch`, …), and whether
+/// kind tag (`history`, `subcommand`, `flag`, `branch`, …), whether
 /// accepting swaps the whole line (history) or just the token under
-/// the cursor.
+/// the cursor, and a one-line description (empty when unknown — the
+/// kind tag alone beats a guessed doc).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellCandidate {
     pub text: String,
     pub kind: &'static str,
     pub whole_line: bool,
+    pub detail: String,
 }
 
 /// Swap a candidate into its line: whole-line picks replace everything,
@@ -2216,12 +2897,14 @@ fn push_candidate(
     text: String,
     kind: &'static str,
     whole_line: bool,
+    detail: &str,
 ) {
     if out.len() < MENU_CAP && seen.insert((text.clone(), whole_line)) {
         out.push(ShellCandidate {
             text,
             kind,
             whole_line,
+            detail: detail.to_string(),
         });
     }
 }
@@ -2235,13 +2918,125 @@ fn push_token_row(
     token: &str,
     quoted: bool,
     kind: &'static str,
+    detail: &str,
 ) {
     if out.len() < MENU_CAP
         && candidate.len() > token.len()
         && candidate.starts_with(token)
         && (quoted || !candidate.contains(char::is_whitespace))
     {
-        push_candidate(out, seen, candidate.to_string(), kind, false);
+        push_candidate(out, seen, candidate.to_string(), kind, false, detail);
+    }
+}
+
+/// Live value kind for deeper positions: `kubectl logs <pod>`,
+/// `kubectl get pods <pod>`, `kubectl config use-context <ctx>`,
+/// `docker logs <name>`, `systemctl status <unit>`. File-backed kinds
+/// (contexts, units) resolve synchronously; daemon kinds (pods,
+/// namespaces, containers, images) read the background cache, which is
+/// empty until the first refresh lands — the keystroke path never
+/// waits for a daemon.
+pub fn live_kind(
+    command: &str,
+    subcommand: &str,
+    resource: &str,
+    position: usize,
+) -> Option<ValueKind> {
+    match command {
+        "kubectl" => {
+            if subcommand == "config"
+                && matches!(
+                    resource,
+                    "use-context" | "delete-context" | "rename-context" | "set-context"
+                )
+            {
+                return Some(ValueKind::KubeContexts);
+            }
+            if position == 2 && matches!(subcommand, "logs" | "exec") {
+                return Some(ValueKind::KubePods);
+            }
+            if position == 3
+                && matches!(
+                    subcommand,
+                    "get" | "describe" | "delete" | "edit" | "label" | "annotate"
+                )
+            {
+                if resource == "namespaces" || resource == "namespace" || resource == "ns" {
+                    return Some(ValueKind::KubeNamespaces);
+                }
+                if resource == "pods"
+                    || resource == "pod"
+                    || resource == "po"
+                    || resource == "deployments"
+                    || resource == "deploy"
+                    || resource == "statefulsets"
+                    || resource == "daemonsets"
+                    || resource == "jobs"
+                {
+                    return Some(ValueKind::KubePods);
+                }
+            }
+            None
+        }
+        "docker" => {
+            if position != 2 {
+                return None;
+            }
+            if matches!(
+                subcommand,
+                "exec"
+                    | "logs"
+                    | "start"
+                    | "stop"
+                    | "restart"
+                    | "rm"
+                    | "inspect"
+                    | "top"
+                    | "stats"
+                    | "kill"
+                    | "pause"
+                    | "unpause"
+                    | "rename"
+                    | "wait"
+                    | "attach"
+                    | "cp"
+            ) {
+                return Some(ValueKind::DockerContainers);
+            }
+            if matches!(subcommand, "rmi" | "tag" | "push" | "save" | "history") {
+                return Some(ValueKind::DockerImages);
+            }
+            None
+        }
+        "systemctl" => {
+            if position == 2
+                && matches!(
+                    subcommand,
+                    "start"
+                        | "stop"
+                        | "restart"
+                        | "reload"
+                        | "status"
+                        | "enable"
+                        | "disable"
+                        | "reenable"
+                        | "is-active"
+                        | "is-enabled"
+                        | "is-failed"
+                        | "show"
+                        | "cat"
+                        | "edit"
+                        | "mask"
+                        | "unmask"
+                        | "preset"
+                        | "revert"
+                )
+            {
+                return Some(ValueKind::SystemdUnits);
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -2262,35 +3057,52 @@ pub fn shell_candidates(
     let mut out: Vec<ShellCandidate> = Vec::new();
     let mut seen: HashSet<(String, bool)> = HashSet::new();
     for cmd in history.recent_matches(line, 4) {
-        push_candidate(&mut out, &mut seen, cmd, "history", true);
+        push_candidate(&mut out, &mut seen, cmd, "history", true, "");
     }
     let Some(context) = shell_context(line, &ctx.aliases, &ctx.git_alias_list) else {
         return out;
     };
-    if context.token.is_empty() {
-        return out;
-    }
+    // An empty token (`git ` with a trailing space) still has a menu:
+    // subcommands, recent history, and values all list from the start.
     let token = context.token.as_str();
     let spec = shell_spec(context.command.as_str());
     let quoted = token_quoted(line, token);
-    // Command word: builtins, PATH, and alias names.
+    // Command word: builtins, PATH, and alias names (alias rows show
+    // the expansion, command rows a summary when curated).
     if context.position == 0 {
         for builtin in SHELL_BUILTINS {
-            push_token_row(&mut out, &mut seen, builtin, token, quoted, "command");
+            let detail = command_desc(builtin).unwrap_or("");
+            push_token_row(
+                &mut out, &mut seen, builtin, token, quoted, "command", detail,
+            );
         }
         for bin in bins {
-            push_token_row(&mut out, &mut seen, bin, token, quoted, "command");
+            let detail = command_desc(bin).unwrap_or("");
+            push_token_row(&mut out, &mut seen, bin, token, quoted, "command", detail);
         }
-        for (name, _) in &ctx.aliases {
-            push_token_row(&mut out, &mut seen, name, token, quoted, "alias");
+        for (name, value) in &ctx.aliases {
+            push_token_row(&mut out, &mut seen, name, token, quoted, "alias", value);
+        }
+        // An exact spec hit (`git` with no trailing space yet) offers
+        // its subcommands as whole-line rows — `git` + Tab lists verbs
+        // instead of going quiet.
+        if token == context.command.as_str()
+            && let Some(spec) = spec
+        {
+            for sub in spec.subcommands {
+                let row = format!("{token} {sub}");
+                let detail = sub_desc(&context.command, sub).unwrap_or("");
+                push_candidate(&mut out, &mut seen, row, "subcommand", true, detail);
+            }
         }
         return out;
     }
-    // Flag names.
+    // Flag names with per-command summaries.
     if token.starts_with('-') && token.len() > 1 {
         if let Some(spec) = spec {
             for flag in spec.flags {
-                push_token_row(&mut out, &mut seen, flag, token, quoted, "flag");
+                let detail = flag_desc(&context.command, flag).unwrap_or("");
+                push_token_row(&mut out, &mut seen, flag, token, quoted, "flag", detail);
             }
         }
         return out;
@@ -2300,11 +3112,20 @@ pub fn shell_candidates(
         if let Some(spec) = spec {
             if !spec.subcommands.is_empty() {
                 for sub in spec.subcommands {
-                    push_token_row(&mut out, &mut seen, sub, token, quoted, "subcommand");
+                    let detail = sub_desc(&context.command, sub).unwrap_or("");
+                    push_token_row(
+                        &mut out,
+                        &mut seen,
+                        sub,
+                        token,
+                        quoted,
+                        "subcommand",
+                        detail,
+                    );
                 }
                 if context.command == "git" {
-                    for (name, _) in &ctx.git_alias_list {
-                        push_token_row(&mut out, &mut seen, name, token, quoted, "alias");
+                    for (name, value) in &ctx.git_alias_list {
+                        push_token_row(&mut out, &mut seen, name, token, quoted, "alias", value);
                     }
                 }
                 push_files(&mut out, &mut seen, token, quoted, cwd, ctx);
@@ -2318,7 +3139,8 @@ pub fn shell_candidates(
         push_files(&mut out, &mut seen, token, quoted, cwd, ctx);
         return out;
     }
-    // Nested verbs, then per-subcommand values, then path files.
+    // Nested verbs, then live values (pods, containers, units), then
+    // per-subcommand values, then path files.
     if context.position == 2
         && let Some(spec) = spec
         && let Some((_, subs)) = spec
@@ -2327,8 +3149,18 @@ pub fn shell_candidates(
             .find(|(name, _)| *name == context.subcommand)
     {
         for sub in *subs {
-            push_token_row(&mut out, &mut seen, sub, token, quoted, "subcommand");
+            push_token_row(&mut out, &mut seen, sub, token, quoted, "subcommand", "");
         }
+    }
+    if context.position >= 2
+        && let Some(kind) = live_kind(
+            &context.command,
+            &context.subcommand,
+            &context.resource,
+            context.position,
+        )
+    {
+        push_value_kinds(&mut out, &mut seen, token, quoted, cwd, ctx, &[kind]);
     }
     let kinds: &[ValueKind] = spec
         .and_then(|spec| {
@@ -2360,7 +3192,7 @@ fn push_value_kinds(
             if out.len() >= MENU_CAP {
                 return;
             }
-            push_candidate(out, seen, candidate, value_kind_tag(*kind), false);
+            push_candidate(out, seen, candidate, value_kind_tag(*kind), false, "");
         }
     }
 }
@@ -2380,7 +3212,7 @@ fn push_files(
         if out.len() >= MENU_CAP {
             return;
         }
-        push_candidate(out, seen, candidate, "file", false);
+        push_candidate(out, seen, candidate, "file", false, "");
     }
 }
 
@@ -2396,6 +3228,12 @@ pub fn value_kind_tag(kind: ValueKind) -> &'static str {
         ValueKind::MakeTargets => "target",
         ValueKind::SshHosts => "host",
         ValueKind::K8sResources => "resource",
+        ValueKind::KubeContexts => "context",
+        ValueKind::KubeNamespaces => "namespace",
+        ValueKind::KubePods => "pod",
+        ValueKind::DockerContainers => "container",
+        ValueKind::DockerImages => "image",
+        ValueKind::SystemdUnits => "unit",
     }
 }
 
@@ -3255,14 +4093,220 @@ mod tests {
             text: "status".to_string(),
             kind: "subcommand",
             whole_line: false,
+            detail: String::new(),
         };
         assert_eq!(apply_shell_candidate("git sta", &token_pick), "git status");
         let line_pick = ShellCandidate {
             text: "git status".to_string(),
             kind: "history",
             whole_line: true,
+            detail: String::new(),
         };
         assert_eq!(apply_shell_candidate("git sta", &line_pick), "git status");
         assert_eq!(apply_shell_candidate("git ", &token_pick), "git status");
+    }
+
+    /// Marker-free detection: typed commands and curated prefixes read
+    /// as shell; prose, questions, and slash input never do.
+    #[test]
+    fn looks_like_shell_detects_commands_not_prose() {
+        let aliases = vec![("g".to_string(), "git".to_string())];
+        for shell in [
+            "git status",
+            "git",
+            "kubectl get pods",
+            "vim",
+            "sudo apt update",
+            "cargo build --release",
+            "g st",
+            "kub",
+            "doc",
+            "./script.sh",
+            "ls -la | grep x",
+        ] {
+            assert!(looks_like_shell(shell, &aliases), "missed: {shell}");
+        }
+        for prose in [
+            "hello world",
+            "he",
+            "write a test",
+            "what is git status?",
+            "/sh git status",
+            "!git status",
+            "@src/main.rs",
+            "# explain git",
+        ] {
+            assert!(
+                !looks_like_shell(prose, &aliases),
+                "prose detected as shell: {prose}"
+            );
+        }
+    }
+
+    /// An empty token after a trailing space still lists the menu:
+    /// `git ` shows subcommands, not just history.
+    #[test]
+    fn shell_menu_lists_subcommands_after_trailing_space() {
+        let history = history(&[]);
+        let ctx = ContextCache::default();
+        let directory = tempfile::TempDir::new().unwrap();
+        let items = shell_candidates("git ", &history, directory.path(), &ctx, &[]);
+        assert!(
+            items.iter().any(|item| item.text == "status"),
+            "subcommand rows missing: {items:?}"
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| !item.whole_line || item.kind == "history")
+        );
+    }
+
+    /// Menu rows carry curated one-line docs where they exist and stay
+    /// kind-only where they do not (a guessed doc is worse than none).
+    #[test]
+    fn menu_rows_carry_curated_descriptions() {
+        let history = history(&[]);
+        let ctx = ContextCache::default();
+        let directory = tempfile::TempDir::new().unwrap();
+        let items = shell_candidates("git sta", &history, directory.path(), &ctx, &[]);
+        let status = items
+            .iter()
+            .find(|item| item.text == "status")
+            .expect("status row");
+        assert_eq!(status.detail, "show working tree state");
+        let flags = shell_candidates("git --ver", &history, directory.path(), &ctx, &[]);
+        let version = flags
+            .iter()
+            .find(|item| item.text == "--version")
+            .expect("flag row");
+        assert_eq!(version.detail, "show the version");
+        assert!(command_desc("git").is_some_and(|desc| desc.contains("version control")));
+        assert!(sub_desc("cargo", "build").is_some_and(|desc| desc.contains("compile")));
+        assert!(flag_desc("kubectl", "--namespace").is_some_and(|desc| desc.contains("-n")));
+    }
+
+    /// Live kinds map to the verbs people pause on, at the right depth.
+    #[test]
+    fn live_kind_maps_daemon_verbs() {
+        assert_eq!(
+            live_kind("kubectl", "logs", "", 2),
+            Some(ValueKind::KubePods)
+        );
+        assert_eq!(
+            live_kind("kubectl", "get", "pods", 3),
+            Some(ValueKind::KubePods)
+        );
+        assert_eq!(
+            live_kind("kubectl", "get", "namespaces", 3),
+            Some(ValueKind::KubeNamespaces)
+        );
+        assert_eq!(
+            live_kind("kubectl", "config", "use-context", 2),
+            Some(ValueKind::KubeContexts)
+        );
+        assert_eq!(
+            live_kind("docker", "logs", "", 2),
+            Some(ValueKind::DockerContainers)
+        );
+        assert_eq!(
+            live_kind("docker", "rmi", "", 2),
+            Some(ValueKind::DockerImages)
+        );
+        assert_eq!(
+            live_kind("systemctl", "status", "", 2),
+            Some(ValueKind::SystemdUnits)
+        );
+        assert_eq!(live_kind("git", "checkout", "", 2), None);
+    }
+
+    /// Kubeconfig contexts parse from YAML text without a cluster call;
+    /// the current context leads.
+    #[test]
+    fn kube_contexts_parse_from_file() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let file = directory.path().join("config");
+        std::fs::write(
+            &file,
+            "apiVersion: v1\ncurrent-context: prod\ncontexts:\n- name: prod\n  cluster: p\n- name: staging\n  cluster: s\n",
+        )
+        .unwrap();
+        assert_eq!(
+            kube_contexts_from(&[file]),
+            vec!["prod".to_string(), "staging".to_string()]
+        );
+        assert!(kube_contexts_from(&[directory.path().join("absent")]).is_empty());
+    }
+
+    /// Unit directories list known suffixes, sorted and capped.
+    #[test]
+    fn systemd_units_parse_from_dir() {
+        let directory = tempfile::TempDir::new().unwrap();
+        std::fs::write(directory.path().join("nginx.service"), "").unwrap();
+        std::fs::write(directory.path().join("cron.timer"), "").unwrap();
+        std::fs::write(directory.path().join("notes.txt"), "").unwrap();
+        assert_eq!(
+            systemd_units_from(&[directory.path().to_path_buf()]),
+            vec!["cron.timer".to_string(), "nginx.service".to_string()]
+        );
+    }
+
+    /// Cached daemon values show up in Tab menus at live positions.
+    #[test]
+    fn live_values_complete_menu_rows() {
+        let mut ctx = ContextCache::default();
+        ctx.live.pods = vec!["api-7f9".to_string(), "web-2d1".to_string()];
+        ctx.live.containers = vec!["db-1".to_string()];
+        let directory = tempfile::TempDir::new().unwrap();
+        let pods = shell_candidates(
+            "kubectl logs api",
+            &history(&[]),
+            directory.path(),
+            &ctx,
+            &[],
+        );
+        assert!(
+            pods.iter()
+                .any(|item| item.text == "api-7f9" && item.kind == "pod"),
+            "pod row missing: {pods:?}"
+        );
+        let containers =
+            shell_candidates("docker logs db", &history(&[]), directory.path(), &ctx, &[]);
+        assert!(
+            containers
+                .iter()
+                .any(|item| item.text == "db-1" && item.kind == "container"),
+            "container row missing: {containers:?}"
+        );
+    }
+
+    /// Complete command lines skip the model ghost; partial ones do not.
+    #[test]
+    fn line_completeness_skips_model_ghost() {
+        let ctx = ContextCache::default();
+        assert!(line_looks_complete("git status", &ctx));
+        assert!(line_looks_complete("git --version", &ctx));
+        assert!(line_looks_complete("docker ps", &ctx));
+        assert!(!line_looks_complete("git sta", &ctx));
+        assert!(!line_looks_complete("git", &ctx));
+        assert!(!line_looks_complete("docker ps -", &ctx));
+        assert!(!line_looks_complete("git status --short", &ctx));
+    }
+
+    /// Marker-free lines resolve through the same cascade as `!` lines.
+    #[test]
+    fn bare_lines_resolve_through_the_cascade() {
+        let history = history(&[("git status", "/repo")]);
+        let cwd = std::path::PathBuf::from("/repo");
+        let ctx = ContextCache::default();
+        let bins = vec!["git".to_string(), "gzip".to_string()];
+        assert_eq!(
+            suggest_shell("git sta", &history, &cwd, &bins, &ctx, |_, _| None),
+            Some("tus".to_string())
+        );
+        assert_eq!(
+            suggest_shell("gzi", &history, &cwd, &bins, &ctx, |_, _| None),
+            Some("p".to_string())
+        );
     }
 }

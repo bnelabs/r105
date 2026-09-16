@@ -184,6 +184,11 @@ struct UiApp {
     pub(crate) ghost_changed_at: Instant,
     pub(crate) ghost_debounce: Duration,
     pub(crate) completion_on: bool,
+    /// Model ghost behind the local cascade: idle-only, debounced,
+    /// one flight per input generation. Toggle with `/completion`.
+    pub(crate) ai_suggest_on: bool,
+    pub(crate) ai_ghost_seq: u64,
+    pub(crate) ai_ghost_pending: Option<String>,
     pub(crate) shell_history: crate::suggest::ShellHistory,
     pub(crate) history_max: usize,
     /// ↑/↓ history walk: `Some(depth)` while a past user message is
@@ -377,6 +382,9 @@ impl UiApp {
             ghost_changed_at: Instant::now(),
             ghost_debounce: Duration::from_millis(config.completion_debounce_ms),
             completion_on: config.completion_enabled,
+            ai_suggest_on: config.ai_suggest,
+            ai_ghost_seq: 0,
+            ai_ghost_pending: None,
             shell_history,
             history_max,
             hist_depth: None,
@@ -631,6 +639,48 @@ impl UiApp {
                         });
                     } else {
                         self.push_system(&format!("Did you mean `!{fixed}`?"));
+                    }
+                }
+                crate::ui::events::UiEvent::LiveValues { key, values, ok } => {
+                    let live = &mut self.ctx_cache.live;
+                    live.inflight.remove(&key);
+                    if ok
+                        && matches!(
+                            key.as_str(),
+                            "k8s-ns" | "k8s-pods" | "docker-containers" | "docker-images"
+                        )
+                    {
+                        match key.as_str() {
+                            "k8s-ns" => live.namespaces = values,
+                            "k8s-pods" => live.pods = values,
+                            "docker-containers" => live.containers = values,
+                            "docker-images" => live.images = values,
+                            _ => unreachable!("key allowlisted above"),
+                        }
+                        live.at.insert(key, Instant::now());
+                    } else if !ok {
+                        live.failed_at.insert(key, Instant::now());
+                    }
+                }
+                crate::ui::events::UiEvent::AiGhost {
+                    seq,
+                    for_input,
+                    suffix,
+                } => {
+                    // Stale flights die quietly: a newer keystroke owns
+                    // the composer now, the local cascade wins any race,
+                    // and a dismissal sticks.
+                    let fresh = seq == self.ai_ghost_seq && for_input == self.input;
+                    if seq == self.ai_ghost_seq {
+                        self.ai_ghost_pending = None;
+                    }
+                    if fresh
+                        && self.ghost_text.is_none()
+                        && self.ghost_dismissed.as_deref() != Some(for_input.as_str())
+                        && let Some(suffix) = suffix
+                        && !suffix.is_empty()
+                    {
+                        self.ghost_text = Some(suffix);
                     }
                 }
                 crate::ui::events::UiEvent::ShellDraft(outcome) => match outcome {
@@ -1555,6 +1605,94 @@ mod tests {
         app.ghost_debounce = Duration::ZERO;
         app.tick_ghost();
         assert_eq!(app.ghost_text.as_deref(), Some("in"));
+    }
+
+    /// No marker needed: a plain `git sta` line ghosts like `!git sta`,
+    /// and Tab on a bare command word opens its subcommand menu.
+    #[test]
+    fn marker_free_lines_ghost_and_menu_like_bang_lines() {
+        let (mut app, workspace, _skills) = test_app();
+        let cwd = workspace.path().to_string_lossy().to_string();
+        app.shell_history.record("git status", &cwd);
+        app.ghost_debounce = Duration::ZERO;
+        app.input = "git sta".to_string();
+        app.cursor = app.input.len();
+        app.tick_ghost();
+        assert_eq!(app.ghost_text.as_deref(), Some("tus"));
+        app.input = "git".to_string();
+        app.cursor = app.input.len();
+        assert!(app.sh_tab(), "Tab on a bare command word opens the menu");
+        let items = app.sh_menu_items();
+        assert!(
+            items
+                .iter()
+                .any(|item| item.text == "git status" && item.whole_line),
+            "whole-line subcommand row missing: {items:?}"
+        );
+        app.close_sh_menu();
+        // Prose never starves the mode cycle: Tab stays Tab.
+        app.input = "hello".to_string();
+        app.cursor = app.input.len();
+        assert!(!app.sh_tab());
+    }
+
+    /// Model ghosts land only for the live generation and never clobber
+    /// a local ghost or a dismissal.
+    #[test]
+    fn ai_ghost_applies_only_when_fresh() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.input = "docker ps".to_string();
+        app.cursor = app.input.len();
+        app.ai_ghost_seq = 2;
+        let ghost = |seq, input: &str, suffix: &str| crate::ui::events::UiEvent::AiGhost {
+            seq,
+            for_input: input.to_string(),
+            suffix: Some(suffix.to_string()),
+        };
+        app.tx.send(ghost(1, "docker ps", " -a")).unwrap();
+        app.process_events();
+        assert!(app.ghost_text.is_none(), "stale generation dropped");
+        app.tx.send(ghost(2, "docker ps", " -a")).unwrap();
+        app.process_events();
+        assert_eq!(app.ghost_text.as_deref(), Some(" -a"));
+        // A dismissal owns the input until the next edit.
+        assert!(app.dismiss_ghost());
+        app.tx.send(ghost(2, "docker ps", " -a")).unwrap();
+        app.process_events();
+        assert!(app.ghost_text.is_none());
+        // A local ghost wins any race.
+        app.ai_ghost_seq = 3;
+        app.ghost_text = Some(" --all".to_string());
+        app.tx.send(ghost(3, "docker ps", " -a")).unwrap();
+        app.process_events();
+        assert_eq!(app.ghost_text.as_deref(), Some(" --all"));
+    }
+
+    /// Daemon round-trips land as cache values (or backoff marks); the
+    /// keystroke path only reads them.
+    #[test]
+    fn live_values_events_update_cache() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.tx
+            .send(crate::ui::events::UiEvent::LiveValues {
+                key: "k8s-pods".to_string(),
+                values: vec!["api-0".to_string()],
+                ok: true,
+            })
+            .unwrap();
+        app.process_events();
+        assert_eq!(app.ctx_cache.live.pods, vec!["api-0".to_string()]);
+        assert!(app.ctx_cache.live.at.contains_key("k8s-pods"));
+        app.tx
+            .send(crate::ui::events::UiEvent::LiveValues {
+                key: "docker-images".to_string(),
+                values: Vec::new(),
+                ok: false,
+            })
+            .unwrap();
+        app.process_events();
+        assert!(app.ctx_cache.live.failed_at.contains_key("docker-images"));
+        assert!(!app.ctx_cache.live.inflight.contains("docker-images"));
     }
 
     /// Sidebar tests run against temp session/config dirs: `test_app`

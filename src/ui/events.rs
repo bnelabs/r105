@@ -48,6 +48,21 @@ pub enum UiEvent {
         fixed: String,
         more: Vec<String>,
     },
+    /// A background daemon query finished: store the values (or record
+    /// the failure for backoff) without touching the composer.
+    LiveValues {
+        key: String,
+        values: Vec<String>,
+        ok: bool,
+    },
+    /// A model ghost round-trip finished: `suffix` extends the typed
+    /// shell text (`None` when the model failed, repeated the input, or
+    /// answered prose). Applied only when the composer still matches.
+    AiGhost {
+        seq: u64,
+        for_input: String,
+        suffix: Option<String>,
+    },
     ModelsLoaded {
         backend: Backend,
         models: Vec<ModelInfo>,
