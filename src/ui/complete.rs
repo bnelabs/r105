@@ -295,16 +295,13 @@ impl UiApp {
     }
 
     /// Resolve the composer to bare shell text plus its marker width:
-    /// explicit `!` and `/sh ` lines first, then marker-free lines that
-    /// read as shell (`git status` completes like `!git status`). `/`
-    /// commands, `#` routes, `@` refs, and multiline drafts never
-    /// qualify — their own menus own those keystrokes.
+    /// explicit `!` lines first, then marker-free lines that read as
+    /// shell (`git status` completes like `!git status`). `/` commands,
+    /// `#` drafts, `@` refs, and multiline input never qualify — their
+    /// own menus own those keystrokes.
     pub(crate) fn shell_line(&self) -> Option<(usize, String)> {
         if self.input.contains('\n') || self.at_token().is_some() {
             return None;
-        }
-        if let Some(rest) = self.input.strip_prefix("/sh ") {
-            return (!rest.trim().is_empty()).then(|| (4, rest.to_string()));
         }
         if let Some(rest) = self.input.strip_prefix('!') {
             return (!rest.trim().is_empty()).then(|| (1, rest.to_string()));
@@ -427,9 +424,9 @@ impl UiApp {
         true
     }
 
-    /// Swap one candidate into the composer, keeping any `!`/`/sh `
-    /// marker (marker-free lines swap in place). False when the input
-    /// stopped being a shell line.
+    /// Swap one candidate into the composer, keeping any `!` marker
+    /// (marker-free lines swap in place). False when the input stopped
+    /// being a shell line.
     pub(crate) fn apply_sh_pick(&mut self, pick: &crate::suggest::ShellCandidate) -> bool {
         let Some((marker_len, prefix)) = self.shell_line() else {
             return false;

@@ -404,11 +404,11 @@ pub(crate) fn rerun_target(history: &[Message], arg: Option<usize>) -> Result<St
             .rev()
             .find(|message| message.role == "user")
             .map(|message| message.content.clone())
-            .ok_or_else(|| "No user prompt in the transcript yet".to_string()),
+            .ok_or_else(|| "No user prompt yet".to_string()),
     }
 }
 
-/// Reduce a `/sh` model reply to one runnable line: drop ```` ``` ````
+/// Reduce a `#` model reply to one runnable line: drop ```` ``` ````
 /// fences, skip blanks, strip a leading `$ ` prompt echo. `None` when
 /// nothing usable remains.
 pub(crate) fn clean_shell_draft(output: &str) -> Option<String> {

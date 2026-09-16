@@ -37,8 +37,8 @@ pub enum UiEvent {
         summary: String,
         recent: Vec<Message>,
     },
-    /// A `/sh` draft round-trip finished: prefill the composer with the
-    /// proposed `!command` (`Ok`) or report why drafting failed (`Err`).
+    /// A `#` draft round-trip finished: fill the composer with the
+    /// proposed command (`Ok`) or report why drafting failed (`Err`).
     ShellDraft(Result<String, String>),
     /// A `!` shell line failed and local rules proposed fixes: the best
     /// plus up to two alternates. The UI offers the best without

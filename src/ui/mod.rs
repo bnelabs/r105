@@ -58,6 +58,7 @@ mod ghost;
 mod input;
 mod render;
 mod sidebar;
+mod tabs;
 mod transcript;
 
 pub(crate) use approve::*;
@@ -140,6 +141,11 @@ struct UiApp {
     /// (fork sources and checkpoint parents). Forks leave it alone: you
     /// keep working here, the copy points back at you.
     pub(crate) current_session: Option<String>,
+    /// Session-backed tabs (Warp-style): each tab is a saved session the
+    /// bar can switch to; switching autosaves the live session first.
+    pub(crate) tabs: Vec<tabs::Tab>,
+    pub(crate) active_tab: usize,
+    pub(crate) last_tab_rect: Rect,
     /// Next lazy transcript message number (`m<N>` IDs are assigned on
     /// first render so undo/redo/compact never shift section identity).
     pub(crate) next_msg_id: u64,
@@ -360,6 +366,12 @@ impl UiApp {
             recent_commands: VecDeque::new(),
             compact_backup: None,
             current_session: None,
+            tabs: vec![tabs::Tab {
+                session: None,
+                title: "session".into(),
+            }],
+            active_tab: 0,
+            last_tab_rect: Rect::default(),
             next_msg_id: 0,
             section_state: HashMap::new(),
             section_order: Vec::new(),
@@ -437,6 +449,7 @@ impl UiApp {
         };
         app.sync_mode_from_state();
         app.load_recent_workspaces();
+        app.load_tabs();
         app
     }
 
@@ -685,13 +698,13 @@ impl UiApp {
                 }
                 crate::ui::events::UiEvent::ShellDraft(outcome) => match outcome {
                     Ok(command) if self.input.is_empty() => {
-                        self.input = format!("!{command}");
+                        self.input = command;
                         self.cursor = self.input.len();
                         self.status = "Review — Enter runs · Esc clears".into();
                     }
                     Ok(command) => {
-                        self.push_system(&format!("Composer busy — run with !:\n{command}"));
-                        self.set_ok("Saved to transcript".into());
+                        self.push_system(&format!("Composer busy — run it when ready:\n{command}"));
+                        self.set_ok("Saved to session".into());
                     }
                     Err(error) => self.set_error(error),
                 },
@@ -1027,7 +1040,9 @@ mod tests {
 
     /// A live `UiApp` without I/O: the backend points at a closed
     /// loopback port (never dialed in these tests), the workspace and
-    /// skills live in temp dirs, and config discovery only reads env.
+    /// skills live in temp dirs, and the config dir is a process-local
+    /// temp path so tests never read or write the real user config
+    /// (shell history, recents, tabs).
     fn test_app() -> (UiApp, tempfile::TempDir, tempfile::TempDir) {
         let workspace = tempfile::TempDir::new().expect("workspace");
         let skills = tempfile::TempDir::new().expect("skills");
@@ -1035,7 +1050,10 @@ mod tests {
             skills_dir: skills.path().to_path_buf(),
             ..Config::default()
         };
-        let paths = ConfigPaths::discover();
+        let mut paths = ConfigPaths::discover();
+        paths.config_dir = std::env::temp_dir().join(format!("r105-tests-{}", std::process::id()));
+        paths.sessions_dir = paths.config_dir.join("sessions");
+        let _ = std::fs::create_dir_all(&paths.config_dir);
         let state = ChatState::from_config(&config, workspace.path().to_path_buf());
         let connection = provider::resolve_connection(None, None, Some("http://127.0.0.1:9"));
         let backend = Backend::new(connection, 5).expect("backend");
@@ -1269,7 +1287,7 @@ mod tests {
         let (mut app, _workspace, _skills) = test_app();
         let joined = render_lines(&mut app, 80, 24).join("\n");
         assert!(
-            joined.contains("Prompt · shell Enter runs"),
+            joined.contains("Ask anything · shell runs"),
             "idle hint missing:\n{joined}"
         );
         assert!(app.input.is_empty());
@@ -1890,6 +1908,93 @@ mod tests {
         assert!(app.current_session.is_none());
     }
 
+    /// Tabs are session-backed: new stashes the live session, switching
+    /// reloads each tab's transcript, closing falls back to its neighbor.
+    #[test]
+    fn tabs_new_switch_close_roundtrip() {
+        let (mut app, _workspace, _skills, _dirs) = sidebar_app();
+        app.state.history.push(Message::user("first"));
+        crate::session::save(&app.paths, "alpha", &app.state).unwrap();
+        app.current_session = Some("alpha".into());
+        app.tab_new();
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab, 1);
+        assert!(app.state.history.is_empty(), "new tab starts fresh");
+        assert_eq!(app.tabs[0].session.as_deref(), Some("alpha"));
+        app.state.history.push(Message::user("second"));
+        crate::session::save(&app.paths, "beta", &app.state).unwrap();
+        app.current_session = Some("beta".into());
+        // Switching back reloads the first tab's transcript.
+        app.tab_switch(0);
+        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.current_session.as_deref(), Some("alpha"));
+        assert_eq!(app.state.history.len(), 1);
+        assert_eq!(app.state.history[0].content, "first");
+        // Cycle forward and close the second tab.
+        app.tab_next(true);
+        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.current_session.as_deref(), Some("beta"));
+        app.tab_close();
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.current_session.as_deref(), Some("alpha"));
+        assert_eq!(app.state.history[0].content, "first");
+        // The last tab never closes.
+        app.tab_close();
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    /// Tab keys: Ctrl+Shift+T/W, Ctrl+Tab, Alt+1..9; clicks resolve
+    /// against the drawn bar.
+    #[tokio::test]
+    async fn tab_keys_and_click_map_to_tabs() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _workspace, _skills, _dirs) = sidebar_app();
+        let ctrl_shift = |code: char| {
+            KeyEvent::new(
+                KeyCode::Char(code),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            )
+        };
+        app.handle_key(ctrl_shift('T')).await.unwrap();
+        assert_eq!(app.tabs.len(), 2);
+        let ctrl_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL);
+        app.handle_key(ctrl_tab).await.unwrap();
+        assert_eq!(app.active_tab, 0);
+        app.handle_key(ctrl_tab).await.unwrap();
+        assert_eq!(app.active_tab, 1);
+        let alt_one = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT);
+        app.handle_key(alt_one).await.unwrap();
+        assert_eq!(app.active_tab, 0);
+        // Bar geometry: ` r105 ` (6 cells), then ` 1 label ` chips.
+        app.current_session = Some("alpha".into());
+        app.last_tab_rect = Rect::new(0, 0, 80, 1);
+        assert_eq!(app.tab_hit(8, 0), Some(0));
+        assert_eq!(app.tab_hit(18, 0), Some(1));
+        assert_eq!(app.tab_hit(2, 0), None);
+        // The `+` chip opens a tab on click.
+        let plus_col = (0..60)
+            .find(|column| app.tab_plus_hit(*column, 0))
+            .expect("plus cell");
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: plus_col,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.tabs.len(), 3, "click on + opens a tab");
+        app.handle_key(ctrl_shift('W')).await.unwrap();
+        app.handle_key(ctrl_shift('W')).await.unwrap();
+        assert_eq!(app.tabs.len(), 1);
+        // Plain Ctrl+W still deletes a word.
+        app.input = "one two".into();
+        app.cursor = app.input.len();
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        app.handle_key(ctrl_w).await.unwrap();
+        assert_eq!(app.input, "one ");
+    }
+
     #[test]
     fn recent_workspaces_pin_live_and_persist() {
         let (mut app, workspace, _skills, _dirs) = sidebar_app();
@@ -2318,31 +2423,23 @@ mod tests {
         assert_eq!(info.parent, None);
     }
 
-    #[test]
-    fn hash_prefix_prefills_shell_for_ls() {
+    /// `#` is natural-language command search: the composer clears and a
+    /// command draft is requested; a bare `#` teaches the usage.
+    #[tokio::test]
+    async fn hash_describes_a_command_draft() {
         let (mut app, _workspace, _skills) = test_app();
-        app.submit_classified("ls -la".to_string());
-        assert_eq!(app.input, "!ls -la");
+        app.input = "#list large files".to_string();
+        app.submit().await.unwrap();
+        assert!(app.input.is_empty());
+        assert!(app.status.contains("Drafting"), "status: {}", app.status);
+        app.input = "#".to_string();
+        app.submit().await.unwrap();
+        assert!(app.input.is_empty());
         assert!(
-            app.status.contains("Looks like shell"),
+            app.status.contains("describe what you want"),
             "status: {}",
             app.status
         );
-        app.submit_classified("tests".to_string());
-        assert_eq!(app.input, "tests");
-        assert!(app.status.contains("Ambiguous"), "status: {}", app.status);
-        app.submit_classified(String::new());
-        assert!(app.input.is_empty());
-    }
-
-    #[tokio::test]
-    async fn hash_prefix_submits_question_to_agent() {
-        let (mut app, _workspace, _skills) = test_app();
-        app.input = "#what is this?".to_string();
-        app.submit_classified("what is this?".to_string());
-        // The prompt left the composer for the (test-backend) request path.
-        assert!(app.input.is_empty());
-        assert!(app.busy);
     }
 
     #[test]
@@ -2683,13 +2780,5 @@ mod tests {
             .clone();
         assert!(content.contains("Saved workflows"), "{content}");
         assert!(content.contains("/review"), "{content}");
-    }
-
-    #[test]
-    fn hash_bang_usage_hint_without_goal() {
-        let (mut app, _workspace, _skills) = test_app();
-        app.submit_classified("!".to_string());
-        assert!(app.input.is_empty());
-        assert!(app.status.contains("#!"), "status: {}", app.status);
     }
 }

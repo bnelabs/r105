@@ -10,16 +10,13 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Whether the composer text qualifies for ghost completion; returns
-/// the model prefix (`!` and `/sh ` markers strip to the raw command).
+/// the model prefix (the `!` marker strips to the raw command).
 /// Single-line shell drafts only. The UI resolves markers through
 /// `shell_line` now; this stays as the tested marker contract.
 #[cfg(test)]
 pub fn ghost_prefix(input: &str) -> Option<String> {
     if input.len() < 3 {
         return None;
-    }
-    if let Some(rest) = input.strip_prefix("/sh ") {
-        return (!rest.trim().is_empty()).then(|| rest.to_string());
     }
     if let Some(rest) = input.strip_prefix('!') {
         return (!rest.trim().is_empty()).then(|| rest.to_string());
@@ -28,7 +25,7 @@ pub fn ghost_prefix(input: &str) -> Option<String> {
 }
 
 /// Bare-line shell detection: does this composer line read as a shell
-/// command without any `!` or `/sh ` marker? A fully typed command
+/// command without any `!` marker? A fully typed command
 /// word (spec, builtin, curated one-off, alias) qualifies — with or
 /// without arguments. A lone partial word qualifies only for the
 /// curated sets at 3+ characters, so ordinary prose never flashes
@@ -258,8 +255,8 @@ pub fn suggest_shell(
     path_guess(line, cwd, score)
 }
 
-/// Marker-gated cascade (`!`, `/sh `): the historical entry point,
-/// kept as the tested wrapper over `suggest_shell`.
+/// Marker-gated cascade (`!`): the historical entry point, kept as the
+/// tested wrapper over `suggest_shell`.
 #[cfg(test)]
 pub fn suggest(
     input: &str,
@@ -3570,14 +3567,13 @@ mod tests {
         assert_eq!(path_guess("ls", directory.path(), score), None);
     }
 
-    /// Trigger shape: `!` and `/sh ` shell lines of length ≥ 3 only.
+    /// Trigger shape: `!` shell lines of length ≥ 3 only.
     #[test]
     fn ghost_trigger_shape() {
         assert_eq!(ghost_prefix("!git sta"), Some("git sta".to_string()));
-        assert_eq!(ghost_prefix("/sh git sta"), Some("git sta".to_string()));
         assert_eq!(ghost_prefix("!ls"), Some("ls".to_string()));
         assert_eq!(ghost_prefix("!l"), None);
-        assert_eq!(ghost_prefix("/sh"), None);
+        assert_eq!(ghost_prefix("/sh git sta"), None);
         assert_eq!(ghost_prefix("hello world"), None);
         assert_eq!(ghost_prefix(""), None);
     }

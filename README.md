@@ -1,6 +1,6 @@
 # r105 — Beyond the prompt
 
-r105 is a local first AI harness for terminal work. It connects to local or cloud OpenAI compatible backends, keeps the transcript and sessions on your machine, and gives the model bounded tools for files, calculations, web research, and native Rust execution.
+r105 is a local first AI harness for terminal work. It connects to local or cloud OpenAI compatible backends, keeps your sessions on your machine, and gives the model bounded tools for files, calculations, web research, and native Rust execution.
 
 The application is written in Rust. Installed builds are single native executables and do not require Python, Node.js, or a runtime virtual environment.
 
@@ -194,35 +194,36 @@ In the TUI, open `/connect` and choose `llama.cpp`. The menu asks for the base U
 
 ## TUI workflow
 
-The redesigned TUI keeps the current task visible and moves setup into focused overlays.
+The TUI keeps the current task visible, moves setup into focused
+overlays, and renders borderless: a tab bar, the conversation, and the
+composer.
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│ r105 AI harness · mode · provider · model                │
-├──────────────────────────────────────────────────────────┤
-│                                                          │
-│                       transcript                        │
-│                                                          │
-├──────────────────────────────────────────────────────────┤
-│ / command palette or the persistent composer             │
-├──────────────────────────────────────────────────────────┤
-│ > write the next prompt                                  │
-├──────────────────────────────────────────────────────────┤
-│ status · context bar · mode hint                         │
-└──────────────────────────────────────────────────────────┘
+ r105  1 night-run  2 parallel  +     build · llamacpp · model
+─ USER #1 ─
+  list the rust files
+
+─ ASSISTANT #2 ─
+  Sure — here they are.
+
+──────────────────────── Shell · Enter runs
+> git checkout main▌
+ Ready  ↑1.2k ↓380  ⎇main
+ ~/r105-workspace · nsjail  context ██░░ 34% 12k/32k
 ```
 
+- Tabs are session-backed (Warp-style): Ctrl+Shift+T opens one on a fresh session, Ctrl+Shift+W closes it, Ctrl+Tab cycles, Alt+1..9 selects, and clicking the bar works too. Switching autosaves the live session first; the bar persists across restarts in `tabs.json`.
 - Type / or press Ctrl+P to open the action palette (`*` marks saved workflows from Markdown files). Click a row to pick it; click again to fill it in.
-- Press Ctrl+B for the session pane: a left column listing saved sessions (`●` marks the loaded one) and recent workspaces with the live one pinned first. ↑↓ move, Enter opens (`+ New session` starts fresh), `d` deletes a saved file, typing filters, click selects (click again opens), wheel scrolls, Esc returns to the composer. Switching sessions or starting fresh autosaves the live transcript first, so the pane never discards work; `/session` and `/workspace` stay for everything scripted.
+- Press Ctrl+B for the session pane: a left column listing saved sessions (`●` marks the loaded one) and recent workspaces with the live one pinned first. ↑↓ move, Enter opens (`+ New session` starts fresh), `d` deletes a saved file, typing filters, click selects (click again opens), wheel scrolls, Esc returns to the composer. Switching sessions or starting fresh autosaves the live session first, so the pane never discards work; `/session` and `/workspace` stay for everything scripted.
 - After a space, `/command <Tab>` completes argument values (models, themes, skill and session names, …); unknown commands suggest the closest match.
-- /sh turns plain words into a shell command draft for review — Enter runs it, nothing executes unseen. #! does the same from the composer (e.g. `#! list large files`).
+- `#` turns plain words into a shell command draft for review (e.g. `# list large files`) — Enter runs it, nothing executes unseen.
 - Up and Down keep the selected command inside the visible palette window, including when the list is taller than the terminal.
 - /connect and /models use scrollable provider and model pickers.
 - Tab cycles through build, plan, and ask modes. Modes are enforced:
   plan allows reads and web research but refuses writes and execution,
   ask answers without tools; the session file remembers the mode.
 - Type a shell command and pause: the cascade suggests the rest
-  dimmed, no `!` or `/sh` marker needed. Shell-history frequency comes
+  dimmed. Shell-history frequency comes
   first (same-directory runs win), context-aware arguments second
   (`git checkout` offers branches, `npm run` offers scripts, `make`
   offers targets, `ssh` offers hosts, `kubectl get` offers resource
@@ -236,11 +237,11 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
   (commands cyan, flags yellow, strings green, operators magenta),
   keeps a visible cursor cell, and titles itself `Shell · Enter runs`
   when the line will execute.
-- Enter on a shell-looking line runs it, Warp-style: `git status`
-  executes without a `!`. Prose and questions still go to the model
-  (a trailing `?` is the sure way to ask), `#` forces the router, and
-  `cd <dir>` retargets the workspace like a terminal. `!` and `/sh `
-  remain for explicit execution and drafting.
+- Enter on a shell-looking line runs it: `git status` executes
+  without any marker. Prose and questions still go to the model (a
+  trailing `?` is the sure way to ask), `!` forces execution for lines
+  the detector reads as prose, `# <goal>` drafts a command, and
+  `cd <dir>` retargets the workspace like a terminal.
 - When nothing local extends a shell line and the composer sits idle,
   the active model may propose the rest (`ai_suggest` in config, or
   `/completion ai off`, disables it). Idle-only, debounced, one flight
@@ -255,12 +256,12 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 - A failed `!` line offers fixes when local rules match (mistyped
   command, git subcommand/branch/flag, missing upstream, `chmod +x`,
   mistyped path): `Did you mean ...?` — → applies the best into the
-  empty composer, alternates list in the transcript, any edit drops it.
+  empty composer, alternates list in the session view, any edit drops it.
 - Up and Down at an empty-argument composer walk earlier user turns like
   a shell: first Up stashes the live draft, Down past the newest
   restores it, Esc restores, any edit adopts. The composer title shows
   the walk while it is active.
-- Every transcript message is a grouped block (`#n` in its header,
+- Every message is a grouped block (`#n` in its header,
   ✓/✗ on tool results): click a block header to collapse it,
   Alt+Up/Down jumps between blocks, `/filter <n> <pattern>` narrows
   long output (`--regex`, `--case`, `--invert`, `--context N`, clear
@@ -276,7 +277,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
   other section.
 - Type @ to fuzzy-complete a workspace file; Tab accepts, Enter sends with the file attached as context.
 - Start a line with ! to run a shell command in the sandbox; its output joins the conversation context.
-- Start a line with # to route it first: shell one-liners are prefilled after ! for review, `#! <goal>` drafts a command from plain words, agent prompts are sent as-is, ambiguous input stays editable with a hint. Nothing executes unseen.
+- Start a line with # to describe what you want to do: the model drafts one shell command into the composer for review. Nothing executes unseen.
 - The composer edits like a small IDE input: click to place the cursor, brackets and quotes close themselves, Ctrl+Left/Right (or Alt+F/B) jumps by word, Ctrl+A/E jumps to line ends, Ctrl+W/U/K deletes a word to the line start/end.
 - Enter while a request is active steers it (the new prompt jumps the queue); Alt+Enter while busy queues a follow-up instead.
 - Esc or Ctrl+X cancels the current request or local tool batch.
@@ -285,7 +286,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 - PageUp and PageDown scroll a full page; Alt+Up/Down jumps between blocks.
 - Saved workflows are Markdown files (`/workflows` lists them, `/commands reload` refreshes); run one as `/name [args]` or find it with Ctrl+P.
 - Alt+Enter or Shift+Enter inserts a newline; Enter sends the prompt.
-- Exiting with /exit or Ctrl+C saves an __autosave__ session when the transcript is nonempty.
+- Exiting with /exit or Ctrl+C saves an __autosave__ session when it is nonempty.
 
 ## Slash commands
 
@@ -301,7 +302,7 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /profile [name|auto] | Set or clear the llama-router profile |
 | /build, /plan, /ask | Switch working mode (enforced, persisted) |
 | /completion [status\|clear\|ai on\|ai off] | Suggestion status; clear history; model ghost toggle |
-| /history | Show a transcript preview |
+| /history | Show a session preview |
 | /skills | List Markdown skills |
 | /skill use <name> [key=value] | Activate a skill |
 | /skill show <name> | Display a skill |
@@ -314,10 +315,10 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /max [tokens] | Set or clear the completion token limit |
 | /cache-prompt [on|off] | Toggle llama.cpp prompt prefix caching |
 | /config show|reload | Inspect or reload configuration |
-| /clear | Clear the transcript |
+| /clear | Clear the visible session |
 | /workspace [path] | Show or change the workspace |
 | /session save|load|list|search|delete|diff|fork|tree | Manage local sessions |
-| /export markdown|text|json|html|pdf [path] | Export the transcript |
+| /export markdown|text|json|html|pdf [path] | Export the session |
 | /mcp list|tools|reconnect [server] | Inspect or rediscover MCP tools |
 | /plugin list|reload | Inspect native executable plugins |
 | /theme [name] | Show or switch the theme |
@@ -328,7 +329,6 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /mouse [on|off] | Toggle mouse capture |
 | /commands [reload] | List saved workflows |
 | /workflows [reload] | List saved reusable workflows |
-| /sh <request> | Draft a shell command from plain words |
 | /settings | Change theme, permissions, reasoning, and toggles |
 | /editor | Compose the prompt in $EDITOR |
 | /permissions [posture] | Set the local tool permission posture |
@@ -336,15 +336,15 @@ The redesigned TUI keeps the current task visible and moves setup into focused o
 | /map | Show a compact workspace map |
 | /diff | Show the Git workspace diff |
 | /copy [n] | Copy the last response or its nth code block |
-| /copy out [n] | Copy a transcript block (filtered view when filtered) |
+| /copy out [n] | Copy a block (filtered view when filtered) |
 | /filter <block> <pattern> | Narrow one block's output (regex/case/invert/context flags) |
-| /block [n] | List transcript blocks or describe one |
+| /block [n] | List blocks or describe one |
 | /rerun [n] | Resubmit an earlier prompt or `!` shell line |
 | /tasks | Show active and queued work |
 | /retry | Retry the last failed prompt |
 | /undo | Remove the last exchange and restore its prompt |
 | /redo | Re-apply the last undone exchange |
-| /expand [n\|#block\|all\|none] | Expand or collapse transcript sections |
+| /expand [n\|#block\|all\|none] | Expand or collapse sections |
 | /rewind [n] | Restore an earlier checkpoint (current work is backed up first) |
 | /exit | Save autosave and quit |
 
@@ -607,7 +607,7 @@ src/
 ├── session.rs   versioned atomic persistence
 ├── sse.rs       streaming parser and tool call accumulator
 ├── tool.rs      native tools and bounded expression parser
-└── ui/          Ratatui harness UI (app, input, commands, completion, transcript, render)
+└── ui/          Ratatui harness UI (app, input, tabs, commands, completion, render)
 ```
 
 Run the checks before a change:

@@ -38,8 +38,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input, and `/` commands keep their existing paths.
 - Composer polish: shell lines color as you type (command cyan, flags
   yellow, quoted strings green, operators magenta), a reversed cursor
-  cell shows the caret, and the block title reads `Shell · Enter runs`
+  cell shows the caret, and the composer announces `Shell · Enter runs`
   whenever the line would execute.
+- Tabs: session-backed tabs in a top bar (Ctrl+Shift+T new,
+  Ctrl+Shift+W close, Ctrl+Tab / Ctrl+Shift+Tab cycle, Alt+1..9
+  select, click to switch). Switching autosaves the live session
+  first, so a tab never drops work; the bar persists to `tabs.json`
+  and restores on startup.
+- Natural-language command search on `#`: describe what you want
+  (`# list large files`) and the model drafts one shell command into
+  the composer for review.
+
+### Changed
+- Lighter, airier layout: a one-row tab bar replaces the two-row
+  header, the composer lost its box for a hairline rule, the
+  conversation dropped its side rails and block rules for blank
+  spacing, and the footer carries the workspace, sandbox, and context
+  bar with tool, permission, and key hints close at hand.
+- The session view is no longer called a transcript anywhere in the
+  UI, help, or docs; user-facing copy says session, block, or output.
+- `/sh` and `#!` are gone. Completion needs no marker, Enter runs
+  shell-looking lines, and `#` is the natural-language entry point.
 
 ## [2.2.0] — 2026-09-16
 

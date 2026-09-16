@@ -43,7 +43,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/history",
         usage: "/history",
-        description: "show a transcript preview",
+        description: "show a session preview",
     },
     CommandSpec {
         name: "/connect",
@@ -118,12 +118,12 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/filter",
         usage: "/filter <block> <pattern> [--regex] [--case] [--invert] [--context N]",
-        description: "filter a transcript block by text",
+        description: "filter a block by text",
     },
     CommandSpec {
         name: "/block",
         usage: "/block <block>",
-        description: "show transcript block details",
+        description: "show block details",
     },
     CommandSpec {
         name: "/rerun",
@@ -163,7 +163,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/clear",
         usage: "/clear",
-        description: "clear the visible transcript",
+        description: "clear the visible session",
     },
     CommandSpec {
         name: "/diff",
@@ -188,7 +188,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/export",
         usage: "/export <markdown|text|json|html> [path]",
-        description: "export the transcript",
+        description: "export the session",
     },
     CommandSpec {
         name: "/mcp",
@@ -258,7 +258,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/expand",
         usage: "/expand [n|all|none]",
-        description: "expand or collapse one transcript section",
+        description: "expand or collapse one section",
     },
     CommandSpec {
         name: "/editor",
@@ -284,11 +284,6 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "/commands",
         usage: "/commands [reload]",
         description: "list saved workflows",
-    },
-    CommandSpec {
-        name: "/sh",
-        usage: "/sh <request>",
-        description: "draft a shell command from plain words",
     },
     CommandSpec {
         name: "/mouse",
@@ -460,17 +455,6 @@ pub fn static_arg_values(name: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-/// Routing verdict for `#`-prefixed input. Cheap gates only — keyword
-/// lists, a shell-syntax scan, one installed-binary probe — so the
-/// common cases never cost a model round trip. Misclassification is
-/// cheap by design: Shell only prefills `!` for confirmation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Route {
-    Shell,
-    Agent,
-    Ambiguous,
-}
-
 /// First tokens that are always shell invocations, never prose.
 /// Shared with the suggestion layer's marker-free shell detection.
 pub(crate) const SHELL_ONE_OFFS: &[&str] = &[
@@ -572,35 +556,6 @@ pub(crate) fn has_shell_syntax(text: &str) -> bool {
         || text.contains("||")
 }
 
-pub fn classify_input(text: &str) -> Route {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Route::Ambiguous;
-    }
-    if has_shell_syntax(trimmed) {
-        return Route::Shell;
-    }
-    let mut words = trimmed.split_whitespace();
-    let first = words.next().unwrap_or_default();
-    let single = words.next().is_none();
-    if first.starts_with("./") || first.starts_with('/') || first.starts_with("~/") {
-        return Route::Shell;
-    }
-    if SHELL_ONE_OFFS.contains(&first.to_ascii_lowercase().as_str()) {
-        return Route::Shell;
-    }
-    // An installed binary as the only word is an invocation, not prose
-    // ("vim"). Multi-word input skips this probe: /usr/bin/write exists,
-    // but "write a test" is still a prompt.
-    if single && which::which(first).is_ok() {
-        return Route::Shell;
-    }
-    if trimmed.ends_with('?') || !single {
-        return Route::Agent;
-    }
-    Route::Ambiguous
-}
-
 fn fuzzy_score(candidate: &str, query: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
@@ -693,7 +648,6 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     (
         "Ask & answer",
         &[
-            "/sh",
             "/retry",
             "/tasks",
             "/thinking",
@@ -724,7 +678,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "Transcript",
+        "Session & blocks",
         &[
             "/clear", "/compact", "/tokens", "/undo", "/redo", "/rewind", "/expand", "/export",
             "/filter", "/block", "/rerun", "/session",
@@ -775,7 +729,7 @@ pub fn help_text_with(customs: &[crate::custom::CustomCommand]) -> String {
         }
     }
     output.push_str(
-        "Keys\n  Enter send · Alt/Shift+Enter newline · Tab complete · Esc dismiss/cancel · ↑↓ history/pick · PgUp/PgDn scroll · Ctrl+Home/End top/latest\n  Ctrl+C quit · Ctrl+X cancel · Ctrl+P palette · Ctrl+B sessions · Ctrl+O details · Ctrl+T tasks · Ctrl+R history · y/a/n approve card · @file attach · !cmd run · /sh draft · #! describe\n\nTip: /help <command> shows one command.\n",
+        "Keys\n  Enter send · Alt/Shift+Enter newline · Tab complete · Esc dismiss/cancel · ↑↓ history/pick · PgUp/PgDn scroll · Ctrl+Home/End top/latest\n  Ctrl+C quit · Ctrl+X cancel · Ctrl+P palette · Ctrl+B sessions · Ctrl+O details · Ctrl+T tasks · Ctrl+R history · y/a/n approve card · @file attach · !cmd run · # describe\n\nTip: /help <command> shows one command.\n",
     );
     output
 }
@@ -836,7 +790,7 @@ mod tests {
             "Modes & guardrails",
             "Ask & answer",
             "Files & context",
-            "Transcript",
+            "Session & blocks",
             "Providers & plugins",
         ] {
             assert!(help.contains(header), "missing group {header}");
@@ -880,31 +834,6 @@ mod tests {
         ] {
             assert!(command(name).is_some(), "{name} is registered");
         }
-    }
-
-    #[test]
-    fn classify_routes_shell_agent_ambiguous() {
-        use super::{Route, classify_input};
-
-        // One-off binaries and shell syntax route to shell.
-        assert_eq!(classify_input("ls -la"), Route::Shell);
-        assert_eq!(classify_input("git status"), Route::Shell);
-        assert_eq!(classify_input("cat foo | grep bar"), Route::Shell);
-        assert_eq!(classify_input("echo hi && echo bye"), Route::Shell);
-        assert_eq!(classify_input("./run.sh --fast"), Route::Shell);
-        assert_eq!(classify_input("/usr/bin/env"), Route::Shell);
-        // Prose (especially questions) routes to the agent, even when a
-        // system binary shares the first word (/usr/bin/write exists).
-        assert_eq!(
-            classify_input("what is the capital of France?"),
-            Route::Agent
-        );
-        assert_eq!(classify_input("write a test for the parser"), Route::Agent);
-        assert_eq!(classify_input("refactor this function"), Route::Agent);
-        // A lone unknown word and blanks stay ambiguous.
-        assert_eq!(classify_input("tests"), Route::Ambiguous);
-        assert_eq!(classify_input(""), Route::Ambiguous);
-        assert_eq!(classify_input("   "), Route::Ambiguous);
     }
 
     #[test]
@@ -968,6 +897,6 @@ mod tests {
         );
         assert!(static_arg_values("/theme").is_some());
         assert!(static_arg_values("/max").is_none());
-        assert!(static_arg_values("/sh").is_none());
+        assert!(static_arg_values("/history").is_none());
     }
 }

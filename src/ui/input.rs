@@ -62,6 +62,34 @@ impl UiApp {
             self.handle_overlay_key(key).await?;
             return Ok(());
         }
+        // Tabs (Warp-style): Ctrl+Shift+T new, Ctrl+Shift+W close,
+        // Ctrl+Tab / Ctrl+Shift+Tab cycle, Alt+1..9 select.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
+        {
+            self.tab_new();
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(key.code, KeyCode::Char('w') | KeyCode::Char('W'))
+        {
+            self.tab_close();
+            return Ok(());
+        }
+        if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.tab_next(!key.modifiers.contains(KeyModifiers::SHIFT));
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::ALT)
+            && let KeyCode::Char(digit) = key.code
+            && let Some(index) = digit.to_digit(10)
+            && index >= 1
+        {
+            self.tab_switch(index as usize - 1);
+            return Ok(());
+        }
         if self.action_key("sidebar", &key) {
             self.toggle_sidebar();
             return Ok(());
@@ -536,14 +564,20 @@ impl UiApp {
         self.pending_correction = None;
         self.close_sh_menu();
         self.end_history_walk(true);
-        // `#` asks for cheap local routing before any model call: shell
-        // shapes prefill `!`, agent shapes send, the rest stays editable.
-        // `submit_classified` owns the composer from here on.
-        if let Some(classified) = value.strip_prefix('#') {
-            self.submit_classified(classified.trim().to_string());
+        // `#` is natural language for the shell (Warp's command search):
+        // ask the model for one command and leave it in the composer for
+        // review. Nothing runs until the next Enter.
+        if let Some(goal) = value.strip_prefix('#') {
+            let goal = goal.trim().to_string();
+            self.input.clear();
+            self.cursor = 0;
             self.at_cache_key.clear();
             self.arg_cache_key.clear();
-            self.cursor = self.input.len();
+            if goal.is_empty() {
+                self.set_status("Usage: # describe what you want to do".into());
+                return Ok(());
+            }
+            self.command_shell_draft(&[goal]);
             return Ok(());
         }
         if self.palette_active()
@@ -639,46 +673,6 @@ impl UiApp {
         self.refresh_sidebar();
         self.set_ok(format!("Workspace: {}", self.state.workspace.display()));
         true
-    }
-
-    /// `#`-prefixed input: cheap local routing before any model call.
-    /// Shell-shaped input prefills `!` for one-keystroke confirmation
-    /// (never auto-runs); `#!` drafts a command from plain words via the
-    /// model; agent-shaped input submits directly; ambiguous input stays
-    /// in the composer with a routing hint. Owns the composer: every arm
-    /// leaves `input` in its final state.
-    pub(crate) fn submit_classified(&mut self, text: String) {
-        if text.is_empty() {
-            self.input.clear();
-            self.set_status("Usage: # <text> · #! <goal> drafts a command".into());
-            return;
-        }
-        if let Some(goal) = text.strip_prefix('!') {
-            let goal = goal.trim().to_string();
-            if goal.is_empty() {
-                self.input.clear();
-                self.set_status("Usage: #! <goal> drafts a command".into());
-                return;
-            }
-            self.input.clear();
-            self.cursor = 0;
-            self.command_shell_draft(&[goal]);
-            return;
-        }
-        match command::classify_input(&text) {
-            command::Route::Shell => {
-                self.input = format!("!{text}");
-                self.set_status("Looks like shell — Enter runs · remove ! to ask".into());
-            }
-            command::Route::Agent => {
-                self.input.clear();
-                self.submit_prompt(text);
-            }
-            command::Route::Ambiguous => {
-                self.input = text;
-                self.set_status("Ambiguous — Enter asks · ! runs · #! drafts".into());
-            }
-        }
     }
 
     /// Shared prompt entry: resolves `@file` references into attached
@@ -911,6 +905,14 @@ impl UiApp {
                 }
                 let col = mouse.column;
                 let row = mouse.row;
+                if self.tab_plus_hit(col, row) {
+                    self.tab_new();
+                    return;
+                }
+                if let Some(index) = self.tab_hit(col, row) {
+                    self.tab_switch(index);
+                    return;
+                }
                 if self.sidebar_hit(col, row) {
                     self.sidebar_click(col, row);
                     return;
@@ -1007,9 +1009,11 @@ impl UiApp {
         {
             return false;
         }
-        let inner_w = rect.width.saturating_sub(2).max(1) as usize;
-        let rx = (col.saturating_sub(rect.x).saturating_sub(1)) as usize;
-        let ry = (row.saturating_sub(rect.y).saturating_sub(1)) as usize;
+        // Borderless composer: row 0 is the rule, so the text starts at
+        // column `x` on rows `y + 1` onward.
+        let inner_w = rect.width.max(1) as usize;
+        let rx = col.saturating_sub(rect.x) as usize;
+        let ry = row.saturating_sub(rect.y).saturating_sub(1) as usize;
         // Visual offset of the click inside the wrapped "> input" text.
         let target = ry.saturating_mul(inner_w).saturating_add(rx);
         // Walk the rendered text ("> " prefix + input with wrapping and

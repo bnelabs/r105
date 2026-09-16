@@ -87,9 +87,7 @@ impl UiApp {
                     ) {
                         Ok(name) => Some(name),
                         Err(error) => {
-                            self.set_error(format!(
-                                "Clear backup failed, transcript kept: {error}"
-                            ));
+                            self.set_error(format!("Clear backup failed, session kept: {error}"));
                             return Ok(());
                         }
                     }
@@ -99,8 +97,8 @@ impl UiApp {
                 self.redo_stack.clear();
                 self.prune_sections();
                 self.set_ok(match backup {
-                    Some(name) => format!("Transcript cleared · backup {name}"),
-                    None => "Transcript cleared".to_string(),
+                    Some(name) => format!("Cleared · backup {name}"),
+                    None => "Cleared".to_string(),
                 });
             }
             "/workspace" => self.command_workspace(&parsed.args),
@@ -144,7 +142,6 @@ impl UiApp {
             "/mouse" => self.command_mouse(&parsed.args),
             "/commands" => self.command_custom_commands(&parsed.args),
             "/workflows" => self.command_workflows(&parsed.args),
-            "/sh" => self.command_shell_draft(&parsed.args),
             "/exit" => self.quit = true,
             _ => {
                 if let Some(custom) = self.find_custom_command(&parsed.name) {
@@ -259,15 +256,15 @@ impl UiApp {
         ));
     }
 
-    /// `/sh <plain words>`: ask the model for one shell command and prefill
-    /// the composer with `!<command>` for review. Nothing runs without an
-    /// explicit Enter, so the existing `!` posture gates and sandbox path
-    /// apply unchanged. The draft is a cheap history-free one-shot and never
-    /// touches the transcript or the busy/queue machinery.
+    /// `#<plain words>`: ask the model for one shell command and put it
+    /// in the composer for review. Nothing runs without an explicit
+    /// Enter, and the composer's shell routing plus the sandbox apply
+    /// unchanged. The draft is a cheap history-free one-shot and never
+    /// touches the session or the busy/queue machinery.
     pub(crate) fn command_shell_draft(&mut self, args: &[String]) {
         let request = args.join(" ");
         if request.is_empty() {
-            self.set_status("Usage: /sh <describe the shell command>".into());
+            self.set_status("Usage: # describe the shell command".into());
             return;
         }
         if self.state.permission_posture == "off" {
@@ -309,7 +306,7 @@ impl UiApp {
 
     pub(crate) fn command_history(&mut self) {
         if self.state.history.is_empty() {
-            self.push_system("Transcript is empty");
+            self.push_system("Session is empty");
             return;
         }
         let start = self.state.history.len().saturating_sub(12);
@@ -731,7 +728,7 @@ impl UiApp {
         ) {
             Ok(name) => name,
             Err(error) => {
-                self.set_error(format!("Compact backup failed, transcript kept: {error}"));
+                self.set_error(format!("Compact backup failed, session kept: {error}"));
                 return;
             }
         };
@@ -1304,7 +1301,7 @@ impl UiApp {
             self.set_error(if seen == 0 {
                 "Nothing to rewind".into()
             } else {
-                format!("Only {seen} user turn(s) in the transcript")
+                format!("Only {seen} user turn(s) in the session")
             });
             return;
         };
@@ -1317,7 +1314,7 @@ impl UiApp {
         ) {
             Ok(name) => name,
             Err(error) => {
-                self.set_error(format!("Rewind backup failed, transcript kept: {error}"));
+                self.set_error(format!("Rewind backup failed, session kept: {error}"));
                 return;
             }
         };
@@ -1439,7 +1436,7 @@ impl UiApp {
         const LIST_LIMIT: usize = 40;
         let Some(first) = args.first() else {
             if self.state.history.is_empty() {
-                self.set_status("Transcript is empty".into());
+                self.set_status("Session is empty".into());
                 return;
             }
             let start = self.state.history.len().saturating_sub(LIST_LIMIT);

@@ -49,11 +49,13 @@ impl UiApp {
             );
         }
         let composer_lines = self.input.lines().count().max(1) as u16;
-        let composer_height = (composer_lines + 2).clamp(3, 7);
+        // One rule row carries the shell affordance; the input sits
+        // directly under it, Warp-style, with no box.
+        let composer_height = (composer_lines + 1).clamp(2, 7);
         let chunks = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
             .constraints([
-                Constraint::Length(2),
+                Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(palette_height),
                 Constraint::Length(file_height),
@@ -69,7 +71,7 @@ impl UiApp {
             self.last_palette_rect = None;
         }
         self.last_palette_count = palette.len();
-        self.draw_header(frame, chunks[0]);
+        self.draw_tab_bar(frame, chunks[0]);
         self.draw_transcript(frame, chunks[1]);
         if palette_height > 0 {
             self.draw_palette(frame, chunks[2], &palette);
@@ -95,56 +97,6 @@ impl UiApp {
         self.draw_overlay(frame, area);
     }
 
-    pub(crate) fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
-        let connection = self.backend.connection();
-        let accent = accent_color(&self.state.theme);
-        let title = Line::from(vec![
-            Span::styled(
-                " r105 ",
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "AI harness",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("{} · {}", self.mode.as_str(), connection.display_name()),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw("  "),
-            Span::styled(self.state.model.clone(), Style::default().fg(Color::Green)),
-        ]);
-        let workspace = self.state.workspace.display().to_string();
-        let context = format!(
-            "{} · {} · {} skill{}",
-            workspace,
-            self.sandbox.selected_name(),
-            self.skills_available,
-            if self.skills_available == 1 { "" } else { "s" }
-        );
-        let line = Line::from(vec![
-            Span::raw("  "),
-            Span::styled(context, Style::default().fg(Color::DarkGray)),
-            Span::raw("  "),
-            Span::styled(
-                if self.busy {
-                    "● working"
-                } else {
-                    "○ ready"
-                },
-                Style::default().fg(if self.busy {
-                    Color::Yellow
-                } else {
-                    Color::Green
-                }),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(vec![title, line]), area);
-    }
-
     pub(crate) fn draw_transcript(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.transcript_height = area.height;
         let mut lines: Vec<Line<'static>> = Vec::new();
@@ -162,10 +114,8 @@ impl UiApp {
         for (index, message) in self.state.history.iter().enumerate() {
             let block = index + 1;
             if !lines.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "  ─",
-                    Style::default().fg(Color::DarkGray),
-                )));
+                // A blank row between blocks reads lighter than a rule.
+                lines.push(Line::default());
                 headers.push(None);
             }
             let color = match message.role.as_str() {
@@ -343,12 +293,9 @@ impl UiApp {
             }
         }
         self.last_transcript_scroll = self.transcript_scroll;
-        let block = Block::default()
-            .borders(Borders::LEFT | Borders::RIGHT)
-            .border_style(Style::default().fg(Color::DarkGray));
+        // No side rails: the conversation owns the pane edge to edge.
         frame.render_widget(
             Paragraph::new(lines)
-                .block(block)
                 .wrap(Wrap { trim: false })
                 .scroll((self.transcript_scroll.min(u16::MAX as usize) as u16, 0)),
             area,
@@ -587,21 +534,36 @@ impl UiApp {
         );
     }
 
-    /// Composer with a visible cell cursor and Warp-style shell colors:
-    /// a shell-looking line renders commands cyan, flags yellow, quoted
-    /// strings green, operators magenta, and the block title announces
-    /// that Enter will run it.
+    /// Composer with a visible cell cursor and Warp-style shell colors.
+    /// No box: a dim rule row carries the shell affordance, and the
+    /// input sits directly under it.
     pub(crate) fn draw_composer(&self, frame: &mut Frame<'_>, area: Rect) {
         let shell = self.shell_line();
-        let title = if self.hist_depth.is_some() {
-            " History · Esc restores ".into()
+        let affordance = if self.hist_depth.is_some() {
+            "History · Esc restores".to_string()
         } else if self.busy {
-            format!(" Working · {} queued · Esc stops ", self.queue.len())
+            format!("Working · {} queued · Esc stops", self.queue.len())
         } else if shell.is_some() {
-            " Shell · Enter runs ".into()
+            "Shell · Enter runs".to_string()
         } else {
-            " Message ".into()
+            "Message".to_string()
         };
+        let width = area.width as usize;
+        let label_width = affordance.chars().count() + 1;
+        let rule_len = width.saturating_sub(label_width);
+        let label_style = if shell.is_some() {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let mut rule = vec![Span::styled(
+            "─".repeat(rule_len),
+            Style::default().fg(Color::DarkGray),
+        )];
+        if rule_len > 0 {
+            rule.push(Span::raw(" "));
+        }
+        rule.push(Span::styled(affordance, label_style));
         let mut composer: Vec<Span<'_>> = vec![Span::raw("> ")];
         match &shell {
             Some((marker_len, _)) if *marker_len > 0 && self.cursor >= *marker_len => {
@@ -630,7 +592,7 @@ impl UiApp {
             let hint = if self.busy {
                 "Working — Enter queues · Esc stops"
             } else {
-                "Prompt · shell Enter runs · / act · # route · ↑ recall"
+                "Ask anything · shell runs · Tab completes · # describes · / commands"
             };
             composer.push(Span::styled(
                 hint.to_string(),
@@ -638,9 +600,7 @@ impl UiApp {
             ));
         }
         frame.render_widget(
-            Paragraph::new(Line::from(composer))
-                .block(Block::default().borders(Borders::ALL).title(title))
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(vec![Line::from(rule), Line::from(composer)]).wrap(Wrap { trim: false }),
             area,
         );
     }
@@ -699,8 +659,16 @@ impl UiApp {
         ]);
         let second = Line::from(vec![
             Span::styled(
+                format!(" {}", self.state.workspace.display()),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!(" · {}  ", self.sandbox.selected_name()),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
                 format!(
-                    " context {bar} {:.0}% {}/{}",
+                    "context {bar} {:.0}% {}/{}",
                     percent, usage.used_tokens, usage.context_tokens
                 ),
                 Style::default().fg(if percent > 85.0 {
@@ -711,7 +679,7 @@ impl UiApp {
             ),
             Span::raw("  "),
             Span::styled(
-                "Tab complete · / palette · @ files · ! shell · Ctrl+P · Ctrl+B",
+                "Ctrl+P palette · Ctrl+B sessions · Ctrl+Shift+T tab",
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
