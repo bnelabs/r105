@@ -1039,10 +1039,12 @@ impl UiApp {
                     match candidate.list_models().await {
                         Ok(value) => {
                             let models = extract_models(&value);
+                            let runtime_context = candidate.context_limit().await;
                             let _ = sender.send(
                                 crate::ui::events::UiEvent::ModelsLoaded {
                                     backend: candidate,
                                     models,
+                                    runtime_context,
                                 }
                                 .global(),
                             );
@@ -1079,8 +1081,14 @@ impl UiApp {
                             .at(pane),
                         );
                     } else {
+                        let runtime_context = backend.context_limit().await;
                         let _ = sender.send(
-                            crate::ui::events::UiEvent::ModelsLoaded { backend, models }.global(),
+                            crate::ui::events::UiEvent::ModelsLoaded {
+                                backend,
+                                models,
+                                runtime_context,
+                            }
+                            .global(),
                         );
                     }
                 }
@@ -1090,6 +1098,34 @@ impl UiApp {
                             .at(pane),
                     );
                 }
+            }
+        });
+    }
+
+    /// Best-effort background probe of the configured backend so the
+    /// context budget is right before the first `/models`. Failures are
+    /// silent: the footer keeps the configured default.
+    pub(crate) fn refresh_context(&self) {
+        let backend = self.backend.clone();
+        let sender = self.tx.clone();
+        let pane = self.id;
+        tokio::spawn(async move {
+            let runtime_context = backend.context_limit().await;
+            let contexts = match backend.list_models().await {
+                Ok(value) => extract_models(&value)
+                    .into_iter()
+                    .filter_map(|model| model.context.map(|context| (model.id, context)))
+                    .collect(),
+                Err(_) => std::collections::BTreeMap::new(),
+            };
+            if runtime_context.is_some() || !contexts.is_empty() {
+                let _ = sender.send(
+                    crate::ui::events::UiEvent::ContextObserved {
+                        runtime_context,
+                        contexts,
+                    }
+                    .at(pane),
+                );
             }
         });
     }
@@ -2009,8 +2045,8 @@ pub(crate) fn extract_models(value: &Value) -> Vec<ModelInfo> {
     };
     let mut models: Vec<ModelInfo> = Vec::new();
     for item in items {
-        let (id, status) = match item {
-            Value::String(value) => (Some(value.clone()), None),
+        let (id, status, context) = match item {
+            Value::String(value) => (Some(value.clone()), None, None),
             Value::Object(object) => {
                 let id = object
                     .get("id")
@@ -2026,16 +2062,63 @@ pub(crate) fn extract_models(value: &Value) -> Vec<ModelInfo> {
                         .map(str::to_string),
                     _ => None,
                 });
-                (id, status)
+                (id, status, model_context(object))
             }
-            _ => (None, None),
+            _ => (None, None, None),
         };
         if let Some(id) = id
             && !models.iter().any(|model| model.id == id)
         {
-            models.push(ModelInfo { id, status });
+            models.push(ModelInfo {
+                id,
+                status,
+                context,
+            });
         }
     }
     models.sort_by(|left, right| left.id.cmp(&right.id));
     models
+}
+
+/// Context window from model metadata. Providers disagree on the field
+/// name, so the common shapes are accepted: OpenRouter reports
+/// `context_length` (bare and under `top_provider`), vLLM `max_model_len`,
+/// llama.cpp `meta.n_ctx_train`, and some serve `context_window` or
+/// `n_ctx`. First positive value wins.
+fn model_context(object: &serde_json::Map<String, Value>) -> Option<u64> {
+    const DIRECT: &[&str] = &[
+        "context_length",
+        "context_window",
+        "max_context_length",
+        "max_model_len",
+        "n_ctx",
+        "n_ctx_train",
+    ];
+    const NESTED: &[(&str, &str)] = &[
+        ("meta", "n_ctx"),
+        ("meta", "n_ctx_train"),
+        ("top_provider", "context_length"),
+    ];
+    DIRECT
+        .iter()
+        .find_map(|key| positive_integer(object.get(*key)))
+        .or_else(|| {
+            NESTED.iter().find_map(|(parent, key)| {
+                object
+                    .get(*parent)
+                    .and_then(Value::as_object)
+                    .and_then(|inner| positive_integer(inner.get(*key)))
+            })
+        })
+}
+
+fn positive_integer(value: Option<&Value>) -> Option<u64> {
+    match value? {
+        Value::Number(number) => number
+            .as_u64()
+            .or_else(|| number.as_f64().map(|value| value as u64))
+            .filter(|value| *value > 0),
+        Value::String(text) => text.trim().parse::<u64>().ok().filter(|value| *value > 0),
+        _ => None,
+    }
 }

@@ -198,6 +198,14 @@ pub struct ChatState {
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     #[serde(default)]
     pub model_contexts: std::collections::BTreeMap<String, u64>,
+    /// Context windows published by the provider's model list. Transient:
+    /// refreshed on every `/models` and never written to session files.
+    #[serde(default, skip)]
+    pub provider_contexts: std::collections::BTreeMap<String, u64>,
+    /// Window the loaded local server actually serves (llama.cpp `/props`).
+    /// Transient, like `provider_contexts`.
+    #[serde(default, skip)]
+    pub runtime_context: Option<u64>,
     #[serde(default = "default_context")]
     pub context_tokens: u64,
     #[serde(default)]
@@ -241,6 +249,30 @@ fn default_mode() -> String {
 
 fn default_context() -> u64 {
     DEFAULT_CONTEXT_TOKENS
+}
+
+/// Resolve a model id against a context map. An exact
+/// (case-insensitive) key wins; otherwise the longest key found inside
+/// the id wins, so family keys such as `qwen3` cover tagged builds.
+/// `*` is a catch-all.
+fn mapped_context(map: &std::collections::BTreeMap<String, u64>, model: &str) -> Option<u64> {
+    let model_lower = model.to_ascii_lowercase();
+    let mut family: Option<(usize, u64)> = None;
+    for (key, tokens) in map {
+        if key.is_empty() || key == "*" || *tokens == 0 {
+            continue;
+        }
+        let key_lower = key.to_ascii_lowercase();
+        if model_lower == key_lower {
+            return Some(*tokens);
+        }
+        if model_lower.contains(&key_lower) && family.is_none_or(|(length, _)| key.len() > length) {
+            family = Some((key.len(), *tokens));
+        }
+    }
+    family
+        .map(|(_, tokens)| tokens)
+        .or_else(|| map.get("*").copied().filter(|tokens| *tokens > 0))
 }
 
 fn new_trace_id() -> String {
@@ -298,6 +330,8 @@ impl ChatState {
             active_skills: Vec::new(),
             skill_params: std::collections::BTreeMap::new(),
             model_contexts: config.model_contexts.clone(),
+            provider_contexts: std::collections::BTreeMap::new(),
+            runtime_context: None,
             context_tokens: config.context_tokens.unwrap_or(DEFAULT_CONTEXT_TOKENS),
             history: Vec::new(),
             todos: Vec::new(),
@@ -307,11 +341,31 @@ impl ChatState {
         }
     }
 
+    /// The context budget for the active model. An explicit
+    /// `model_contexts` entry wins, then the window the loaded server
+    /// reports, then the provider's per-model metadata, then the global
+    /// `context_tokens` setting.
+    pub fn max_context_tokens(&self) -> u64 {
+        if let Some(tokens) = mapped_context(&self.model_contexts, &self.model) {
+            return tokens;
+        }
+        if let Some(tokens) = self.runtime_context.filter(|tokens| *tokens > 0) {
+            return tokens;
+        }
+        if let Some(tokens) = mapped_context(&self.provider_contexts, &self.model) {
+            return tokens;
+        }
+        if self.context_tokens > 0 {
+            return self.context_tokens;
+        }
+        DEFAULT_CONTEXT_TOKENS
+    }
+
     pub fn token_usage(&self) -> TokenUsage {
         if let Some(total) = self.last_usage.total_tokens {
             return TokenUsage {
                 used_tokens: total,
-                context_tokens: self.context_tokens,
+                context_tokens: self.max_context_tokens(),
                 source: "backend".to_string(),
                 confidence: 1.0,
             };
@@ -321,7 +375,7 @@ impl ChatState {
         let used = (chars as u64).div_ceil(4);
         TokenUsage {
             used_tokens: used,
-            context_tokens: self.context_tokens,
+            context_tokens: self.max_context_tokens(),
             source: "heuristic".to_string(),
             confidence: if self.history.is_empty() { 1.0 } else { 0.35 },
         }
@@ -404,6 +458,61 @@ mod tests {
                 .iter()
                 .all(|message| !message.content.contains("Mode: plan"))
         );
+    }
+
+    #[test]
+    fn context_budget_resolves_override_runtime_provider_then_global() {
+        let mut state: ChatState = serde_json::from_value(json!({})).unwrap();
+        state.context_tokens = 32_768;
+        assert_eq!(state.max_context_tokens(), 32_768);
+
+        state.model = "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp".into();
+        state
+            .provider_contexts
+            .insert("qwen3.8-27b".into(), 131_072);
+        assert_eq!(state.max_context_tokens(), 131_072);
+
+        state.runtime_context = Some(40_960);
+        assert_eq!(state.max_context_tokens(), 40_960);
+
+        state.model_contexts.insert("qwen3".into(), 65_536);
+        assert_eq!(state.max_context_tokens(), 65_536);
+
+        // Exact keys beat family keys, case-insensitively; `*` catches
+        // models no key names.
+        state
+            .model_contexts
+            .insert("QWEN3.8-27B-GSQ-RCO-IQ3_S-MTP".into(), 8_192);
+        assert_eq!(state.max_context_tokens(), 8_192);
+        state.model = "some-other-model".into();
+        state.runtime_context = None;
+        state.model_contexts.insert("*".into(), 16_384);
+        assert_eq!(state.max_context_tokens(), 16_384);
+    }
+
+    #[test]
+    fn token_usage_uses_the_selected_models_window() {
+        let mut state: ChatState = serde_json::from_value(json!({})).unwrap();
+        state.model = "local".into();
+        state.context_tokens = 262_144;
+        state.runtime_context = Some(8_192);
+        state.history.push(Message::user("hello"));
+        let usage = state.token_usage();
+        assert_eq!(usage.context_tokens, 8_192);
+        assert!(usage.percent() > 0.0);
+    }
+
+    #[test]
+    fn observed_contexts_stay_out_of_serialized_state() {
+        let mut state: ChatState = serde_json::from_value(json!({})).unwrap();
+        state.model_contexts.insert("local".into(), 4_096);
+        state.provider_contexts.insert("local".into(), 8_192);
+        state.runtime_context = Some(8_192);
+        let back: ChatState =
+            serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(back.model_contexts.get("local"), Some(&4_096));
+        assert!(back.provider_contexts.is_empty());
+        assert_eq!(back.runtime_context, None);
     }
 
     #[test]

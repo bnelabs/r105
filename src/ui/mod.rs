@@ -81,6 +81,7 @@ pub async fn run(
     let mouse = config.mouse;
     let mut terminal = setup_terminal(mouse)?;
     let mut app = UiApp::new(backend, state, paths, config);
+    app.refresh_context();
     let result = app.event_loop(&mut terminal).await;
     restore_terminal(&mut terminal)?;
     // The alternate screen is gone here, so the autosave note is visible.
@@ -492,9 +493,18 @@ impl UiApp {
                     self.start_next_queued();
                 }
             }
-            crate::ui::events::UiEvent::ModelsLoaded { backend, models } => {
+            crate::ui::events::UiEvent::ModelsLoaded {
+                backend,
+                models,
+                runtime_context,
+            } => {
                 self.backend = backend;
                 self.pending_connection = None;
+                self.state.runtime_context = runtime_context;
+                self.state.provider_contexts = models
+                    .iter()
+                    .filter_map(|model| model.context.map(|context| (model.id.clone(), context)))
+                    .collect();
                 if models.is_empty() {
                     self.set_status("Connected · no models listed".into());
                     self.persist_connection(None);
@@ -530,6 +540,13 @@ impl UiApp {
                         active,
                     };
                 }
+            }
+            crate::ui::events::UiEvent::ContextObserved {
+                runtime_context,
+                contexts,
+            } => {
+                self.state.runtime_context = runtime_context;
+                self.state.provider_contexts = contexts;
             }
             crate::ui::events::UiEvent::Notice(notice) => self.push_system(&notice),
             crate::ui::events::UiEvent::ShellCorrection {
@@ -2880,14 +2897,83 @@ mod tests {
         let loaded = ModelInfo {
             id: "a".into(),
             status: Some("loaded".into()),
+            context: Some(131_072),
         };
-        assert_eq!(loaded.display("a"), "● a (active) · loaded");
-        assert_eq!(loaded.display("b"), "  a · loaded");
+        assert_eq!(loaded.display("a"), "● a (active) · ctx 128k · loaded");
+        assert_eq!(loaded.display("b"), "  a · ctx 128k · loaded");
         let unknown = ModelInfo {
             id: "a".into(),
             status: None,
+            context: None,
         };
         assert_eq!(unknown.display("b"), "  a");
+    }
+
+    #[test]
+    fn extract_models_reads_context_metadata_across_shapes() {
+        let value = serde_json::json!({
+            "data": [
+                {"id": "openrouter/model", "context_length": 131_072},
+                {"id": "vllm/model", "max_model_len": 40_960},
+                {"id": "llama/local", "meta": {"n_ctx_train": 262_144}},
+                {"id": "nested/ctx", "top_provider": {"context_length": 1_048_576}},
+                {"id": "stringy/model", "context_window": "32768"},
+                {"id": "plain/model"},
+            ]
+        });
+        let context = |id: &str| {
+            extract_models(&value)
+                .into_iter()
+                .find(|model| model.id == id)
+                .and_then(|model| model.context)
+        };
+        assert_eq!(context("openrouter/model"), Some(131_072));
+        assert_eq!(context("vllm/model"), Some(40_960));
+        assert_eq!(context("llama/local"), Some(262_144));
+        assert_eq!(context("nested/ctx"), Some(1_048_576));
+        assert_eq!(context("stringy/model"), Some(32_768));
+        assert_eq!(context("plain/model"), None);
+        // A zero or negative window is metadata noise, not a limit.
+        let zeroed = serde_json::json!({"data": [{"id": "z", "context_length": 0}]});
+        assert_eq!(extract_models(&zeroed)[0].context, None);
+    }
+
+    #[test]
+    fn context_observation_updates_the_budget_without_an_overlay() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.model = "qwen3-27b".into();
+        app.state.context_tokens = 262_144;
+        let mut contexts = std::collections::BTreeMap::new();
+        contexts.insert("other-model".to_string(), 32_768);
+        app.tx
+            .send(
+                crate::ui::events::UiEvent::ContextObserved {
+                    runtime_context: Some(40_960),
+                    contexts,
+                }
+                .at(app.id),
+            )
+            .unwrap();
+        app.process_events();
+        assert_eq!(app.state.runtime_context, Some(40_960));
+        assert_eq!(
+            app.state.provider_contexts.get("other-model"),
+            Some(&32_768)
+        );
+        assert_eq!(app.state.token_usage().context_tokens, 40_960);
+        assert!(matches!(app.overlay, crate::ui::events::Overlay::None));
+    }
+
+    #[test]
+    fn model_switch_reresolves_the_context_budget() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.context_tokens = 262_144;
+        app.state.model_contexts.insert("small".into(), 8_192);
+        app.state.runtime_context = Some(40_960);
+        app.state.model = "small".into();
+        assert_eq!(app.state.token_usage().context_tokens, 8_192);
+        app.state.model = "unknown".into();
+        assert_eq!(app.state.token_usage().context_tokens, 40_960);
     }
 
     #[test]

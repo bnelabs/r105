@@ -532,6 +532,14 @@ The default file is ~/.config/r105/config.json:
 }
 ```
 
+Context windows are detected automatically: a local llama.cpp server's
+loaded window (`/props`) and per-model provider metadata (`/v1/models`)
+feed the footer budget, `/tokens`, and auto-compaction. Override a model
+or a family with `model_contexts` (`{"qwen3": 131072, "*": 32768}` — an
+exact key wins, otherwise the longest key contained in the model id);
+the global `context_tokens` stays as the fallback. Detected values are
+never persisted.
+
 Unknown keys are ignored with a warning for compatibility. Set R105_STRICT_CONFIG=1 to fail fast. r105 config-schema prints the JSON Schema used by the native loader.
 
 ## Sessions and exports

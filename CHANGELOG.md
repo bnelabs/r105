@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-09-16
+
+### Fixed
+- The footer context bar, `/tokens`, and auto-compaction now use the
+  selected model's real context window instead of a fixed default:
+  an explicit `model_contexts` entry wins, then the window a local
+  llama.cpp server reports on `/props`, then per-model metadata from
+  the provider's `/v1/models` (`context_length`, `max_model_len`,
+  `n_ctx_train`, …), then the global `context_tokens` setting.
+  The `/models` overlay shows reported windows next to each model.
+
 ## [2.3.0] — 2026-09-16
 
 ### Security

@@ -10,6 +10,8 @@ use crate::model::{ChatResult, Message};
 pub struct ModelInfo {
     pub id: String,
     pub status: Option<String>,
+    /// Context window the provider publishes for this model, when known.
+    pub context: Option<u64>,
 }
 
 impl ModelInfo {
@@ -20,10 +22,25 @@ impl ModelInfo {
         } else {
             format!("{marker} {}", self.id)
         };
+        if let Some(context) = self.context {
+            text.push_str(&format!(" · ctx {}", compact_context(context)));
+        }
         if let Some(status) = &self.status {
             text.push_str(&format!(" · {status}"));
         }
         text
+    }
+}
+
+/// Context windows are round binary numbers, so spell them the way
+/// people say them: `128k`, `256k`, `1M`.
+fn compact_context(tokens: u64) -> String {
+    if tokens >= 1024 * 1024 && tokens.is_multiple_of(1024 * 1024) {
+        format!("{}M", tokens / (1024 * 1024))
+    } else if tokens >= 1024 && tokens.is_multiple_of(1024) {
+        format!("{}k", tokens / 1024)
+    } else {
+        tokens.to_string()
     }
 }
 
@@ -93,6 +110,15 @@ pub enum UiEvent {
     ModelsLoaded {
         backend: Backend,
         models: Vec<ModelInfo>,
+        /// Loaded window reported by the server itself, when it does.
+        runtime_context: Option<u64>,
+    },
+    /// Quiet context-window refresh, sent by the startup probe so the
+    /// footer and auto-compaction are right before the first `/models`.
+    /// Unlike `ModelsLoaded` it never opens an overlay or changes status.
+    ContextObserved {
+        runtime_context: Option<u64>,
+        contexts: std::collections::BTreeMap<String, u64>,
     },
     Notice(String),
 }

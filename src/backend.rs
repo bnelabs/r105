@@ -326,6 +326,34 @@ impl Backend {
         })
     }
 
+    /// The context window a local llama.cpp server actually serves.
+    /// Best-effort: any failure or foreign `/props` shape yields `None`,
+    /// and other providers never expose it.
+    pub async fn context_limit(&self) -> Option<u64> {
+        if !self.is_llama_cpp() {
+            return None;
+        }
+        let response = self
+            .client
+            .get(format!("{}/props", self.root_url()))
+            .headers(self.headers(None))
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let value: Value = response.json().await.ok()?;
+        context_from_props(&value)
+    }
+
+    /// Server root, so endpoints outside `/v1` (llama.cpp `/props`) do
+    /// not get a `/v1` prefix when the configured base URL carries one.
+    fn root_url(&self) -> String {
+        let base = self.connection.base_url.trim_end_matches('/');
+        base.strip_suffix("/v1").unwrap_or(base).to_string()
+    }
+
     pub async fn list_models(&self) -> Result<Value> {
         let path = "/v1/models";
         let response = self
@@ -381,6 +409,20 @@ impl Backend {
     }
 }
 
+/// Pull the loaded context window out of a llama.cpp `/props` payload.
+/// Recent builds nest it under `default_generation_settings`, older ones
+/// put `n_ctx` at the top level.
+pub(crate) fn context_from_props(value: &Value) -> Option<u64> {
+    [
+        value.pointer("/default_generation_settings/n_ctx"),
+        value.pointer("/n_ctx"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_u64)
+    .find(|tokens| *tokens > 0)
+}
+
 /// Wrap a reasoning-only reply so the TUI can collapse or hide the model's
 /// chain of thought without losing it. The wrapper covers the whole content
 /// by construction, which keeps it distinguishable from model-emitted text.
@@ -426,6 +468,89 @@ mod tests {
         // must not opt into llama.cpp-only request fields.
         assert!(!local(Some("custom")).is_llama_cpp());
         assert!(!local(None).is_llama_cpp());
+    }
+
+    #[test]
+    fn props_payload_yields_the_loaded_window() {
+        let nested = serde_json::json!({
+            "default_generation_settings": {"n_ctx": 40_960},
+            "total_slots": 1,
+        });
+        assert_eq!(context_from_props(&nested), Some(40_960));
+        let legacy = serde_json::json!({"n_ctx": 8_192});
+        assert_eq!(context_from_props(&legacy), Some(8_192));
+        // Foreign payloads and zero windows stay unknown.
+        assert_eq!(
+            context_from_props(&serde_json::json!({"status": "ok"})),
+            None
+        );
+        assert_eq!(context_from_props(&serde_json::json!({"n_ctx": 0})), None);
+    }
+
+    #[tokio::test]
+    async fn context_limit_reads_props_at_the_server_root() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let read = socket.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_string();
+            let body = r#"{"default_generation_settings":{"n_ctx":40960}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            request
+        });
+        let backend = Backend::new(
+            Connection {
+                provider_id: Some("llamacpp".into()),
+                backend: "direct".into(),
+                base_url: format!("http://{addr}/v1"),
+                api_key: None,
+                model: "local".into(),
+            },
+            5,
+        )
+        .unwrap();
+        assert_eq!(backend.context_limit().await, Some(40_960));
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with("GET /props "),
+            "must not nest props under /v1: {request}"
+        );
+    }
+
+    #[test]
+    fn root_url_drops_a_trailing_v1() {
+        let backend = |url: &str| Backend {
+            client: Client::builder().build().unwrap(),
+            connection: Connection {
+                provider_id: Some("llamacpp".into()),
+                backend: "direct".into(),
+                base_url: url.into(),
+                api_key: None,
+                model: "local".into(),
+            },
+            timeout: Duration::from_secs(10),
+        };
+        assert_eq!(
+            backend("http://127.0.0.1:8080/v1").root_url(),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            backend("http://127.0.0.1:8080/v1/").root_url(),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            backend("http://127.0.0.1:8080").root_url(),
+            "http://127.0.0.1:8080"
+        );
     }
 
     #[test]
