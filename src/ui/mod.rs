@@ -162,7 +162,7 @@ struct UiApp {
     /// events mutate that pane.
     pub(crate) routing: Option<usize>,
     pub(crate) next_pane_id: u64,
-    /// Tabs (Warp-style): each holds saved pane stubs. The active tab's
+    /// Tabs: each holds saved pane stubs. The active tab's
     /// live panes sit in `panes`; switching stashes them and materializes
     /// the target's.
     pub(crate) tabs: Vec<tabs::Tab>,
@@ -1266,7 +1266,7 @@ mod tests {
         );
     }
 
-    /// Warp-style Enter: bare shell-looking lines run (with a shell
+    /// Terminal-style Enter: bare shell-looking lines run (with a shell
     /// title on the composer), prose still reaches the model.
     #[tokio::test]
     async fn enter_runs_bare_shell_lines() {

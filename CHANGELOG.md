@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rest — applied only if it truly extends the typed text, dropped on
   any edit, dismissal, or local ghost. `ai_suggest` config (default
   on) and `/completion ai on|off` control it.
-- Warp-style Enter: a shell-looking line runs when submitted, no `!`
+- Terminal-style Enter: a shell-looking line runs when submitted, no `!`
   needed. `cd <dir>` retargets the workspace (a sandboxed subshell
   cannot keep a directory change); prose, questions, `#`-routed
   input, and `/` commands keep their existing paths.

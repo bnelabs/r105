@@ -285,7 +285,7 @@ impl UiApp {
 pub(crate) const MAX_PANES: usize = 4;
 
 impl UiApp {
-    /// Split right (Warp Ctrl+Shift+D): a fresh session beside the
+    /// Split right (Ctrl+Shift+D): a fresh session beside the
     /// focused one, which becomes focused. The running pane keeps
     /// streaming — that is the point of panes.
     pub(crate) fn pane_split(&mut self) {
@@ -318,7 +318,7 @@ impl UiApp {
         ));
     }
 
-    /// Close the focused pane (Warp Ctrl+Shift+W in a split). The last
+    /// Close the focused pane (Ctrl+Shift+W in a split). The last
     /// pane falls back to closing its tab, matching tab behavior.
     pub(crate) fn pane_close(&mut self) {
         if self.panes.len() <= 1 {

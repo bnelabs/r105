@@ -166,7 +166,7 @@ impl UiApp {
         }
         let composer_lines = self.input.lines().count().max(1) as u16;
         // One rule row carries the shell affordance; the input sits
-        // directly under it, Warp-style, with no box.
+        // directly under it, with no box.
         let composer_height = (composer_lines + 1).clamp(2, 7);
         let chunks = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
@@ -697,7 +697,7 @@ impl UiApp {
         );
     }
 
-    /// Composer with a visible cell cursor and Warp-style shell colors.
+    /// Composer with a visible cell cursor and shell-aware colors.
     /// No box: a dim rule row carries the shell affordance, and the
     /// input sits directly under it.
     pub(crate) fn draw_composer(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -1016,7 +1016,7 @@ fn piece_style(piece: ShellPiece) -> Style {
 
 /// Composer spans with a visible cell cursor: a reversed block sits on
 /// the character under the cursor (or just past the end), and shell
-/// lines get Warp-style colors. Concatenating the spans reproduces the
+/// lines get shell-aware colors. Concatenating the spans reproduces the
 /// input exactly, plus the cursor cell when the cursor is at the end.
 fn composer_spans(input: &str, cursor: usize, highlight: bool) -> Vec<Span<'static>> {
     let cursor = cursor.min(input.len());

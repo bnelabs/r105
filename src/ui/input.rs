@@ -72,7 +72,7 @@ impl UiApp {
             self.handle_hist_key(key);
             return Ok(());
         }
-        // Tabs (Warp-style): Ctrl+Shift+T new, Ctrl+Shift+W close,
+        // Tabs: Ctrl+Shift+T new, Ctrl+Shift+W close,
         // Ctrl+Tab / Ctrl+Shift+Tab cycle, Alt+1..9 select.
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && key.modifiers.contains(KeyModifiers::SHIFT)
@@ -89,7 +89,7 @@ impl UiApp {
             self.pane_close();
             return Ok(());
         }
-        // Panes (Warp-style): Ctrl+Shift+D splits right, arrows move
+        // Panes: Ctrl+Shift+D splits right, arrows move
         // focus (Ctrl+Alt+arrows are the macOS-friendly alias).
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && key.modifiers.contains(KeyModifiers::SHIFT)
@@ -592,7 +592,7 @@ impl UiApp {
         self.pending_correction = None;
         self.close_sh_menu();
         self.end_history_walk(true);
-        // `#` is natural language for the shell (Warp's command search):
+        // `#` is natural language for the shell (command search):
         // ask the model for one command and leave it in the composer for
         // review. Nothing runs until the next Enter.
         if let Some(goal) = value.strip_prefix('#') {
@@ -631,7 +631,7 @@ impl UiApp {
             self.submit_shell(value, shell);
             return Ok(());
         }
-        // Warp-style Enter: a line that reads as a shell command runs
+        // Terminal-style Enter: a line that reads as a shell command runs
         // it. The detection is the same one behind completion, so prose
         // and questions still reach the model; `#` forces the router
         // and a trailing `?` stays a prompt.
@@ -649,7 +649,7 @@ impl UiApp {
         }
     }
 
-    /// Shared shell entry for `!` lines and Warp-style bare commands:
+    /// Shared shell entry for `!` lines and bare shell-looking commands:
     /// `cd <dir>` moves the workspace (a sandboxed subshell cannot keep
     /// a directory change), everything else runs in the sandbox and its
     /// output joins the conversation.
