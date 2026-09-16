@@ -355,7 +355,8 @@ impl UiApp {
         // belongs to the palette, the arg menu, or the model. The alias
         // table warms first so `g st` is detected as shell.
         let cwd = self.state.workspace.clone();
-        self.ctx_cache.refresh_for(&self.input, &cwd);
+        let input = self.input.clone();
+        self.ctx_cache.refresh_for(&input, &cwd);
         let Some((_, prefix)) = self.shell_line() else {
             return Vec::new();
         };

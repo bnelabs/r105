@@ -22,16 +22,126 @@ impl UiApp {
         } else {
             self.last_sidebar_rect = Rect::default();
         }
-        let palette = self.palette_items();
+        let rows = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(3)])
+            .split(area);
+        self.draw_tab_bar(frame, rows[0]);
+        let content = rows[1];
+        let count = self.panes.len();
+        let rects: Vec<Rect> = if count <= 1 {
+            vec![content]
+        } else {
+            let mut constraints = Vec::with_capacity(count);
+            for _ in 0..count {
+                constraints.push(Constraint::Ratio(1, count as u32));
+            }
+            ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Horizontal)
+                .constraints(constraints)
+                .split(content)
+                .to_vec()
+        };
+        let focused = self.focus;
+        for (index, rect) in rects.into_iter().enumerate() {
+            self.focus = index;
+            self.draw_pane(frame, rect, index, index == focused, count > 1);
+        }
+        self.focus = focused;
+        self.draw_overlay(frame, area);
+    }
+
+    /// One pane: transcript, completion panels, composer, and footer,
+    /// with a titled frame once a tab holds more than one. Rendering a
+    /// background pane sets `focus` for the call, so every draw helper
+    /// addresses the right pane through `Deref`.
+    pub(crate) fn draw_pane(
+        &mut self,
+        frame: &mut Frame<'_>,
+        rect: Rect,
+        index: usize,
+        focused: bool,
+        framed: bool,
+    ) {
+        let theme = self.state.theme.clone();
+        let area = if framed {
+            let label = self.current_session.clone().unwrap_or_else(|| {
+                if self.title.is_empty() {
+                    format!("session {}", index + 1)
+                } else {
+                    self.title.clone()
+                }
+            });
+            let marker = if self.busy {
+                " …"
+            } else if self.attention && !focused {
+                " •"
+            } else {
+                ""
+            };
+            let style = if focused {
+                Style::default().fg(accent_color(&theme))
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(style)
+                    .title(format!(" {} {label}{marker} ", index + 1)),
+                rect,
+            );
+            let inner = rect.inner(ratatui::layout::Margin {
+                vertical: 0,
+                horizontal: 1,
+            });
+            Rect {
+                x: inner.x,
+                y: rect.y + 1,
+                width: inner.width,
+                height: rect.height.saturating_sub(2),
+            }
+        } else {
+            rect
+        };
+        self.panes[index].rect = rect;
+        self.draw_pane_body(frame, area, focused);
+    }
+
+    /// The composer-side panels (palette, `@`, args, shell, history)
+    /// belong to the focused pane: an unfocused pane must not echo the
+    /// shared history search or the focused pane's palette.
+    fn draw_pane_body(&mut self, frame: &mut Frame<'_>, area: Rect, focused: bool) {
+        let palette = if focused {
+            self.palette_items()
+        } else {
+            Vec::new()
+        };
         let palette_height = if self.palette_active() && !palette.is_empty() {
             palette.len().min(8) as u16 + 2
         } else {
             0
         };
-        let file_items = self.at_menu_items();
-        let arg_items = self.arg_menu_items();
-        let sh_items = self.sh_menu_items();
-        let hist_rows = self.hist_rows();
+        let file_items = if focused {
+            self.at_menu_items()
+        } else {
+            Vec::new()
+        };
+        let arg_items = if focused {
+            self.arg_menu_items()
+        } else {
+            Vec::new()
+        };
+        let sh_items = if focused {
+            self.sh_menu_items()
+        } else {
+            Vec::new()
+        };
+        let hist_rows = if focused {
+            self.hist_rows()
+        } else {
+            Vec::new()
+        };
         // The `@file`, argument-value, shell, and history panels never
         // co-show (each requires its own input shape), so they share
         // one chunk.
@@ -61,7 +171,6 @@ impl UiApp {
         let chunks = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(palette_height),
                 Constraint::Length(file_height),
@@ -69,33 +178,32 @@ impl UiApp {
                 Constraint::Length(2),
             ])
             .split(area);
-        self.last_transcript_rect = chunks[1];
-        self.last_composer_rect = chunks[4];
+        self.last_transcript_rect = chunks[0];
+        self.last_composer_rect = chunks[3];
         if palette_height > 0 {
-            self.last_palette_rect = Some(chunks[2]);
+            self.last_palette_rect = Some(chunks[1]);
         } else {
             self.last_palette_rect = None;
         }
         self.last_palette_count = palette.len();
-        self.draw_tab_bar(frame, chunks[0]);
-        self.draw_transcript(frame, chunks[1]);
+        self.draw_transcript(frame, chunks[0]);
         if palette_height > 0 {
-            self.draw_palette(frame, chunks[2], &palette);
+            self.draw_palette(frame, chunks[1], &palette);
         }
         if file_height > 0 {
             if self.hist_open() {
                 self.last_sh_rect = None;
-                self.draw_hist_search(frame, chunks[3], &hist_rows);
+                self.draw_hist_search(frame, chunks[2], &hist_rows);
             } else {
                 self.last_hist_rect = None;
                 if !file_items.is_empty() {
                     self.last_sh_rect = None;
-                    self.draw_file_complete(frame, chunks[3], &file_items);
+                    self.draw_file_complete(frame, chunks[2], &file_items);
                 } else if !arg_items.is_empty() {
                     self.last_sh_rect = None;
-                    self.draw_arg_complete(frame, chunks[3], &arg_items);
+                    self.draw_arg_complete(frame, chunks[2], &arg_items);
                 } else if !sh_items.is_empty() {
-                    self.draw_sh_complete(frame, chunks[3], &sh_items);
+                    self.draw_sh_complete(frame, chunks[2], &sh_items);
                 } else {
                     self.last_sh_rect = None;
                 }
@@ -105,9 +213,8 @@ impl UiApp {
             self.last_hist_rect = None;
         }
         self.last_sh_count = sh_items.len();
-        self.draw_composer(frame, chunks[4]);
-        self.draw_footer(frame, chunks[5]);
-        self.draw_overlay(frame, area);
+        self.draw_composer(frame, chunks[3]);
+        self.draw_footer(frame, chunks[4]);
     }
 
     pub(crate) fn draw_transcript(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -743,6 +850,7 @@ impl UiApp {
     }
 
     pub(crate) fn draw_overlay(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let theme = self.state.theme.clone();
         if let Overlay::Settings { selected } = &self.overlay {
             // Read first so the &mut match below is not needed for settings.
             let selected = *selected;
@@ -763,7 +871,7 @@ impl UiApp {
                     &items,
                     selected,
                     scroll,
-                    selection_style(&self.state.theme),
+                    selection_style(&theme),
                 );
             }
             Overlay::Models {
@@ -807,7 +915,7 @@ impl UiApp {
                 let items: Vec<String> = THEMES
                     .iter()
                     .map(|name| {
-                        if *name == self.state.theme {
+                        if *name == theme {
                             format!("● {name} (active)")
                         } else {
                             format!("  {name}")

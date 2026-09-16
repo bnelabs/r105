@@ -264,6 +264,17 @@ pub fn mode_preamble(mode: &str) -> Option<&'static str> {
 }
 
 impl ChatState {
+    /// A blank session that keeps this one's model, theme, skills, and
+    /// other settings — the template new panes and tabs build from.
+    pub fn fresh_like(&self) -> Self {
+        let mut fresh = self.clone();
+        fresh.history.clear();
+        fresh.todos.clear();
+        fresh.last_usage = Usage::default();
+        fresh.trace_id = new_trace_id();
+        fresh
+    }
+
     pub fn from_config(config: &Config, workspace: PathBuf) -> Self {
         Self {
             profile: config.profile.clone(),

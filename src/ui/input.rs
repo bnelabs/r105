@@ -85,7 +85,25 @@ impl UiApp {
             && key.modifiers.contains(KeyModifiers::SHIFT)
             && matches!(key.code, KeyCode::Char('w') | KeyCode::Char('W'))
         {
-            self.tab_close();
+            // In a split this closes the pane; a lone pane closes the tab.
+            self.pane_close();
+            return Ok(());
+        }
+        // Panes (Warp-style): Ctrl+Shift+D splits right, arrows move
+        // focus (Ctrl+Alt+arrows are the macOS-friendly alias).
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(key.code, KeyCode::Char('d') | KeyCode::Char('D'))
+        {
+            self.pane_split();
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && (key.modifiers.contains(KeyModifiers::SHIFT)
+                || key.modifiers.contains(KeyModifiers::ALT))
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+        {
+            self.pane_next(key.code == KeyCode::Right);
             return Ok(());
         }
         if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -769,6 +787,7 @@ impl UiApp {
             self.state.permission_posture != "restricted" && self.state.permission_posture != "off";
         let cancellation = self.cancellation.clone().unwrap_or_default();
         let sender = self.tx.clone();
+        let pane = self.id;
         // The correction worker needs the same context the ghost layers
         // use: the raw line, the workspace, and the PATH binaries.
         let bins = self.bin_cache.clone();
@@ -828,17 +847,20 @@ impl UiApp {
                         }
                         notice.push('\n');
                         notice.push_str(&hint);
-                        let _ = sender.send(crate::ui::events::UiEvent::ShellCorrection {
-                            failed: command.clone(),
-                            fixed: best.clone(),
-                            more: rest.to_vec(),
-                        });
+                        let _ = sender.send(
+                            crate::ui::events::UiEvent::ShellCorrection {
+                                failed: command.clone(),
+                                fixed: best.clone(),
+                                more: rest.to_vec(),
+                            }
+                            .at(pane),
+                        );
                     }
                     notice
                 }
                 Err(error) => format!("$ {command}\nfailed: {error:#}"),
             };
-            let _ = sender.send(crate::ui::events::UiEvent::Notice(notice));
+            let _ = sender.send(crate::ui::events::UiEvent::Notice(notice).at(pane));
         });
     }
 
@@ -897,8 +919,13 @@ impl UiApp {
                 if mouse.modifiers.contains(KeyModifiers::SHIFT) {
                     step = 12;
                 }
+                // The wheel scrolls the pane under the cursor, focused or
+                // not; `routing` aims the borrow without moving focus.
+                let target = self.pane_at(mouse.column, mouse.row).unwrap_or(self.focus);
+                let previous = self.routing.replace(target);
                 self.transcript_scroll = self.transcript_scroll.saturating_sub(step);
                 self.follow_transcript = false;
+                self.routing = previous;
             }
             MouseEventKind::ScrollDown => {
                 if self.hist_open() {
@@ -914,8 +941,11 @@ impl UiApp {
                 if mouse.modifiers.contains(KeyModifiers::SHIFT) {
                     step = 12;
                 }
+                let target = self.pane_at(mouse.column, mouse.row).unwrap_or(self.focus);
+                let previous = self.routing.replace(target);
                 self.transcript_scroll = self.transcript_scroll.saturating_add(step);
                 self.follow_transcript = false;
+                self.routing = previous;
             }
             MouseEventKind::Down(_) => {
                 if !matches!(self.overlay, Overlay::None) {
@@ -933,6 +963,15 @@ impl UiApp {
                 }
                 if let Some(index) = self.tab_hit(col, row) {
                     self.tab_switch(index);
+                    return;
+                }
+                // A click in a background pane focuses it (and only that:
+                // the second click then lands where the user aimed).
+                if let Some(index) = self.pane_at(col, row)
+                    && index != self.focus
+                {
+                    self.pane_focus(index);
+                    self.set_status(format!("Pane {} of {}", index + 1, self.panes.len()));
                     return;
                 }
                 if self.sidebar_hit(col, row) {
@@ -1118,7 +1157,8 @@ impl UiApp {
     pub(crate) fn insert_text(&mut self, value: &str) {
         self.end_history_walk(true);
         self.pending_correction = None;
-        self.input.insert_str(self.cursor, value);
+        let cursor = self.cursor;
+        self.input.insert_str(cursor, value);
         self.cursor += value.len();
     }
 
@@ -1152,8 +1192,9 @@ impl UiApp {
                     .is_some_and(|c| c.is_whitespace() || matches!(c, ')' | ']' | '}' | '"' | '\''))
             {
                 self.end_history_walk(true);
-                self.input.insert(self.cursor, character);
-                self.input.insert(self.cursor + 1, close);
+                let cursor = self.cursor;
+                self.input.insert(cursor, character);
+                self.input.insert(cursor + 1, close);
                 self.cursor += character.len_utf8();
                 return;
             }
@@ -1171,8 +1212,9 @@ impl UiApp {
                 || next.is_some_and(|c| c.is_whitespace() || matches!(c, ')' | ']' | '}'))
             {
                 self.end_history_walk(true);
-                self.input.insert(self.cursor, character);
-                self.input.insert(self.cursor + 1, character);
+                let cursor = self.cursor;
+                self.input.insert(cursor, character);
+                self.input.insert(cursor + 1, character);
                 self.cursor += character.len_utf8();
                 return;
             }
@@ -1186,8 +1228,9 @@ impl UiApp {
         }
         self.pending_correction = None;
         self.end_history_walk(true);
-        let start = prev_word_boundary(&self.input, self.cursor);
-        self.input.drain(start..self.cursor);
+        let cursor = self.cursor;
+        let start = prev_word_boundary(&self.input, cursor);
+        self.input.drain(start..cursor);
         self.cursor = start;
     }
 
@@ -1197,7 +1240,8 @@ impl UiApp {
         }
         self.pending_correction = None;
         self.end_history_walk(true);
-        self.input.drain(..self.cursor);
+        let cursor = self.cursor;
+        self.input.drain(..cursor);
         self.cursor = 0;
     }
 
@@ -1207,7 +1251,8 @@ impl UiApp {
         }
         self.pending_correction = None;
         self.end_history_walk(true);
-        self.input.truncate(self.cursor);
+        let cursor = self.cursor;
+        self.input.truncate(cursor);
     }
 
     pub(crate) fn open_palette(&mut self) {
@@ -1257,8 +1302,9 @@ impl UiApp {
         }
         self.pending_correction = None;
         self.end_history_walk(true);
-        let start = previous_boundary(&self.input, self.cursor);
-        self.input.drain(start..self.cursor);
+        let cursor = self.cursor;
+        let start = previous_boundary(&self.input, cursor);
+        self.input.drain(start..cursor);
         self.cursor = start;
     }
 
@@ -1268,8 +1314,9 @@ impl UiApp {
         }
         self.pending_correction = None;
         self.end_history_walk(true);
-        let end = next_boundary(&self.input, self.cursor);
-        self.input.drain(self.cursor..end);
+        let cursor = self.cursor;
+        let end = next_boundary(&self.input, cursor);
+        self.input.drain(cursor..end);
     }
 
     pub(crate) fn history_previous(&mut self) {

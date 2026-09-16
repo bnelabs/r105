@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl UiApp {
+impl Pane {
     pub(crate) fn push_system(&mut self, content: &str) {
         // Fold consecutive duplicates: reconnect loops and repeated
         // fallback warnings collapse into one line with a ×N suffix

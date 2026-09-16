@@ -45,6 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   select, click to switch). Switching autosaves the live session
   first, so a tab never drops work; the bar persists to `tabs.json`
   and restores on startup.
+- Split panes: Ctrl+Shift+D opens a second (up to four) live session
+  side by side inside the tab, Ctrl+Shift+←/→ or Ctrl+Alt+←/→ moves
+  focus, a click focuses the pane under the pointer, and Ctrl+Shift+W
+  closes the focused pane (the last pane closes its tab). Every pane
+  is a real session with its own composer, transcript, queue, and
+  cancellation: a background pane keeps streaming while you type in
+  its sibling, its frame shows `…` while running and `•` when it
+  finishes unseen, and its footer carries its own status and tokens.
+  Tabs stash pane layouts, each pane autosaves to its session, and a
+  restored split comes back with both transcripts and focus.
 - Natural-language command search on `#`: describe what you want
   (`# list large files`) and the model drafts one shell command into
   the composer for review.

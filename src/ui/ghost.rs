@@ -46,7 +46,8 @@ impl UiApp {
         // Warm the alias table before detection: `g st` only reads as
         // shell once the rc-file alias is known.
         let cwd = self.state.workspace.clone();
-        self.ctx_cache.refresh_for(&self.input, &cwd);
+        let input = self.input.clone();
+        self.ctx_cache.refresh_for(&input, &cwd);
         let Some((_, prefix)) = self.shell_line() else {
             return;
         };
@@ -146,7 +147,8 @@ impl UiApp {
                     }
                     _ => (false, Vec::new()),
                 };
-                let _ = sender.send(crate::ui::events::UiEvent::LiveValues { key, values, ok });
+                let _ = sender
+                    .send(crate::ui::events::UiEvent::LiveValues { key, values, ok }.global());
             });
         }
     }
@@ -182,6 +184,7 @@ impl UiApp {
         let mut state = self.state.clone();
         state.history.clear();
         let sender = self.tx.clone();
+        let pane = self.id;
         let prefix = prefix.to_string();
         let for_input = self.input.clone();
         let prompt = format!(
@@ -198,11 +201,14 @@ impl UiApp {
                     .map(|rest| rest.chars().take(120).collect::<String>()),
                 Err(_) => None,
             };
-            let _ = sender.send(crate::ui::events::UiEvent::AiGhost {
-                seq,
-                for_input,
-                suffix,
-            });
+            let _ = sender.send(
+                crate::ui::events::UiEvent::AiGhost {
+                    seq,
+                    for_input,
+                    suffix,
+                }
+                .at(pane),
+            );
         });
     }
 

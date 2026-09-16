@@ -291,6 +291,7 @@ impl UiApp {
         let mut state = self.state.clone();
         state.history.clear();
         let sender = self.tx.clone();
+        let pane = self.id;
         self.set_status("Drafting…".into());
         tokio::spawn(async move {
             let outcome = match backend.chat(&state, &prompt, &[]).await {
@@ -300,7 +301,7 @@ impl UiApp {
                 },
                 Err(error) => Err(format!("Shell draft failed: {error:#}")),
             };
-            let _ = sender.send(crate::ui::events::UiEvent::ShellDraft(outcome));
+            let _ = sender.send(crate::ui::events::UiEvent::ShellDraft(outcome).at(pane));
         });
     }
 
@@ -753,6 +754,7 @@ impl UiApp {
         let mut state = self.state.clone();
         state.history.clear();
         let sender = self.tx.clone();
+        let pane = self.id;
         self.busy = true;
         self.request_started = Some(Instant::now());
         self.awaiting_first_token = true;
@@ -767,14 +769,17 @@ impl UiApp {
         tokio::spawn(async move {
             match backend.chat(&state, &prompt, &[]).await {
                 Ok(result) => {
-                    let _ = sender.send(crate::ui::events::UiEvent::Compacted {
-                        summary: result.content,
-                        recent,
-                    });
+                    let _ = sender.send(
+                        crate::ui::events::UiEvent::Compacted {
+                            summary: result.content,
+                            recent,
+                        }
+                        .at(pane),
+                    );
                 }
                 Err(error) => {
-                    let _ =
-                        sender.send(crate::ui::events::UiEvent::ChatError(format!("{error:#}")));
+                    let _ = sender
+                        .send(crate::ui::events::UiEvent::ChatError(format!("{error:#}")).at(pane));
                 }
             }
         });
@@ -967,12 +972,13 @@ impl UiApp {
                     None => "Reconnecting MCP servers…".into(),
                 });
                 let sender = self.tx.clone();
+                let pane = self.id;
                 tokio::spawn(async move {
                     let notice = match crate::mcp::reconnect(server.as_deref()).await {
                         Ok(message) => message,
                         Err(error) => format!("MCP reconnect failed: {error:#}"),
                     };
-                    let _ = sender.send(crate::ui::events::UiEvent::Notice(notice));
+                    let _ = sender.send(crate::ui::events::UiEvent::Notice(notice).at(pane));
                 });
             }
             Some("tools") => {
@@ -1028,19 +1034,26 @@ impl UiApp {
                 self.set_status(format!("Checking {} and loading models…", preset.label));
                 self.pending_connection = Some(connection);
                 let sender = self.tx.clone();
+                let pane = self.id;
                 tokio::spawn(async move {
                     match candidate.list_models().await {
                         Ok(value) => {
                             let models = extract_models(&value);
-                            let _ = sender.send(crate::ui::events::UiEvent::ModelsLoaded {
-                                backend: candidate,
-                                models,
-                            });
+                            let _ = sender.send(
+                                crate::ui::events::UiEvent::ModelsLoaded {
+                                    backend: candidate,
+                                    models,
+                                }
+                                .global(),
+                            );
                         }
                         Err(error) => {
-                            let _ = sender.send(crate::ui::events::UiEvent::Notice(format!(
-                                "connection failed: {error:#}"
-                            )));
+                            let _ = sender.send(
+                                crate::ui::events::UiEvent::Notice(format!(
+                                    "connection failed: {error:#}"
+                                ))
+                                .at(pane),
+                            );
                         }
                     }
                 });
@@ -1052,24 +1065,30 @@ impl UiApp {
     pub(crate) fn start_model_list(&mut self) {
         let backend = self.backend.clone();
         let sender = self.tx.clone();
+        let pane = self.id;
         self.set_status("Refreshing model list…".into());
         tokio::spawn(async move {
             match backend.list_models().await {
                 Ok(value) => {
                     let models = extract_models(&value);
                     if models.is_empty() {
-                        let _ = sender.send(crate::ui::events::UiEvent::Notice(
-                            "Provider returned no models".into(),
-                        ));
+                        let _ = sender.send(
+                            crate::ui::events::UiEvent::Notice(
+                                "Provider returned no models".into(),
+                            )
+                            .at(pane),
+                        );
                     } else {
-                        let _ = sender
-                            .send(crate::ui::events::UiEvent::ModelsLoaded { backend, models });
+                        let _ = sender.send(
+                            crate::ui::events::UiEvent::ModelsLoaded { backend, models }.global(),
+                        );
                     }
                 }
                 Err(error) => {
-                    let _ = sender.send(crate::ui::events::UiEvent::Notice(format!(
-                        "model list failed: {error:#}"
-                    )));
+                    let _ = sender.send(
+                        crate::ui::events::UiEvent::Notice(format!("model list failed: {error:#}"))
+                            .at(pane),
+                    );
                 }
             }
         });
@@ -1078,6 +1097,7 @@ impl UiApp {
     pub(crate) fn start_health(&mut self) {
         let backend = self.backend.clone();
         let sender = self.tx.clone();
+        let pane = self.id;
         self.set_status("Checking backend…".into());
         tokio::spawn(async move {
             let notice = match backend.health().await {
@@ -1086,13 +1106,14 @@ impl UiApp {
                 }
                 Err(error) => format!("health failed: {error:#}"),
             };
-            let _ = sender.send(crate::ui::events::UiEvent::Notice(notice));
+            let _ = sender.send(crate::ui::events::UiEvent::Notice(notice).at(pane));
         });
     }
 
     pub(crate) fn start_profiles(&mut self) {
         let backend = self.backend.clone();
         let sender = self.tx.clone();
+        let pane = self.id;
         self.set_status("Loading router profiles…".into());
         tokio::spawn(async move {
             let notice = match backend.profiles().await {
@@ -1101,7 +1122,7 @@ impl UiApp {
                 }
                 Err(error) => format!("profiles failed: {error:#}"),
             };
-            let _ = sender.send(crate::ui::events::UiEvent::Notice(notice));
+            let _ = sender.send(crate::ui::events::UiEvent::Notice(notice).at(pane));
         });
     }
 
@@ -1144,7 +1165,8 @@ impl UiApp {
     /// Load a saved session by name, reseeding transcript bookkeeping.
     /// Shared by `/session load` and the sidebar.
     pub(crate) fn load_session_named(&mut self, name: &str) {
-        match session::load(&self.paths, name, &mut self.state) {
+        let paths = self.paths.clone();
+        match session::load(&paths, name, &mut self.state) {
             Ok(count) => {
                 self.redo_stack.clear();
                 self.reseed_msg_ids();

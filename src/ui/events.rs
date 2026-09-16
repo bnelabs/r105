@@ -27,6 +27,33 @@ impl ModelInfo {
     }
 }
 
+/// A `UiEvent` addressed to one live pane, or to the window at large.
+/// Panes are addressed by stable id, so events that arrive after a pane
+/// closed are dropped instead of landing in a reused slot.
+#[derive(Debug)]
+pub struct Routed {
+    pub pane: Option<u64>,
+    pub event: UiEvent,
+}
+
+impl UiEvent {
+    /// Address this event to the pane with the given id.
+    pub fn at(self, pane: u64) -> Routed {
+        Routed {
+            pane: Some(pane),
+            event: self,
+        }
+    }
+
+    /// Address this event to the window (focused pane while handled).
+    pub fn global(self) -> Routed {
+        Routed {
+            pane: None,
+            event: self,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum UiEvent {
     Backend(BackendEvent),

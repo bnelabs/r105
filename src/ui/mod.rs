@@ -57,7 +57,9 @@ mod events;
 mod ghost;
 mod history;
 mod input;
+mod pane;
 mod render;
+pub(crate) use pane::*;
 mod sidebar;
 mod tabs;
 mod transcript;
@@ -109,41 +111,60 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
 
 struct UiApp {
     pub(crate) backend: Backend,
-    pub(crate) state: ChatState,
     pub(crate) paths: ConfigPaths,
+    /// Startup session state: CLI flags (`--model`, `--session`, …)
+    /// ride here so fresh panes and tabs inherit them.
+    pub(crate) base_state: ChatState,
     pub(crate) plugins_dir: PathBuf,
-    pub(crate) input: String,
-    pub(crate) cursor: usize,
-    pub(crate) mode: Mode,
     pub(crate) overlay: crate::ui::events::Overlay,
     pub(crate) palette_selected: usize,
     pub(crate) palette_scroll: usize,
-    pub(crate) transcript_scroll: usize,
-    pub(crate) follow_transcript: bool,
-    pub(crate) show_details: bool,
-    pub(crate) busy: bool,
-    pub(crate) streaming: String,
-    pub(crate) status: String,
-    pub(crate) status_tone: crate::ui::events::StatusTone,
-    /// When the active request started, for the slow-start hint. Cold model
-    /// loads look exactly like a hung request until the first token lands.
-    pub(crate) request_started: Option<Instant>,
-    pub(crate) awaiting_first_token: bool,
-    pub(crate) slow_hint_shown: bool,
-    pub(crate) queue: VecDeque<(String, Option<String>)>,
     /// Recently dispatched slash commands, most recent first (cap 8), so
     /// the palette can float repeated commands above fuzzy order.
     pub(crate) recent_commands: VecDeque<String>,
-    /// In-flight compaction backup name: doubles as the "a compaction
-    /// (not a chat) failed" flag so `ChatError` reports `/compact to
-    /// retry` instead of the chat `/retry` path. Cleared in both arms.
-    pub(crate) compact_backup: Option<String>,
-    /// Name of the session this transcript was saved as or loaded from
-    /// (fork sources and checkpoint parents). Forks leave it alone: you
-    /// keep working here, the copy points back at you.
-    pub(crate) current_session: Option<String>,
-    /// Session-backed tabs (Warp-style): each tab is a saved session the
-    /// bar can switch to; switching autosaves the live session first.
+    /// Markdown-backed custom commands (`/name` from `commands/*.md`),
+    /// reloaded on `/config reload`, `/commands reload`, and workspace
+    /// switches so new files never need a restart.
+    pub(crate) custom_commands: Vec<CustomCommand>,
+    /// Model ids from the last `/models` refresh, backing `/model <Tab>`.
+    pub(crate) known_models: Vec<String>,
+    pub(crate) editor_requested: bool,
+    pub(crate) sandbox: Sandbox,
+    /// Approval policy from config; card `a` verdicts extend it per run.
+    pub(crate) policy: crate::approve::Policy,
+    pub(crate) tx: mpsc::UnboundedSender<events::Routed>,
+    pub(crate) rx: mpsc::UnboundedReceiver<events::Routed>,
+    pub(crate) quit: bool,
+    pub(crate) exit_notice: Option<String>,
+    pub(crate) git_branch: Option<String>,
+    pub(crate) skills_available: usize,
+    pub(crate) attention_bell: bool,
+    pub(crate) mouse_enabled: bool,
+    /// Ghost text caches shared by every pane: the shell-history store
+    /// behind the cascade and the PATH/file value caches it consults.
+    pub(crate) shell_history: crate::suggest::ShellHistory,
+    pub(crate) history_max: usize,
+    /// PATH executables for the command-name ghost layer, refreshed on a
+    /// TTL rather than per keystroke.
+    pub(crate) bin_cache: Vec<String>,
+    pub(crate) bin_cache_at: Option<Instant>,
+    /// Filesystem-derived value candidates (git refs, npm scripts, make
+    /// targets, ssh hosts) behind the context-aware ghost layer.
+    pub(crate) ctx_cache: crate::suggest::ContextCache,
+    /// Live panes of the active tab. `Deref` addresses the focused one
+    /// (or the one an event is routed to), so per-session code never
+    /// names a pane.
+    pub(crate) panes: Vec<Pane>,
+    /// The user's focused pane index.
+    pub(crate) focus: usize,
+    /// Pane an event is being routed to; `None` outside event handling.
+    /// Keeps `focus` (user intent) stable while a background pane's
+    /// events mutate that pane.
+    pub(crate) routing: Option<usize>,
+    pub(crate) next_pane_id: u64,
+    /// Tabs (Warp-style): each holds saved pane stubs. The active tab's
+    /// live panes sit in `panes`; switching stashes them and materializes
+    /// the target's.
     pub(crate) tabs: Vec<tabs::Tab>,
     pub(crate) active_tab: usize,
     pub(crate) last_tab_rect: Rect,
@@ -152,124 +173,6 @@ struct UiApp {
     pub(crate) hist_search: Option<history::HistSearch>,
     pub(crate) last_hist_rect: Option<Rect>,
     pub(crate) last_hist_count: usize,
-    /// Next lazy transcript message number (`m<N>` IDs are assigned on
-    /// first render so undo/redo/compact never shift section identity).
-    pub(crate) next_msg_id: u64,
-    /// Per-section expand overrides keyed by message ID; entries exist
-    /// only where the user diverged from the global defaults.
-    pub(crate) section_state: HashMap<String, bool>,
-    /// Message IDs of the sections in gutter order, rebuilt every draw
-    /// so `/expand n` resolves against what is currently visible. The
-    /// bool is the section's global default (tool output follows
-    /// `show_details`, thinking follows `thinking_default_expanded`).
-    pub(crate) section_order: Vec<(String, bool)>,
-    /// Per-block output filter keyed by message id (spec 0017). Entries exist
-    /// only where the user has applied /filter. Pruned with sections on
-    /// transcript load/save.
-    pub(crate) block_filters: HashMap<String, BlockFilter>,
-    /// File context resolved from `@refs`, pushed as a system message next
-    /// to the user message once the backend answers.
-    pub(crate) pending_context: Option<String>,
-    /// Undone exchanges, newest last; any new user prompt clears the stack.
-    pub(crate) redo_stack: Vec<crate::ui::events::UndoEntry>,
-    /// Set by steering: the in-flight request is cancelled and its prompt
-    /// must not be restored into the composer or offered via `/retry`.
-    pub(crate) drop_next_restore: bool,
-    pub(crate) active_user: Option<String>,
-    pub(crate) last_failed_prompt: Option<String>,
-    pub(crate) tool_round: usize,
-    pub(crate) cancellation: Option<CancellationToken>,
-    pub(crate) pending_connection: Option<Connection>,
-    pub(crate) sandbox: Sandbox,
-    /// Approval policy from config; card `a` verdicts extend it per run.
-    pub(crate) policy: crate::approve::Policy,
-    /// Tool round paused on approval cards; cleared by cancel.
-    pub(crate) pending_tools: Option<PendingTools>,
-    /// Shared with tool workers: `todo_write` replaces the list here,
-    /// the results handler syncs it into session state.
-    pub(crate) shared_todos: Arc<Mutex<Vec<crate::model::TodoItem>>>,
-    /// Ghost text: visible suggestion, debounce bookkeeping, and the
-    /// shell-history frequency store behind the cascade.
-    pub(crate) ghost_text: Option<String>,
-    pub(crate) ghost_seen_input: String,
-    pub(crate) ghost_dismissed: Option<String>,
-    pub(crate) ghost_changed_at: Instant,
-    pub(crate) ghost_debounce: Duration,
-    pub(crate) completion_on: bool,
-    /// Model ghost behind the local cascade: idle-only, debounced,
-    /// one flight per input generation. Toggle with `/completion`.
-    pub(crate) ai_suggest_on: bool,
-    pub(crate) ai_ghost_seq: u64,
-    pub(crate) ai_ghost_pending: Option<String>,
-    pub(crate) shell_history: crate::suggest::ShellHistory,
-    pub(crate) history_max: usize,
-    /// ↑/↓ history walk: `Some(depth)` while a past user message is
-    /// previewed (1 = most recent), plus the stashed live draft the walk
-    /// restored or replaced. Spec 0018.
-    pub(crate) hist_depth: Option<usize>,
-    pub(crate) draft_stash: String,
-    /// PATH executables for the command-name ghost layer, refreshed on a
-    /// TTL rather than per keystroke.
-    pub(crate) bin_cache: Vec<String>,
-    pub(crate) bin_cache_at: Option<Instant>,
-    /// Filesystem-derived value candidates (git refs, npm scripts, make
-    /// targets, ssh hosts) behind the context-aware ghost layer.
-    pub(crate) ctx_cache: crate::suggest::ContextCache,
-    /// A failed shell line's proposed fix, offered until the next edit.
-    /// `→` applies it into an empty composer; any edit drops it.
-    pub(crate) pending_correction: Option<crate::suggest::Correction>,
-    pub(crate) last_response: String,
-    pub(crate) tx: mpsc::UnboundedSender<crate::ui::events::UiEvent>,
-    pub(crate) rx: mpsc::UnboundedReceiver<crate::ui::events::UiEvent>,
-    pub(crate) quit: bool,
-    pub(crate) exit_notice: Option<String>,
-    /// Accumulated session token usage for the footer telemetry.
-    pub(crate) session_in: u64,
-    pub(crate) session_out: u64,
-    pub(crate) git_branch: Option<String>,
-    pub(crate) skills_available: usize,
-    pub(crate) attention_bell: bool,
-    pub(crate) mouse_enabled: bool,
-    /// `@file` completion state: selected index plus an input-keyed cache so
-    /// the workspace walk only reruns when the composer text changes.
-    pub(crate) at_selected: usize,
-    pub(crate) at_cache_key: String,
-    pub(crate) at_cache_items: Vec<String>,
-    /// Markdown-backed custom commands (`/name` from `commands/*.md`),
-    /// reloaded on `/config reload`, `/commands reload`, and workspace
-    /// switches so new files never need a restart.
-    pub(crate) custom_commands: Vec<CustomCommand>,
-    /// First-argument value completion (`/theme <Tab>`): same input-keyed
-    /// cache discipline as the `@` menu.
-    pub(crate) arg_selected: usize,
-    pub(crate) arg_cache_key: String,
-    pub(crate) arg_cache_items: Vec<String>,
-    /// Shell-line Tab menu (`!git check<Tab>`): unified history, spec,
-    /// and file candidates with the same input-keyed cache discipline.
-    pub(crate) sh_selected: usize,
-    pub(crate) sh_cache_key: String,
-    pub(crate) sh_cache_items: Vec<crate::suggest::ShellCandidate>,
-    /// Tab opens the shell menu only when ambiguous (2+ rows); a
-    /// single row applies directly. Sticky across edits until Esc,
-    /// accept, or submit — the ghost stands down while it shows rows.
-    pub(crate) sh_menu_invoked: bool,
-    pub(crate) last_sh_rect: Option<Rect>,
-    pub(crate) last_sh_count: usize,
-    /// Model ids from the last `/models` refresh, backing `/model <Tab>`.
-    pub(crate) known_models: Vec<String>,
-    pub(crate) editor_requested: bool,
-    /// Last drawn viewport heights/rects for viewport-aware paging and
-    /// mouse hit-testing. Updated in `draw`; read by input handlers.
-    pub(crate) transcript_height: u16,
-    pub(crate) last_transcript_rect: Rect,
-    pub(crate) last_composer_rect: Rect,
-    pub(crate) last_palette_rect: Option<Rect>,
-    pub(crate) last_palette_count: usize,
-    /// Per rendered transcript line, the collapsible section id when the
-    /// line is a section header. Lets a mouse click toggle a section.
-    pub(crate) transcript_header_rows: Vec<Option<String>>,
-    /// Scroll offset at render time, so a click row maps back to a line.
-    pub(crate) last_transcript_scroll: usize,
     /// Left session pane: visibility, keyboard focus, selection, filter,
     /// cached saved sessions, recent workspaces, and the last drawn
     /// rect plus scroll for click mapping.
@@ -347,106 +250,51 @@ impl UiApp {
             &paths.config_dir.join("shell_history.json"),
             history_max,
         );
+        let base_state = state.fresh_like();
+        let template = Pane::new(
+            1,
+            state,
+            Duration::from_millis(config.completion_debounce_ms),
+            config.completion_enabled,
+            config.ai_suggest,
+        );
         let mut app = Self {
             backend,
-            state,
             paths,
+            base_state,
             plugins_dir,
-            input: String::new(),
-            cursor: 0,
-            mode: Mode::Build,
             overlay: crate::ui::events::Overlay::None,
             palette_selected: 0,
             palette_scroll: 0,
-            transcript_scroll: 0,
-            follow_transcript: true,
-            show_details: false,
-            busy: false,
-            streaming: String::new(),
-            status,
-            status_tone: crate::ui::events::StatusTone::Muted,
-            request_started: None,
-            awaiting_first_token: false,
-            slow_hint_shown: false,
-            queue: VecDeque::new(),
             recent_commands: VecDeque::new(),
-            compact_backup: None,
-            current_session: None,
-            tabs: vec![tabs::Tab {
-                session: None,
-                title: "session".into(),
-            }],
+            custom_commands,
+            known_models: Vec::new(),
+            editor_requested: false,
+            sandbox,
+            policy,
+            tx,
+            rx,
+            quit: false,
+            exit_notice: None,
+            git_branch,
+            skills_available,
+            attention_bell: config.attention_bell,
+            mouse_enabled: config.mouse,
+            shell_history,
+            history_max,
+            bin_cache: Vec::new(),
+            bin_cache_at: None,
+            ctx_cache: crate::suggest::ContextCache::default(),
+            panes: vec![template],
+            focus: 0,
+            routing: None,
+            next_pane_id: 2,
+            tabs: vec![tabs::Tab::default()],
             active_tab: 0,
             last_tab_rect: Rect::default(),
             hist_search: None,
             last_hist_rect: None,
             last_hist_count: 0,
-            next_msg_id: 0,
-            section_state: HashMap::new(),
-            section_order: Vec::new(),
-            block_filters: HashMap::new(),
-            pending_context: None,
-            redo_stack: Vec::new(),
-            drop_next_restore: false,
-            active_user: None,
-            last_failed_prompt: None,
-            tool_round: 0,
-            cancellation: None,
-            pending_connection: None,
-            sandbox,
-            policy,
-            pending_tools: None,
-            shared_todos: Arc::new(Mutex::new(Vec::new())),
-            ghost_text: None,
-            ghost_seen_input: String::new(),
-            ghost_dismissed: None,
-            ghost_changed_at: Instant::now(),
-            ghost_debounce: Duration::from_millis(config.completion_debounce_ms),
-            completion_on: config.completion_enabled,
-            ai_suggest_on: config.ai_suggest,
-            ai_ghost_seq: 0,
-            ai_ghost_pending: None,
-            shell_history,
-            history_max,
-            hist_depth: None,
-            draft_stash: String::new(),
-            bin_cache: Vec::new(),
-            bin_cache_at: None,
-            ctx_cache: crate::suggest::ContextCache::default(),
-            pending_correction: None,
-            last_response: String::new(),
-            tx,
-            rx,
-            quit: false,
-            exit_notice: None,
-            session_in: 0,
-            session_out: 0,
-            git_branch,
-            skills_available,
-            attention_bell: config.attention_bell,
-            mouse_enabled: config.mouse,
-            at_selected: 0,
-            at_cache_key: String::new(),
-            at_cache_items: Vec::new(),
-            custom_commands,
-            arg_selected: 0,
-            arg_cache_key: String::new(),
-            arg_cache_items: Vec::new(),
-            sh_selected: 0,
-            sh_cache_key: String::new(),
-            sh_cache_items: Vec::new(),
-            sh_menu_invoked: false,
-            last_sh_rect: None,
-            last_sh_count: 0,
-            known_models: Vec::new(),
-            editor_requested: false,
-            transcript_height: 20,
-            last_transcript_rect: Rect::default(),
-            last_composer_rect: Rect::default(),
-            last_palette_rect: None,
-            last_palette_count: 0,
-            transcript_header_rows: Vec::new(),
-            last_transcript_scroll: 0,
             sidebar_visible: false,
             sidebar_focus: false,
             sidebar_selected: 0,
@@ -456,6 +304,10 @@ impl UiApp {
             recent_workspaces: Vec::new(),
             last_sidebar_rect: Rect::default(),
         };
+        if let Some(pane) = app.panes.first_mut() {
+            pane.status = status;
+            pane.title = "session".into();
+        }
         app.sync_mode_from_state();
         app.load_recent_workspaces();
         app.load_tabs();
@@ -484,9 +336,21 @@ impl UiApp {
                 }
             }
             if self.quit {
-                if let Some(cancellation) = &self.cancellation {
-                    cancellation.cancel();
+                for pane in &mut self.panes {
+                    if let Some(cancellation) = &pane.cancellation {
+                        cancellation.cancel();
+                    }
                 }
+                // Background panes keep their work even though only the
+                // focused pane gets the exit notice.
+                let paths = self.paths.clone();
+                for (index, pane) in self.panes.iter_mut().enumerate() {
+                    if index != self.focus {
+                        pane.autosave(&paths);
+                    }
+                }
+                self.sync_tab_layout();
+                self.save_tabs();
                 if self.state.history.is_empty() {
                     self.exit_notice = None;
                 } else {
@@ -527,197 +391,224 @@ impl UiApp {
     }
 
     pub(crate) fn process_events(&mut self) {
-        while let Ok(event) = self.rx.try_recv() {
-            match event {
-                crate::ui::events::UiEvent::Backend(BackendEvent::Token(token)) => {
-                    self.streaming.push_str(&token);
-                    self.awaiting_first_token = false;
-                    self.set_status("Generating…".into());
-                    self.follow_transcript = true;
-                }
-                crate::ui::events::UiEvent::Backend(BackendEvent::Status(status)) => {
-                    self.set_status(status)
-                }
-                crate::ui::events::UiEvent::ChatDone(result) => self.chat_done(result),
-                crate::ui::events::UiEvent::ChatError(error) => {
-                    self.streaming.clear();
-                    self.awaiting_first_token = false;
-                    self.busy = false;
-                    self.cancellation = None;
-                    self.tool_round = 0;
-                    self.pending_context = None;
-                    let cancelled = error.contains("cancelled");
-                    let prompt = self.active_user.take();
-                    if self.drop_next_restore {
-                        // Steering cancelled this request on purpose: the new
-                        // prompt is already queued, so restore nothing.
-                        self.drop_next_restore = false;
-                    } else if let Some(prompt) = prompt {
-                        self.last_failed_prompt = Some(prompt.clone());
-                        // Restore the failed prompt so it is not lost; /retry reuses it.
-                        self.input = prompt;
-                        self.cursor = self.input.len();
-                    }
-                    // A failed compaction retries via `/compact` (history is
-                    // intact), not via the chat `/retry` path.
-                    let compact_failed = self.compact_backup.take().is_some();
-                    self.set_error(if compact_failed {
-                        format!("Compaction failed: {error} · /compact to retry")
-                    } else {
-                        format!("Request failed: {error} · /retry to try again")
-                    });
-                    let settled = self.queue.is_empty() && !cancelled;
-                    self.start_next_queued();
-                    if settled {
-                        self.ring_bell();
-                    }
-                }
-                crate::ui::events::UiEvent::ToolsDone(results) => {
-                    self.awaiting_first_token = false;
-                    for result in &results {
-                        self.state.history.push(Message::tool(
-                            result.call_id.clone(),
-                            format!("[{}]\n{}", result.name, result.content),
-                        ));
-                    }
-                    // `todo_write` ran inside the workers: adopt the list
-                    // so the transcript section and footer render it.
-                    if let Ok(todos) = self.shared_todos.lock() {
-                        self.state.todos = todos.clone();
-                    }
-                    let names =
-                        tool_names(&results.iter().map(|r| r.name.clone()).collect::<Vec<_>>());
-                    self.set_status(format!(
-                        "{} result(s) [{}] · continuing…",
-                        results.len(),
-                        names
-                    ));
-                    self.start_continue();
-                }
-                crate::ui::events::UiEvent::Compacted { summary, recent } => {
-                    self.awaiting_first_token = false;
-                    if self.apply_compaction(summary, recent) {
-                        self.start_next_queued();
-                    }
-                }
-                crate::ui::events::UiEvent::ModelsLoaded { backend, models } => {
-                    self.backend = backend;
-                    self.pending_connection = None;
-                    if models.is_empty() {
-                        self.set_status("Connected · no models listed".into());
-                        self.persist_connection(None);
-                    } else {
-                        let cold = models
-                            .iter()
-                            .filter(|model| {
-                                model
-                                    .status
-                                    .as_deref()
-                                    .is_some_and(|status| status != "loaded")
-                            })
-                            .count();
-                        self.set_status(if cold > 0 {
-                            format!(
-                                "Connected · {} models ({} load on first use)",
-                                models.len(),
-                                cold
-                            )
-                        } else {
-                            format!("Connected · {} models", models.len())
-                        });
-                        let active = self.state.model.clone();
-                        let selected = models
-                            .iter()
-                            .position(|model| model.id == active)
-                            .unwrap_or(0);
-                        self.known_models = models.iter().map(|model| model.id.clone()).collect();
-                        self.overlay = crate::ui::events::Overlay::Models {
-                            items: models,
-                            selected,
-                            scroll: 0,
-                            active,
-                        };
-                    }
-                }
-                crate::ui::events::UiEvent::Notice(notice) => self.push_system(&notice),
-                crate::ui::events::UiEvent::ShellCorrection {
-                    failed,
-                    fixed,
-                    more,
-                } => {
-                    // Never clobber typing: an empty composer gets the
-                    // one-keystroke offer, a busy one gets a transcript
-                    // note pointing at the same fixes.
-                    if self.input.trim().is_empty() {
-                        self.pending_correction = Some(crate::suggest::Correction {
-                            failed,
-                            fixed: fixed.clone(),
-                            more: more.clone(),
-                        });
-                        self.set_status(if more.is_empty() {
-                            format!("Did you mean `!{fixed}`? → applies")
-                        } else {
-                            format!("Did you mean `!{fixed}`? → applies · +{} more", more.len())
-                        });
-                    } else {
-                        self.push_system(&format!("Did you mean `!{fixed}`?"));
-                    }
-                }
-                crate::ui::events::UiEvent::LiveValues { key, values, ok } => {
-                    let live = &mut self.ctx_cache.live;
-                    live.inflight.remove(&key);
-                    if ok
-                        && matches!(
-                            key.as_str(),
-                            "k8s-ns" | "k8s-pods" | "docker-containers" | "docker-images"
-                        )
-                    {
-                        match key.as_str() {
-                            "k8s-ns" => live.namespaces = values,
-                            "k8s-pods" => live.pods = values,
-                            "docker-containers" => live.containers = values,
-                            "docker-images" => live.images = values,
-                            _ => unreachable!("key allowlisted above"),
-                        }
-                        live.at.insert(key, Instant::now());
-                    } else if !ok {
-                        live.failed_at.insert(key, Instant::now());
-                    }
-                }
-                crate::ui::events::UiEvent::AiGhost {
-                    seq,
-                    for_input,
-                    suffix,
-                } => {
-                    // Stale flights die quietly: a newer keystroke owns
-                    // the composer now, the local cascade wins any race,
-                    // and a dismissal sticks.
-                    let fresh = seq == self.ai_ghost_seq && for_input == self.input;
-                    if seq == self.ai_ghost_seq {
-                        self.ai_ghost_pending = None;
-                    }
-                    if fresh
-                        && self.ghost_text.is_none()
-                        && self.ghost_dismissed.as_deref() != Some(for_input.as_str())
-                        && let Some(suffix) = suffix
-                        && !suffix.is_empty()
-                    {
-                        self.ghost_text = Some(suffix);
-                    }
-                }
-                crate::ui::events::UiEvent::ShellDraft(outcome) => match outcome {
-                    Ok(command) if self.input.is_empty() => {
-                        self.input = command;
-                        self.cursor = self.input.len();
-                        self.status = "Review — Enter runs · Esc clears".into();
-                    }
-                    Ok(command) => {
-                        self.push_system(&format!("Composer busy — run it when ready:\n{command}"));
-                        self.set_ok("Saved to session".into());
-                    }
-                    Err(error) => self.set_error(error),
+        while let Ok(routed) = self.rx.try_recv() {
+            // Address the event at the pane that spawned it. Events for a
+            // pane that closed in the meantime are dropped; window events
+            // land on the focused pane. `routing` (not `focus`) carries
+            // the deref target so user focus survives background work.
+            let target = match routed.pane {
+                Some(id) => match self.panes.iter().position(|pane| pane.id == id) {
+                    Some(index) => index,
+                    None => continue,
                 },
+                None => self.focus,
+            };
+            let was_busy = self.panes[target].busy;
+            let previous = self.routing.replace(target);
+            self.handle_event(routed.event);
+            self.routing = previous;
+            // A background pane that just finished flags itself, so the
+            // frame dot shows where the answer landed.
+            if was_busy && !self.panes[target].busy && target != self.focus {
+                self.panes[target].attention = true;
             }
+        }
+    }
+
+    fn handle_event(&mut self, event: crate::ui::events::UiEvent) {
+        match event {
+            crate::ui::events::UiEvent::Backend(BackendEvent::Token(token)) => {
+                self.streaming.push_str(&token);
+                self.awaiting_first_token = false;
+                self.set_status("Generating…".into());
+                self.follow_transcript = true;
+            }
+            crate::ui::events::UiEvent::Backend(BackendEvent::Status(status)) => {
+                self.set_status(status)
+            }
+            crate::ui::events::UiEvent::ChatDone(result) => self.chat_done(result),
+            crate::ui::events::UiEvent::ChatError(error) => {
+                self.streaming.clear();
+                self.awaiting_first_token = false;
+                self.busy = false;
+                self.cancellation = None;
+                self.tool_round = 0;
+                self.pending_context = None;
+                let cancelled = error.contains("cancelled");
+                let prompt = self.active_user.take();
+                if self.drop_next_restore {
+                    // Steering cancelled this request on purpose: the new
+                    // prompt is already queued, so restore nothing.
+                    self.drop_next_restore = false;
+                } else if let Some(prompt) = prompt {
+                    self.last_failed_prompt = Some(prompt.clone());
+                    // Restore the failed prompt so it is not lost; /retry reuses it.
+                    self.input = prompt;
+                    self.cursor = self.input.len();
+                }
+                // A failed compaction retries via `/compact` (history is
+                // intact), not via the chat `/retry` path.
+                let compact_failed = self.compact_backup.take().is_some();
+                self.set_error(if compact_failed {
+                    format!("Compaction failed: {error} · /compact to retry")
+                } else {
+                    format!("Request failed: {error} · /retry to try again")
+                });
+                let settled = self.queue.is_empty() && !cancelled;
+                self.start_next_queued();
+                if settled {
+                    self.ring_bell();
+                }
+            }
+            crate::ui::events::UiEvent::ToolsDone(results) => {
+                self.awaiting_first_token = false;
+                for result in &results {
+                    self.state.history.push(Message::tool(
+                        result.call_id.clone(),
+                        format!("[{}]\n{}", result.name, result.content),
+                    ));
+                }
+                // `todo_write` ran inside the workers: adopt the list
+                // so the transcript section and footer render it.
+                // Clone and drop the guard before touching self.
+                let todos = {
+                    let locked = self.shared_todos.lock();
+                    locked.map(|todos| todos.clone()).ok()
+                };
+                if let Some(todos) = todos {
+                    self.state.todos = todos;
+                }
+                let names = tool_names(&results.iter().map(|r| r.name.clone()).collect::<Vec<_>>());
+                self.set_status(format!(
+                    "{} result(s) [{}] · continuing…",
+                    results.len(),
+                    names
+                ));
+                self.start_continue();
+            }
+            crate::ui::events::UiEvent::Compacted { summary, recent } => {
+                self.awaiting_first_token = false;
+                if self.apply_compaction(summary, recent) {
+                    self.start_next_queued();
+                }
+            }
+            crate::ui::events::UiEvent::ModelsLoaded { backend, models } => {
+                self.backend = backend;
+                self.pending_connection = None;
+                if models.is_empty() {
+                    self.set_status("Connected · no models listed".into());
+                    self.persist_connection(None);
+                } else {
+                    let cold = models
+                        .iter()
+                        .filter(|model| {
+                            model
+                                .status
+                                .as_deref()
+                                .is_some_and(|status| status != "loaded")
+                        })
+                        .count();
+                    self.set_status(if cold > 0 {
+                        format!(
+                            "Connected · {} models ({} load on first use)",
+                            models.len(),
+                            cold
+                        )
+                    } else {
+                        format!("Connected · {} models", models.len())
+                    });
+                    let active = self.state.model.clone();
+                    let selected = models
+                        .iter()
+                        .position(|model| model.id == active)
+                        .unwrap_or(0);
+                    self.known_models = models.iter().map(|model| model.id.clone()).collect();
+                    self.overlay = crate::ui::events::Overlay::Models {
+                        items: models,
+                        selected,
+                        scroll: 0,
+                        active,
+                    };
+                }
+            }
+            crate::ui::events::UiEvent::Notice(notice) => self.push_system(&notice),
+            crate::ui::events::UiEvent::ShellCorrection {
+                failed,
+                fixed,
+                more,
+            } => {
+                // Never clobber typing: an empty composer gets the
+                // one-keystroke offer, a busy one gets a transcript
+                // note pointing at the same fixes.
+                if self.input.trim().is_empty() {
+                    self.pending_correction = Some(crate::suggest::Correction {
+                        failed,
+                        fixed: fixed.clone(),
+                        more: more.clone(),
+                    });
+                    self.set_status(if more.is_empty() {
+                        format!("Did you mean `!{fixed}`? → applies")
+                    } else {
+                        format!("Did you mean `!{fixed}`? → applies · +{} more", more.len())
+                    });
+                } else {
+                    self.push_system(&format!("Did you mean `!{fixed}`?"));
+                }
+            }
+            crate::ui::events::UiEvent::LiveValues { key, values, ok } => {
+                let live = &mut self.ctx_cache.live;
+                live.inflight.remove(&key);
+                if ok
+                    && matches!(
+                        key.as_str(),
+                        "k8s-ns" | "k8s-pods" | "docker-containers" | "docker-images"
+                    )
+                {
+                    match key.as_str() {
+                        "k8s-ns" => live.namespaces = values,
+                        "k8s-pods" => live.pods = values,
+                        "docker-containers" => live.containers = values,
+                        "docker-images" => live.images = values,
+                        _ => unreachable!("key allowlisted above"),
+                    }
+                    live.at.insert(key, Instant::now());
+                } else if !ok {
+                    live.failed_at.insert(key, Instant::now());
+                }
+            }
+            crate::ui::events::UiEvent::AiGhost {
+                seq,
+                for_input,
+                suffix,
+            } => {
+                // Stale flights die quietly: a newer keystroke owns
+                // the composer now, the local cascade wins any race,
+                // and a dismissal sticks.
+                let fresh = seq == self.ai_ghost_seq && for_input == self.input;
+                if seq == self.ai_ghost_seq {
+                    self.ai_ghost_pending = None;
+                }
+                if fresh
+                    && self.ghost_text.is_none()
+                    && self.ghost_dismissed.as_deref() != Some(for_input.as_str())
+                    && let Some(suffix) = suffix
+                    && !suffix.is_empty()
+                {
+                    self.ghost_text = Some(suffix);
+                }
+            }
+            crate::ui::events::UiEvent::ShellDraft(outcome) => match outcome {
+                Ok(command) if self.input.is_empty() => {
+                    self.input = command;
+                    self.cursor = self.input.len();
+                    self.status = "Review — Enter runs · Esc clears".into();
+                }
+                Ok(command) => {
+                    self.push_system(&format!("Composer busy — run it when ready:\n{command}"));
+                    self.set_ok("Saved to session".into());
+                }
+                Err(error) => self.set_error(error),
+            },
         }
     }
 
@@ -864,11 +755,12 @@ impl UiApp {
         let tools =
             tool::definitions_for_mode(tool::definitions_from(&self.plugins_dir), &self.state.mode);
         let sender = self.tx.clone();
+        let pane = self.id;
         let (backend_sender, mut backend_events) = mpsc::unbounded_channel();
         let relay_sender = sender.clone();
         tokio::spawn(async move {
             while let Some(event) = backend_events.recv().await {
-                let _ = relay_sender.send(crate::ui::events::UiEvent::Backend(event));
+                let _ = relay_sender.send(crate::ui::events::UiEvent::Backend(event).at(pane));
             }
         });
         tokio::spawn(async move {
@@ -877,10 +769,11 @@ impl UiApp {
                 .await
             {
                 Ok(result) => {
-                    let _ = sender.send(crate::ui::events::UiEvent::ChatDone(result));
+                    let _ = sender.send(crate::ui::events::UiEvent::ChatDone(result).at(pane));
                 }
                 Err(error) => {
-                    let _ = sender.send(crate::ui::events::UiEvent::ChatError(error.to_string()));
+                    let _ = sender
+                        .send(crate::ui::events::UiEvent::ChatError(error.to_string()).at(pane));
                 }
             }
         });
@@ -898,11 +791,12 @@ impl UiApp {
         let tools =
             tool::definitions_for_mode(tool::definitions_from(&self.plugins_dir), &self.state.mode);
         let sender = self.tx.clone();
+        let pane = self.id;
         let (backend_sender, mut backend_events) = mpsc::unbounded_channel();
         let relay_sender = sender.clone();
         tokio::spawn(async move {
             while let Some(event) = backend_events.recv().await {
-                let _ = relay_sender.send(crate::ui::events::UiEvent::Backend(event));
+                let _ = relay_sender.send(crate::ui::events::UiEvent::Backend(event).at(pane));
             }
         });
         tokio::spawn(async move {
@@ -911,10 +805,11 @@ impl UiApp {
                 .await
             {
                 Ok(result) => {
-                    let _ = sender.send(crate::ui::events::UiEvent::ChatDone(result));
+                    let _ = sender.send(crate::ui::events::UiEvent::ChatDone(result).at(pane));
                 }
                 Err(error) => {
-                    let _ = sender.send(crate::ui::events::UiEvent::ChatError(error.to_string()));
+                    let _ = sender
+                        .send(crate::ui::events::UiEvent::ChatError(error.to_string()).at(pane));
                 }
             }
         });
@@ -1059,8 +954,13 @@ mod tests {
             skills_dir: skills.path().to_path_buf(),
             ..Config::default()
         };
+        // One directory per test, not per process: tests that persist
+        // tabs/sessions must not race their neighbors.
+        static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let slot = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut paths = ConfigPaths::discover();
-        paths.config_dir = std::env::temp_dir().join(format!("r105-tests-{}", std::process::id()));
+        paths.config_dir =
+            std::env::temp_dir().join(format!("r105-tests-{}-{slot}", std::process::id()));
         paths.sessions_dir = paths.config_dir.join("sessions");
         let _ = std::fs::create_dir_all(&paths.config_dir);
         let state = ChatState::from_config(&config, workspace.path().to_path_buf());
@@ -1110,7 +1010,7 @@ mod tests {
         assert_eq!(remaining, 0);
         app.resolve_approval(ApprovalVerdict::Deny);
         assert!(matches!(app.overlay, crate::ui::events::Overlay::None));
-        match app.rx.try_recv().expect("denial delivered") {
+        match app.rx.try_recv().expect("denial delivered").event {
             crate::ui::events::UiEvent::ToolsDone(results) => {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].call_id, "c1");
@@ -1129,6 +1029,7 @@ mod tests {
             .await
             .expect("tools done arrives")
             .expect("channel open")
+            .event
         {
             crate::ui::events::UiEvent::ToolsDone(results) => {
                 assert_eq!(results.len(), 1);
@@ -1716,11 +1617,14 @@ mod tests {
         let (mut app, _workspace, _skills) = test_app();
         // The worker's offer lands as a one-keystroke hint.
         app.tx
-            .send(crate::ui::events::UiEvent::ShellCorrection {
-                failed: "gti status".to_string(),
-                fixed: "git status".to_string(),
-                more: vec!["get status".to_string()],
-            })
+            .send(
+                crate::ui::events::UiEvent::ShellCorrection {
+                    failed: "gti status".to_string(),
+                    fixed: "git status".to_string(),
+                    more: vec!["get status".to_string()],
+                }
+                .global(),
+            )
             .unwrap();
         app.process_events();
         assert!(app.pending_correction.is_some());
@@ -1806,21 +1710,21 @@ mod tests {
             for_input: input.to_string(),
             suffix: Some(suffix.to_string()),
         };
-        app.tx.send(ghost(1, "docker ps", " -a")).unwrap();
+        app.tx.send(ghost(1, "docker ps", " -a").global()).unwrap();
         app.process_events();
         assert!(app.ghost_text.is_none(), "stale generation dropped");
-        app.tx.send(ghost(2, "docker ps", " -a")).unwrap();
+        app.tx.send(ghost(2, "docker ps", " -a").global()).unwrap();
         app.process_events();
         assert_eq!(app.ghost_text.as_deref(), Some(" -a"));
         // A dismissal owns the input until the next edit.
         assert!(app.dismiss_ghost());
-        app.tx.send(ghost(2, "docker ps", " -a")).unwrap();
+        app.tx.send(ghost(2, "docker ps", " -a").global()).unwrap();
         app.process_events();
         assert!(app.ghost_text.is_none());
         // A local ghost wins any race.
         app.ai_ghost_seq = 3;
         app.ghost_text = Some(" --all".to_string());
-        app.tx.send(ghost(3, "docker ps", " -a")).unwrap();
+        app.tx.send(ghost(3, "docker ps", " -a").global()).unwrap();
         app.process_events();
         assert_eq!(app.ghost_text.as_deref(), Some(" --all"));
     }
@@ -1831,21 +1735,27 @@ mod tests {
     fn live_values_events_update_cache() {
         let (mut app, _workspace, _skills) = test_app();
         app.tx
-            .send(crate::ui::events::UiEvent::LiveValues {
-                key: "k8s-pods".to_string(),
-                values: vec!["api-0".to_string()],
-                ok: true,
-            })
+            .send(
+                crate::ui::events::UiEvent::LiveValues {
+                    key: "k8s-pods".to_string(),
+                    values: vec!["api-0".to_string()],
+                    ok: true,
+                }
+                .global(),
+            )
             .unwrap();
         app.process_events();
         assert_eq!(app.ctx_cache.live.pods, vec!["api-0".to_string()]);
         assert!(app.ctx_cache.live.at.contains_key("k8s-pods"));
         app.tx
-            .send(crate::ui::events::UiEvent::LiveValues {
-                key: "docker-images".to_string(),
-                values: Vec::new(),
-                ok: false,
-            })
+            .send(
+                crate::ui::events::UiEvent::LiveValues {
+                    key: "docker-images".to_string(),
+                    values: Vec::new(),
+                    ok: false,
+                }
+                .global(),
+            )
             .unwrap();
         app.process_events();
         assert!(app.ctx_cache.live.failed_at.contains_key("docker-images"));
@@ -1982,7 +1892,7 @@ mod tests {
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active_tab, 1);
         assert!(app.state.history.is_empty(), "new tab starts fresh");
-        assert_eq!(app.tabs[0].session.as_deref(), Some("alpha"));
+        assert_eq!(app.tabs[0].panes[0].session.as_deref(), Some("alpha"));
         app.state.history.push(Message::user("second"));
         crate::session::save(&app.paths, "beta", &app.state).unwrap();
         app.current_session = Some("beta".into());
@@ -2004,6 +1914,241 @@ mod tests {
         // The last tab never closes.
         app.tab_close();
         assert_eq!(app.tabs.len(), 1);
+    }
+
+    /// Ctrl+Shift+D splits right onto a fresh session, moves focus, and
+    /// inherits the workspace; the running pane keeps streaming.
+    #[tokio::test]
+    async fn ctrl_shift_d_splits_and_focuses_new_pane() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, workspace, _skills) = test_app();
+        app.state.history.push(Message::user("existing"));
+        // A busy pane does not block the split: that is the point.
+        app.busy = true;
+        let split = KeyEvent::new(
+            KeyCode::Char('D'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        app.handle_key(split).await.unwrap();
+        assert_eq!(app.panes.len(), 2);
+        assert_eq!(app.focus, 1);
+        assert!(app.input.is_empty());
+        assert!(app.state.history.is_empty(), "new pane starts fresh");
+        assert_eq!(
+            app.state.workspace,
+            workspace.path(),
+            "new pane inherits the workspace"
+        );
+        assert!(app.panes[0].busy, "running pane keeps its request");
+        assert_eq!(app.panes[0].state.history.len(), 1);
+        assert_eq!(app.tabs[0].panes.len(), 2, "layout persists on the tab");
+        // The limit holds.
+        app.handle_key(split).await.unwrap();
+        app.handle_key(split).await.unwrap();
+        assert_eq!(app.panes.len(), MAX_PANES);
+        app.handle_key(split).await.unwrap();
+        assert_eq!(app.panes.len(), MAX_PANES);
+    }
+
+    /// The wheel scrolls the pane under the pointer without focusing it.
+    #[test]
+    fn wheel_scrolls_pane_under_pointer() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+
+        let (mut app, _workspace, _skills) = test_app();
+        app.pane_split();
+        app.panes[0].rect = Rect::new(0, 1, 50, 20);
+        app.panes[1].rect = Rect::new(50, 1, 50, 20);
+        for _ in 0..40 {
+            app.panes[0]
+                .state
+                .history
+                .push(Message::assistant_with_tools("line", Vec::new()));
+        }
+        app.panes[0].transcript_scroll = 30;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.panes[0].transcript_scroll, 26, "background scrolls");
+        assert_eq!(app.focus, 1, "focus does not move");
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 60,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.panes[1].transcript_scroll, 4, "focused pane scrolls");
+    }
+
+    /// Fresh panes and tabs inherit the startup model/theme overrides
+    /// instead of falling back to the config file.
+    #[test]
+    fn fresh_panes_inherit_startup_overrides() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.base_state.model = "cli-model".into();
+        app.state.model = "cli-model".into();
+        app.tab_new();
+        assert_eq!(app.state.model, "cli-model", "new tab inherits");
+        app.pane_split();
+        assert_eq!(app.state.model, "cli-model", "new pane inherits");
+    }
+
+    /// Four panes render side by side, titled, and narrow terminals
+    /// truncate instead of panicking.
+    #[test]
+    fn four_panes_render_side_by_side() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.pane_split();
+        app.pane_split();
+        app.pane_split();
+        assert_eq!(app.panes.len(), 4);
+        let lines = render_lines(&mut app, 100, 24);
+        for index in 1..=4 {
+            let title = if index == 1 {
+                " 1 session ".to_string()
+            } else {
+                format!(" {index} session {index} ")
+            };
+            assert!(
+                lines.iter().any(|line| line.contains(&title)),
+                "missing pane title {title:?}"
+            );
+        }
+        let lines = render_lines(&mut app, 40, 12);
+        assert!(!lines.is_empty());
+    }
+
+    /// Events address the pane that spawned them: a background token
+    /// lands in that pane's stream, and settling flags attention without
+    /// moving user focus.
+    #[tokio::test]
+    async fn background_events_land_in_their_pane() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.pane_split();
+        let first = app.panes[0].id;
+        app.panes[0].busy = true;
+        app.tx
+            .send(crate::ui::events::UiEvent::Backend(BackendEvent::Token("hi".into())).at(first))
+            .unwrap();
+        app.process_events();
+        assert_eq!(app.panes[0].streaming, "hi");
+        assert!(app.panes[1].streaming.is_empty(), "sibling untouched");
+        assert_eq!(app.focus, 1, "user focus stays put");
+        assert!(!app.panes[0].attention, "still running");
+        app.tx
+            .send(crate::ui::events::UiEvent::ChatError("cancelled".into()).at(first))
+            .unwrap();
+        app.process_events();
+        assert!(!app.panes[0].busy);
+        assert!(app.panes[0].attention, "settled in the background");
+        assert_eq!(app.focus, 1);
+        // Focusing clears the marker.
+        app.pane_focus(0);
+        assert!(!app.panes[0].attention);
+        // Events for unknown panes (closed meanwhile) are dropped.
+        app.tx
+            .send(crate::ui::events::UiEvent::Notice("stale".into()).at(999))
+            .unwrap();
+        app.process_events();
+        assert!(app.panes.iter().all(|pane| pane.state.history.is_empty()));
+        // Window events land on the focused pane.
+        app.tx
+            .send(crate::ui::events::UiEvent::Notice("window".into()).global())
+            .unwrap();
+        app.process_events();
+        assert_eq!(app.panes[0].state.history.len(), 1);
+    }
+
+    /// Ctrl+Shift+W closes a pane; the last pane closes the tab. Focus
+    /// stays in range and cycle keys wrap.
+    #[tokio::test]
+    async fn pane_close_and_cycle() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _workspace, _skills, _dirs) = sidebar_app();
+        let close = KeyEvent::new(
+            KeyCode::Char('W'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        app.handle_key(close).await.unwrap();
+        assert_eq!(app.panes.len(), 1, "a lone pane closes its tab");
+        assert_eq!(app.tabs.len(), 1, "last tab stays open");
+        app.pane_split();
+        app.pane_split();
+        assert_eq!(app.focus, 2);
+        app.pane_close();
+        assert_eq!(app.panes.len(), 2);
+        assert_eq!(app.focus, 1, "focus clamps to the last pane");
+        app.pane_next(true);
+        assert_eq!(app.focus, 0, "cycle wraps forward");
+        app.pane_next(false);
+        assert_eq!(app.focus, 1, "cycle wraps backward");
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        app.handle_key(left).await.unwrap();
+        assert_eq!(app.focus, 0);
+    }
+
+    /// A click in a background pane focuses it (and does nothing else).
+    #[test]
+    fn pane_click_focuses_background_pane() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let (mut app, _workspace, _skills) = test_app();
+        app.pane_split();
+        app.panes[0].rect = Rect::new(0, 1, 50, 20);
+        app.panes[1].rect = Rect::new(50, 1, 50, 20);
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.focus, 0);
+        // Clicking the focused pane again keeps focus (and falls through
+        // to the normal click handling).
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 12,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.focus, 0);
+        // The other pane is now background: clicking it focuses it.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 60,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.focus, 1);
+    }
+
+    /// A split layout round-trips through tabs: both panes autosave and
+    /// reload with their own transcripts and focus.
+    #[test]
+    fn split_layout_round_trips_through_tabs() {
+        let (mut app, _workspace, _skills, _dirs) = sidebar_app();
+        app.state.history.push(Message::user("left work"));
+        crate::session::save(&app.paths, "left", &app.state).unwrap();
+        app.current_session = Some("left".into());
+        app.pane_split();
+        app.state.history.push(Message::user("right work"));
+        crate::session::save(&app.paths, "right", &app.state).unwrap();
+        app.current_session = Some("right".into());
+        app.tab_new();
+        assert_eq!(app.tabs[0].panes.len(), 2);
+        assert_eq!(app.tabs[0].focus, 1);
+        app.tab_switch(0);
+        assert_eq!(app.panes.len(), 2, "both panes come back");
+        assert_eq!(app.focus, 1, "focus restores too");
+        assert_eq!(app.panes[0].state.history[0].content, "left work");
+        assert_eq!(app.panes[1].state.history[0].content, "right work");
+        assert_eq!(app.panes[0].current_session.as_deref(), Some("left"));
+        assert_eq!(app.panes[1].current_session.as_deref(), Some("right"));
     }
 
     /// Tab keys: Ctrl+Shift+T/W, Ctrl+Tab, Alt+1..9; clicks resolve
@@ -2395,7 +2540,8 @@ mod tests {
             .find(|name| name.starts_with("checkpoint-rewind-"))
             .expect("checkpoint backup");
         app.state.history.clear();
-        let count = session::load(&app.paths, &backup, &mut app.state).unwrap();
+        let paths = app.paths.clone();
+        let count = session::load(&paths, &backup, &mut app.state).unwrap();
         assert_eq!(count, 2);
         assert_eq!(app.state.history[0].content, "keep me");
     }

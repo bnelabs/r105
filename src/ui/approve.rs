@@ -103,7 +103,9 @@ impl UiApp {
                         })
                     })
                     .collect();
-                let _ = self.tx.send(crate::ui::events::UiEvent::ToolsDone(merged));
+                let _ = self
+                    .tx
+                    .send(crate::ui::events::UiEvent::ToolsDone(merged).at(self.id));
                 return;
             }
             self.set_status(format!("Running {}…", approved.len()));
@@ -189,7 +191,9 @@ impl UiApp {
                         })
                     })
                     .collect();
-                let _ = self.tx.send(crate::ui::events::UiEvent::ToolsDone(merged));
+                let _ = self
+                    .tx
+                    .send(crate::ui::events::UiEvent::ToolsDone(merged).at(self.id));
                 return;
             }
             self.spawn_tool_calls(context, approved, results);
@@ -219,6 +223,7 @@ impl UiApp {
         }
         self.set_status(format!("Running {}…", calls.len()));
         let sender = self.tx.clone();
+        let pane = self.id;
         tokio::spawn(async move {
             match tool::execute_calls(&calls, &context, None).await {
                 Ok(done) => {
@@ -238,12 +243,13 @@ impl UiApp {
                             })
                         })
                         .collect();
-                    let _ = sender.send(crate::ui::events::UiEvent::ToolsDone(merged));
+                    let _ = sender.send(crate::ui::events::UiEvent::ToolsDone(merged).at(pane));
                 }
                 Err(error) => {
-                    let _ = sender.send(crate::ui::events::UiEvent::ChatError(format!(
-                        "tool execution: {error:#}"
-                    )));
+                    let _ = sender.send(
+                        crate::ui::events::UiEvent::ChatError(format!("tool execution: {error:#}"))
+                            .at(pane),
+                    );
                 }
             }
         });

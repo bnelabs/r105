@@ -285,22 +285,8 @@ impl UiApp {
     /// Persist the live transcript when it holds anything: back to its
     /// own name, else a timestamped autosave. Returns the name used.
     pub(crate) fn autosave_current(&mut self) -> Option<String> {
-        if self.state.history.is_empty() {
-            return None;
-        }
-        let name = self.current_session.clone().unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|value| format!("autosave-{}", value.as_secs()))
-                .unwrap_or_else(|_| "autosave".to_string())
-        });
-        match session::save(&self.paths, &name, &self.state) {
-            Ok(_) => {
-                self.current_session = Some(name.clone());
-                Some(name)
-            }
-            Err(_) => None,
-        }
+        let paths = self.paths.clone();
+        self.autosave(&paths)
     }
 
     /// Whether a click lands inside the visible pane.
