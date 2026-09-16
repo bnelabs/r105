@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Natural-language command search on `#`: describe what you want
   (`# list large files`) and the model drafts one shell command into
   the composer for review.
+- Ctrl+R reverse history search: the draft seeds the query, typing
+  narrows case-insensitively, ↑↓ and the wheel move the highlight, the
+  composer previews the match live, Enter accepts without running, Esc
+  restores the draft; clicking selects and a second click accepts.
 
 ### Changed
 - Lighter, airier layout: a one-row tab bar replaces the two-row

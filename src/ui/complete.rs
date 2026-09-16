@@ -23,6 +23,10 @@ impl UiApp {
             self.ghost_text = None;
             return true;
         }
+        if self.hist_open() {
+            self.ghost_text = None;
+            return true;
+        }
         if self.palette_active() {
             return true;
         }

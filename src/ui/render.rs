@@ -31,9 +31,15 @@ impl UiApp {
         let file_items = self.at_menu_items();
         let arg_items = self.arg_menu_items();
         let sh_items = self.sh_menu_items();
-        // The `@file`, argument-value, and shell menus never co-show
-        // (each requires its own input shape), so they share one chunk.
-        let complete_rows = file_items.len().max(arg_items.len()).max(sh_items.len());
+        let hist_rows = self.hist_rows();
+        // The `@file`, argument-value, shell, and history panels never
+        // co-show (each requires its own input shape), so they share
+        // one chunk.
+        let complete_rows = file_items
+            .len()
+            .max(arg_items.len())
+            .max(sh_items.len())
+            .max(hist_rows.len());
         let file_height = if complete_rows == 0 {
             0
         } else {
@@ -77,19 +83,26 @@ impl UiApp {
             self.draw_palette(frame, chunks[2], &palette);
         }
         if file_height > 0 {
-            if !file_items.is_empty() {
+            if self.hist_open() {
                 self.last_sh_rect = None;
-                self.draw_file_complete(frame, chunks[3], &file_items);
-            } else if !arg_items.is_empty() {
-                self.last_sh_rect = None;
-                self.draw_arg_complete(frame, chunks[3], &arg_items);
-            } else if !sh_items.is_empty() {
-                self.draw_sh_complete(frame, chunks[3], &sh_items);
+                self.draw_hist_search(frame, chunks[3], &hist_rows);
             } else {
-                self.last_sh_rect = None;
+                self.last_hist_rect = None;
+                if !file_items.is_empty() {
+                    self.last_sh_rect = None;
+                    self.draw_file_complete(frame, chunks[3], &file_items);
+                } else if !arg_items.is_empty() {
+                    self.last_sh_rect = None;
+                    self.draw_arg_complete(frame, chunks[3], &arg_items);
+                } else if !sh_items.is_empty() {
+                    self.draw_sh_complete(frame, chunks[3], &sh_items);
+                } else {
+                    self.last_sh_rect = None;
+                }
             }
         } else {
             self.last_sh_rect = None;
+            self.last_hist_rect = None;
         }
         self.last_sh_count = sh_items.len();
         self.draw_composer(frame, chunks[4]);
@@ -366,6 +379,49 @@ impl UiApp {
                     .borders(Borders::ALL)
                     .title(" Values · Tab fills "),
             ),
+            area,
+        );
+    }
+
+    /// Ctrl+R reverse-search panel: match rows with the highlight, and
+    /// the live query in the title.
+    pub(crate) fn draw_hist_search(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        rows: &[(String, bool)],
+    ) {
+        self.last_hist_rect = Some(area);
+        self.last_hist_count = rows.len();
+        let viewport = area.height.saturating_sub(2) as usize;
+        let selected = rows.iter().position(|(_, selected)| *selected).unwrap_or(0);
+        let scroll = command::ensure_visible(selected, 0, viewport, rows.len());
+        let selection = selection_style(&self.state.theme);
+        let query = self
+            .hist_search
+            .as_ref()
+            .map(|search| search.query.clone())
+            .unwrap_or_default();
+        let title = if query.is_empty() {
+            " history · type to search · Enter accepts · Esc cancels ".to_string()
+        } else {
+            format!(" history · {query} ")
+        };
+        let lines = rows
+            .iter()
+            .skip(scroll)
+            .take(viewport)
+            .map(|(text, selected)| {
+                let style = if *selected {
+                    selection
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                Line::from(Span::styled(format!(" {text}"), style))
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
             area,
         );
     }
@@ -679,7 +735,7 @@ impl UiApp {
             ),
             Span::raw("  "),
             Span::styled(
-                "Ctrl+P palette · Ctrl+B sessions · Ctrl+Shift+T tab",
+                "Ctrl+P palette · Ctrl+R history · Ctrl+B sessions · Ctrl+Shift+T tab",
                 Style::default().fg(Color::DarkGray),
             ),
         ]);

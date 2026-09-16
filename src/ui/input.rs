@@ -23,6 +23,11 @@ impl UiApp {
             return Ok(());
         }
         if key.code == KeyCode::Esc {
+            // An open history search owns Esc: cancel and restore.
+            if self.hist_open() {
+                self.close_hist_search(false);
+                return Ok(());
+            }
             // A focused pane owns Esc first: focus returns to the
             // composer, the pane stays visible.
             if self.sidebar_focus {
@@ -60,6 +65,11 @@ impl UiApp {
         }
         if !matches!(self.overlay, Overlay::None) {
             self.handle_overlay_key(key).await?;
+            return Ok(());
+        }
+        // Reverse history search owns the keyboard while open.
+        if self.hist_open() {
+            self.handle_hist_key(key);
             return Ok(());
         }
         // Tabs (Warp-style): Ctrl+Shift+T new, Ctrl+Shift+W close,
@@ -123,7 +133,7 @@ impl UiApp {
             return Ok(());
         }
         if self.action_key("history", &key) {
-            self.set_status("Search: /session search <term>".into());
+            self.open_hist_search();
             return Ok(());
         }
         if self.action_key("redraw", &key) {
@@ -872,6 +882,10 @@ impl UiApp {
         let over_sidebar = self.sidebar_hit(mouse.column, mouse.row);
         match mouse.kind {
             MouseEventKind::ScrollUp => {
+                if self.hist_open() {
+                    self.hist_wheel(false);
+                    return;
+                }
                 if over_sidebar {
                     // The draw step pins scroll to the selection, so
                     // wheel over the pane moves the selection itself.
@@ -887,6 +901,10 @@ impl UiApp {
                 self.follow_transcript = false;
             }
             MouseEventKind::ScrollDown => {
+                if self.hist_open() {
+                    self.hist_wheel(true);
+                    return;
+                }
                 if over_sidebar {
                     self.sidebar_selected = self.sidebar_selected.saturating_add(3);
                     self.clamp_sidebar_selected();
@@ -905,6 +923,10 @@ impl UiApp {
                 }
                 let col = mouse.column;
                 let row = mouse.row;
+                if self.hist_open() {
+                    self.click_hist_search(col, row);
+                    return;
+                }
                 if self.tab_plus_hit(col, row) {
                     self.tab_new();
                     return;

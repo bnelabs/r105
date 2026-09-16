@@ -213,6 +213,7 @@ composer.
 ```
 
 - Tabs are session-backed (Warp-style): Ctrl+Shift+T opens one on a fresh session, Ctrl+Shift+W closes it, Ctrl+Tab cycles, Alt+1..9 selects, and clicking the bar works too. Switching autosaves the live session first; the bar persists across restarts in `tabs.json`.
+- Ctrl+R searches shell history in reverse: the current draft seeds the query, typing narrows (case-insensitive), ↑↓/wheel move the highlight, the composer previews the match live, Enter accepts it without running, Esc restores the draft. Clicking a row selects it; clicking the highlighted row accepts.
 - Type / or press Ctrl+P to open the action palette (`*` marks saved workflows from Markdown files). Click a row to pick it; click again to fill it in.
 - Press Ctrl+B for the session pane: a left column listing saved sessions (`●` marks the loaded one) and recent workspaces with the live one pinned first. ↑↓ move, Enter opens (`+ New session` starts fresh), `d` deletes a saved file, typing filters, click selects (click again opens), wheel scrolls, Esc returns to the composer. Switching sessions or starting fresh autosaves the live session first, so the pane never discards work; `/session` and `/workspace` stay for everything scripted.
 - After a space, `/command <Tab>` completes argument values (models, themes, skill and session names, …); unknown commands suggest the closest match.

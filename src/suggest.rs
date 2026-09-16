@@ -138,6 +138,27 @@ impl ShellHistory {
         out
     }
 
+    /// Newest-first unique commands containing `query`
+    /// (case-insensitive); an empty query lists the most recent unique
+    /// runs. The half of Ctrl+R reverse search that touches history.
+    pub fn search(&self, query: &str, cap: usize) -> Vec<String> {
+        let needle = query.to_ascii_lowercase();
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for entry in self.entries.iter().rev() {
+            if out.len() >= cap {
+                break;
+            }
+            if !needle.is_empty() && !entry.cmd.to_ascii_lowercase().contains(&needle) {
+                continue;
+            }
+            if seen.insert(entry.cmd.clone()) {
+                out.push(entry.cmd.clone());
+            }
+        }
+        out
+    }
+
     /// Best continuation suffix for `prefix`, or `None`. Score per
     /// distinct command: `10×runs + 25×same-dir runs + newest_index`
     /// (later index = more recent). Prefix match is case-sensitive:
@@ -3514,6 +3535,28 @@ mod tests {
         assert_eq!(history.suggest("git sta", "/repo"), Some("tus".to_string()));
         assert_eq!(history.suggest("git status", "/repo"), None);
         assert_eq!(history.suggest("", "/repo"), None);
+    }
+
+    /// Ctrl+R search: newest-first, deduped, case-insensitive, and an
+    /// empty query lists the most recent unique runs.
+    #[test]
+    fn history_search_filters_newest_first() {
+        let history = history(&[
+            ("cargo build", "/repo"),
+            ("git status", "/repo"),
+            ("git stash", "/repo"),
+            ("git status", "/repo"),
+        ]);
+        assert_eq!(
+            history.search("git", 10),
+            vec!["git status".to_string(), "git stash".to_string()]
+        );
+        assert_eq!(history.search("STAT", 10), vec!["git status".to_string()]);
+        assert_eq!(
+            history.search("", 2),
+            vec!["git status".to_string(), "git stash".to_string()]
+        );
+        assert!(history.search("nope", 10).is_empty());
     }
 
     /// The ring drops the oldest runs past capacity.

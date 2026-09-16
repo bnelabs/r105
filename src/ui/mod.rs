@@ -55,6 +55,7 @@ mod commands;
 mod complete;
 mod events;
 mod ghost;
+mod history;
 mod input;
 mod render;
 mod sidebar;
@@ -146,6 +147,11 @@ struct UiApp {
     pub(crate) tabs: Vec<tabs::Tab>,
     pub(crate) active_tab: usize,
     pub(crate) last_tab_rect: Rect,
+    /// Ctrl+R reverse history search: live query, highlighted match,
+    /// and the draft to restore when cancelled.
+    pub(crate) hist_search: Option<history::HistSearch>,
+    pub(crate) last_hist_rect: Option<Rect>,
+    pub(crate) last_hist_count: usize,
     /// Next lazy transcript message number (`m<N>` IDs are assigned on
     /// first render so undo/redo/compact never shift section identity).
     pub(crate) next_msg_id: u64,
@@ -372,6 +378,9 @@ impl UiApp {
             }],
             active_tab: 0,
             last_tab_rect: Rect::default(),
+            hist_search: None,
+            last_hist_rect: None,
+            last_hist_count: 0,
             next_msg_id: 0,
             section_state: HashMap::new(),
             section_order: Vec::new(),
@@ -1193,6 +1202,59 @@ mod tests {
             joined.contains("> hello world"),
             "composer text missing:\n{joined}"
         );
+    }
+
+    /// Ctrl+R reverse search: the draft seeds the query, typing
+    /// narrows, ↑↓ moves the preview, Enter accepts, Esc restores.
+    #[tokio::test]
+    async fn ctrl_r_searches_history_and_restores_on_esc() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, workspace, _skills) = test_app();
+        let cwd = workspace.path().to_string_lossy().to_string();
+        app.shell_history.record("git status", &cwd);
+        app.shell_history.record("git stash", &cwd);
+        app.shell_history.record("cargo build", &cwd);
+        app.input = "cargo".into();
+        app.cursor = app.input.len();
+        let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.handle_key(ctrl_r).await.unwrap();
+        assert!(app.hist_open());
+        assert_eq!(app.hist_matches(), vec!["cargo build".to_string()]);
+        assert!(app.menu_wants_input(), "search suppresses the ghost");
+        // Ctrl+U clears the seeded query; typing narrows and previews.
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert_eq!(app.hist_matches().len(), 3);
+        for ch in ['g', 'i', 't'] {
+            app.handle_key(key(KeyCode::Char(ch))).await.unwrap();
+        }
+        assert_eq!(
+            app.hist_matches(),
+            vec!["git stash".to_string(), "git status".to_string()]
+        );
+        assert_eq!(app.input, "git stash", "top match previews");
+        app.handle_key(key(KeyCode::Down)).await.unwrap();
+        assert_eq!(app.input, "git status", "next match previews");
+        // Enter accepts without running; Esc restores the draft.
+        app.handle_key(key(KeyCode::Enter)).await.unwrap();
+        assert!(!app.hist_open());
+        assert_eq!(app.input, "git status");
+        app.input = "git".into();
+        app.cursor = app.input.len();
+        app.handle_key(ctrl_r).await.unwrap();
+        app.handle_key(key(KeyCode::Esc)).await.unwrap();
+        assert_eq!(app.input, "git", "Esc restores the pre-search draft");
+        assert!(!app.hist_open());
+        // Clicking the highlighted row accepts it.
+        app.last_hist_rect = Some(Rect::new(0, 0, 40, 4));
+        app.handle_key(ctrl_r).await.unwrap();
+        app.last_hist_count = app.hist_rows().len();
+        assert!(app.click_hist_search(2, 1));
+        assert!(!app.hist_open());
+        assert_eq!(app.input, "git stash");
     }
 
     /// ↑/↓ walks user turns, stashes the live draft, clamps at the
