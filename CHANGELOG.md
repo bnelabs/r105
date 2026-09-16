@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-09-16
+
 ### Added
 - Addressable transcript blocks: every message is addressable as `#n`.
   `/filter <block> <pattern>` narrows a block's output (substring,
