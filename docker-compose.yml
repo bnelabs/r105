@@ -1,7 +1,7 @@
 # r105 + llama-router quick-start stack
 # Usage (Compose v2):
 #   docker compose up -d llama-router  # start the router
-#   docker compose run --rm r105 harness   # launch the harness
+#   docker compose run --rm r105          # launch the interactive workspace
 #
 # The container runs the native `r105` binary. Mount a workspace and config
 # directory explicitly when using it outside this quick-start stack.

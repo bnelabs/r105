@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn pointer_cell(state: &WindowState) -> (u16, u16) {
     let (rows, cols) = state.session.size();
     (
-        (((state.pointer.1 - PAD_Y).max(0.0) / CELL_H) as u16).min(rows - 1),
+        (((state.pointer.1 - terminal_origin_y()).max(0.0) / CELL_H) as u16).min(rows - 1),
         (((state.pointer.0 - PAD_X).max(0.0) / CELL_W) as u16).min(cols - 1),
     )
 }
@@ -53,7 +53,7 @@ pub(super) fn selection_rects(state: &WindowState) -> Vec<ColoredRect> {
             (
                 BoxRect::new(
                     PAD_X + f32::from(from) * CELL_W,
-                    PAD_Y + f32::from(row) * CELL_H,
+                    terminal_origin_y() + f32::from(row) * CELL_H,
                     f32::from(to - from) * CELL_W,
                     CELL_H,
                 ),

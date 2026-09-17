@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [2.5.1] — 2026-09-17
+
 ### Fixed
 - Native-window input now accepts the operating system's named Space event in
   the composer and forwards literal spaces to the PTY shell.
@@ -14,15 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fractional trackpad deltas, and supports Space/PgUp/PgDn for keyboard-only
   reading.
 
+### Added
+- A shared r105 application icon is embedded in native windows on every
+  desktop target and converted to a multi-size macOS app icon during bundling.
+
 ### Changed
-- The interactive command is now `r105 harness`; documentation and container
-  entrypoints use the harness terminology consistently.
+- The interactive entrypoint is now the plain `r105` command (with explicit
+  `r105 run` available when a subcommand is preferred); container examples use
+  the same clear default.
+- The native window now reserves a versioned top menu row from the PTY grid,
+  with consistent Help and About surfaces on macOS, Linux, Windows, and other
+  desktop targets.
+- The macOS application menu provides a native About panel with version and
+  “Built by BNE Labs” metadata; packaged Info.plist metadata matches it.
 
 ### Documentation
 - Synchronized the README, architecture, configuration, contributor guide,
   security policy, tool/skill/export guides, packaging notes, and current
-  specs with the 2.5.0 TUI split-tree, tab persistence, PTY, and native-window
-  behavior.
+  specs with the 2.5.1 terminal workspace, split-tree, tab persistence, PTY,
+  native-window menu, and application-icon behavior.
 - Corrected release examples, source-module paths, current validation commands,
   and changelog comparison links.
 - Release metadata checks now require matching per-version release notes.
@@ -758,7 +772,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File explorer sidebar
 - Token usage estimation and auto-compaction at 80% context
 
-[Unreleased]: https://github.com/bnelabs/r105/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/bnelabs/r105/compare/v2.5.1...HEAD
+[2.5.1]: https://github.com/bnelabs/r105/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/bnelabs/r105/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/bnelabs/r105/compare/v2.3.1...v2.4.0
 [2.3.1]: https://github.com/bnelabs/r105/compare/v2.3.0...v2.3.1

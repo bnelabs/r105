@@ -20,7 +20,9 @@ it in the native format for each operating system. The current release line is
 
 The Ubuntu, Arch, and Fedora packages share the Linux x86_64 GNU executable. The FreeBSD and Alpine jobs compile the Rust binary on the target ABI. Alpine is allowed to be an optional best effort job because its musl toolchain can be unavailable during a GitHub hosted runner outage; the GNU and other native assets remain required.
 
-Every archive contains the executable, README, and LICENSE. The release job
+Every archive contains the executable, README, and LICENSE. Native windows
+load the shared `assets/r105-icon.png` at runtime; the macOS app helper also
+builds the multi-size `r105.icns` bundle resource from that source. The release job
 publishes `SHA256SUMS` after all assets are assembled, then synchronizes the
 Homebrew and Scoop metadata in a follow-up commit. Alpine is best effort in
 the tag workflow; the explicit `rebuild-alpine.yml` workflow can attach a
@@ -31,7 +33,7 @@ native APK and refresh checksums for an existing release.
 ```sh
 cargo build --release --locked
 target/release/r105 --version
-VERSION=2.5.0
+VERSION=2.5.1
 ./packaging/check_release.sh --tag "v$VERSION"
 ./packaging/build_macos_app.sh  # macOS only; creates target/r105.app
 ```

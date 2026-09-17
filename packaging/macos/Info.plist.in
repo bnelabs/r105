@@ -6,9 +6,11 @@
   <key>CFBundleName</key><string>r105</string>
   <key>CFBundleDisplayName</key><string>r105</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>r105.icns</string>
   <key>CFBundleShortVersionString</key><string>@VERSION@</string>
   <key>CFBundleVersion</key><string>@VERSION@</string>
+  <key>CFBundleGetInfoString</key><string>r105 @VERSION@ — Built by BNE Labs</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSHumanReadableCopyright</key><string>r105 contributors. MIT license.</string>
+  <key>NSHumanReadableCopyright</key><string>Built by BNE Labs. MIT license.</string>
 </dict></plist>

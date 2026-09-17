@@ -51,7 +51,7 @@ Land the core behind a separate subcommand; the harness stays untouched.
   output; `r105 terminal` opens a shell, typing works, recognized shells
   report interactive exit/cwd markers, `Ctrl+Q` exits, and `--help` lists
   the subcommand.
-- `harness`, `send`, and `sandbox` behave exactly as before.
+- `r105`/`run`, `send`, and `sandbox` behave exactly as before.
 
 ## Amendments
 

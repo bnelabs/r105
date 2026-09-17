@@ -1,6 +1,6 @@
 #!/bin/sh
-# Development helper script for r105
-# This script provides common development workflows
+# Maintainer helper script for r105
+# This script provides common source-check workflows
 
 set -e
 
@@ -68,8 +68,8 @@ case "$1" in
         ;;
     
     dev)
-        echo "Starting development build..."
-        cargo run -- harness
+        echo "Starting the current-terminal workspace..."
+        cargo run -- run
         ;;
     
     *)
@@ -85,7 +85,7 @@ case "$1" in
         echo "  audit       - Run security audit"
         echo "  outdated    - Check for outdated dependencies"
         echo "  clean       - Clean build artifacts"
-        echo "  dev         - Start development TUI"
+        echo "  dev         - Start the current-terminal workspace"
         exit 1
         ;;
 esac

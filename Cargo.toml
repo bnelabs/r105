@@ -1,6 +1,6 @@
 [package]
 name = "r105"
-version = "2.5.0"
+version = "2.5.1"
 edition = "2024"
 description = "r105 — Beyond the prompt. Local-first AI harness for OpenAI-compatible backends."
 license = "MIT"
@@ -21,6 +21,7 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 futures-util = "0.3"
 glyphon = "0.12"
 pollster = "0.4"
+png = "0.18"
 portable-pty = "0.9"
 ratatui = "0.30"
 regex = "1.11"
@@ -38,6 +39,11 @@ walkdir = "2.5"
 which = "8.0"
 wgpu = "30"
 winit = "0.30"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The system menu is only used on macOS; Linux and Windows share the
+# in-window menu so they do not inherit GTK or Win32 menu requirements.
+muda = { version = "0.19.3", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.23"

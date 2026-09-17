@@ -6,6 +6,7 @@
 //! Layers are composited back-to-front with explicit bounds and logical sizing.
 
 use std::{
+    io::Cursor,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -22,7 +23,7 @@ use winit::{
     event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
-    window::{Window, WindowId},
+    window::{Icon, Window, WindowId},
 };
 
 use crate::{
@@ -53,12 +54,30 @@ const FG: glyphon::Color = glyphon::Color::rgb(0xC9, 0xD4, 0xE3);
 const DIM: glyphon::Color = glyphon::Color::rgb(0x8A, 0x94, 0xA6);
 const ACCENT: glyphon::Color = glyphon::Color::rgb(0x6E, 0xD3, 0xFF);
 
-/// Logical-pixel status bar; the PTY grid shrinks by this height.
+/// Fixed-height desktop chrome; the PTY grid reserves both menu and status.
+const MENU_PX: f32 = 32.0;
 const STATUS_PX: f32 = 30.0;
 const CHROME_MARGIN: f32 = 24.0;
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const SURFACE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const SMOKE_MAX_DURATION: Duration = Duration::from_secs(10);
+
+fn load_window_icon() -> Option<Icon> {
+    let mut decoder = png::Decoder::new(Cursor::new(include_bytes!("../assets/r105-icon.png")));
+    decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let mut pixels = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut pixels).ok()?;
+    if info.color_type != png::ColorType::Rgba {
+        return None;
+    }
+    Icon::from_rgba(
+        pixels[..info.buffer_size()].to_vec(),
+        info.width,
+        info.height,
+    )
+    .ok()
+}
 
 fn px(color: (u8, u8, u8)) -> [f32; 4] {
     let linear = |value: u8| {
@@ -93,6 +112,8 @@ enum Focus {
     Composer,
     Approval,
     AiPanel,
+    Help,
+    About,
 }
 
 impl Focus {
@@ -102,6 +123,8 @@ impl Focus {
             Focus::Composer => "composer",
             Focus::Approval => "approval",
             Focus::AiPanel => "ai panel",
+            Focus::Help => "help",
+            Focus::About => "about",
         }
     }
 }
@@ -185,12 +208,24 @@ pub struct WindowReport {
 /// Must run on the main thread (winit) inside a Tokio runtime
 /// (the assistant spawns tasks); `main` calls it directly.
 pub fn run_window(options: WindowOptions) -> Result<WindowReport> {
-    let event_loop = EventLoop::new().context("creating window event loop")?;
+    let mut event_loop_builder = EventLoop::builder();
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        event_loop_builder.with_default_menu(false);
+    }
+    let event_loop = event_loop_builder
+        .build()
+        .context("creating window event loop")?;
+    #[cfg(target_os = "macos")]
+    let mac_menu = Some(MacMenu::new()?);
     let mut app = WindowApp {
         options,
         state: None,
         report: WindowReport::default(),
         error: None,
+        #[cfg(target_os = "macos")]
+        mac_menu,
     };
     event_loop
         .run_app(&mut app)
@@ -206,6 +241,63 @@ struct WindowApp {
     state: Option<WindowState>,
     report: WindowReport,
     error: Option<anyhow::Error>,
+    #[cfg(target_os = "macos")]
+    mac_menu: Option<MacMenu>,
+}
+
+#[cfg(target_os = "macos")]
+struct MacMenu {
+    _menu: muda::Menu,
+    help_id: muda::MenuId,
+    shortcuts_id: muda::MenuId,
+}
+
+#[cfg(target_os = "macos")]
+impl MacMenu {
+    fn new() -> Result<Self> {
+        use muda::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+        let app_menu = Submenu::new("r105", true);
+        let about = PredefinedMenuItem::about(
+            Some("About r105"),
+            Some(AboutMetadata {
+                name: Some("r105".into()),
+                version: Some(env!("CARGO_PKG_VERSION").into()),
+                copyright: Some("Built by BNE Labs".into()),
+                ..Default::default()
+            }),
+        );
+        let quit = PredefinedMenuItem::quit(Some("Quit r105"));
+        app_menu.append(&about)?;
+        app_menu.append(&PredefinedMenuItem::separator())?;
+        app_menu.append(&quit)?;
+
+        let help_menu = Submenu::new("Help", true);
+        let help = MenuItem::with_id("r105.menu.help", "r105 Help", true, None);
+        let shortcuts = MenuItem::with_id("r105.menu.shortcuts", "Keyboard Reference", true, None);
+        help_menu.append(&help)?;
+        help_menu.append(&shortcuts)?;
+        let menu = Menu::new();
+        menu.append(&app_menu)?;
+        menu.append(&help_menu)?;
+        menu.init_for_nsapp();
+        help_menu.set_as_help_menu_for_nsapp();
+        Ok(Self {
+            _menu: menu,
+            help_id: help.id().clone(),
+            shortcuts_id: shortcuts.id().clone(),
+        })
+    }
+
+    fn drain(&self, state: &mut WindowState) {
+        while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
+            if event.id == self.help_id || event.id == self.shortcuts_id {
+                state.focus = Focus::Help;
+                state.overlay_scroll = 0;
+                state.window.request_redraw();
+            }
+        }
+    }
 }
 
 struct WindowState {
@@ -221,11 +313,13 @@ struct WindowState {
     renderers: Vec<glyphon::TextRenderer>,
     rects: RectRenderer,
     buffer: Buffer,
+    menu_buf: Buffer,
     status_buf: Buffer,
     composer_buf: Buffer,
     list_buf: Buffer,
     detail_buf: Buffer,
     approval_buf: Buffer,
+    overlay_buf: Buffer,
     session: PtySession,
     modifiers: Modifiers,
     input_line: String,
@@ -233,10 +327,12 @@ struct WindowState {
     last_screen: Vec<u8>,
     terminal_rects: Vec<ColoredRect>,
     last_status: String,
+    last_menu: String,
     last_composer: String,
     last_list: String,
     last_detail: String,
     last_approval: String,
+    last_overlay: String,
     frames: u64,
     focus: Focus,
     composer: ComposerState,
@@ -247,6 +343,7 @@ struct WindowState {
     panel_open: bool,
     panel_sel: usize,
     panel_scroll: usize,
+    overlay_scroll: usize,
     assistant: AssistantHandle,
     status_note: String,
     snapshot_path: Option<PathBuf>,
@@ -264,9 +361,10 @@ struct WindowState {
 impl WindowApp {
     fn grid_for(size: winit::dpi::PhysicalSize<u32>, scale: f64) -> (u16, u16) {
         let logical_w = size.width as f64 / scale;
-        // Reserve the status bar; chrome overlays float above the grid.
-        let status_logical = f64::from(STATUS_PX);
-        let logical_h = size.height as f64 / scale - status_logical;
+        // Reserve both fixed chrome rows; the PTY grid never renders beneath
+        // the menu or status bar.
+        let chrome_logical = f64::from(MENU_PX + STATUS_PX);
+        let logical_h = size.height as f64 / scale - chrome_logical;
         let cols = ((logical_w - 2.0 * PAD_X as f64) / CELL_W as f64)
             .floor()
             .clamp(1.0, 1000.0) as u16;
@@ -288,6 +386,7 @@ impl ApplicationHandler for WindowApp {
                     .create_window(
                         Window::default_attributes()
                             .with_title("r105")
+                            .with_window_icon(load_window_icon())
                             .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 320.0))
                             .with_inner_size(winit::dpi::LogicalSize::new(900.0, 600.0)),
                     )
@@ -346,7 +445,7 @@ impl ApplicationHandler for WindowApp {
                 },
             );
             let mut atlas = TextAtlas::new(&device, &queue, &cache, format);
-            let renderers = (0..5)
+            let renderers = (0..7)
                 .map(|_| {
                     glyphon::TextRenderer::new(
                         &mut atlas,
@@ -362,6 +461,8 @@ impl ApplicationHandler for WindowApp {
             // The vt100 screen already wraps lines; the text buffer must not.
             buffer.set_wrap(Wrap::None);
             buffer.set_size(Some(config.width as f32), Some(config.height as f32));
+            let mut menu_buf = Buffer::new(&mut font_system, metrics);
+            menu_buf.set_wrap(Wrap::None);
             let mut status_buf = Buffer::new(&mut font_system, metrics);
             status_buf.set_wrap(Wrap::None);
             let mut composer_buf = Buffer::new(&mut font_system, metrics);
@@ -372,12 +473,14 @@ impl ApplicationHandler for WindowApp {
             detail_buf.set_wrap(Wrap::Word);
             let mut approval_buf = Buffer::new(&mut font_system, metrics);
             approval_buf.set_wrap(Wrap::Word);
+            let mut overlay_buf = Buffer::new(&mut font_system, metrics);
+            overlay_buf.set_wrap(Wrap::Word);
 
             let scale = window.scale_factor();
             let (rows, cols) = Self::grid_for(size, scale);
             let session =
                 PtySession::spawn(&self.options.workspace, rows, cols).context("spawning shell")?;
-            // The assistant owns its ChatState for the window session;
+            // The assistant owns its session state for the window;
             // history persists across prompts until the window closes.
             let assistant = spawn_assistant(
                 self.options.backend.clone(),
@@ -397,11 +500,13 @@ impl ApplicationHandler for WindowApp {
                 renderers,
                 rects,
                 buffer,
+                menu_buf,
                 status_buf,
                 composer_buf,
                 list_buf,
                 detail_buf,
                 approval_buf,
+                overlay_buf,
                 session,
                 modifiers: Modifiers::default(),
                 input_line: String::new(),
@@ -409,10 +514,12 @@ impl ApplicationHandler for WindowApp {
                 last_screen: Vec::new(),
                 terminal_rects: Vec::new(),
                 last_status: String::new(),
+                last_menu: String::new(),
                 last_composer: String::new(),
                 last_list: String::new(),
                 last_detail: String::new(),
                 last_approval: String::new(),
+                last_overlay: String::new(),
                 frames: 0,
                 focus: Focus::Terminal,
                 composer: ComposerState::new(),
@@ -423,6 +530,7 @@ impl ApplicationHandler for WindowApp {
                 panel_open: false,
                 panel_sel: 0,
                 panel_scroll: 0,
+                overlay_scroll: 0,
                 assistant,
                 status_note: String::from("ready — Ctrl+J asks r105"),
                 snapshot_path: None,
@@ -519,8 +627,20 @@ impl ApplicationHandler for WindowApp {
                         state.config.height as f32 / scale,
                     );
                     let (x, y) = state.pointer;
-                    if state.focus == Focus::Composer && layout.composer.contains(x, y) {
+                    if layout.help_menu().contains(x, y) {
+                        state.focus = Focus::Help;
+                        state.overlay_scroll = 0;
+                    } else if layout.about_menu().contains(x, y) {
+                        state.focus = Focus::About;
+                        state.overlay_scroll = 0;
+                    } else if state.focus == Focus::Composer && layout.composer.contains(x, y) {
                         // Keep the draft focused. Keyboard navigation controls its caret.
+                    } else if matches!(state.focus, Focus::Help | Focus::About) {
+                        // Keep an informational overlay focused while it is
+                        // being read; clicking outside returns to the shell.
+                        if !layout.overlay.contains(x, y) {
+                            state.focus = Focus::Terminal;
+                        }
                     } else if state.panel_open && layout.panel_sheet().contains(x, y) {
                         state.focus = Focus::AiPanel;
                     } else if layout.terminal.contains(x, y) {
@@ -580,6 +700,10 @@ impl ApplicationHandler for WindowApp {
                                 state.selection = None;
                             }
                             Focus::Composer => {}
+                            Focus::Help | Focus::About => {
+                                state.overlay_scroll =
+                                    state.overlay_scroll.saturating_add_signed(-lines as isize)
+                            }
                         }
                     }
                     state.window.request_redraw();
@@ -604,11 +728,13 @@ impl ApplicationHandler for WindowApp {
                 );
                 for buffer in [
                     &mut state.buffer,
+                    &mut state.menu_buf,
                     &mut state.status_buf,
                     &mut state.composer_buf,
                     &mut state.list_buf,
                     &mut state.detail_buf,
                     &mut state.approval_buf,
+                    &mut state.overlay_buf,
                 ] {
                     buffer.set_size(Some(size.width as f32), Some(size.height as f32));
                 }
@@ -661,6 +787,23 @@ impl ApplicationHandler for WindowApp {
                     state.status_note = "cancelling…".into();
                     return;
                 }
+                if state.approval.is_none() {
+                    match logical_key {
+                        Key::Named(NamedKey::F1) => {
+                            state.focus = Focus::Help;
+                            state.overlay_scroll = 0;
+                            state.window.request_redraw();
+                            return;
+                        }
+                        Key::Named(NamedKey::F2) => {
+                            state.focus = Focus::About;
+                            state.overlay_scroll = 0;
+                            state.window.request_redraw();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 match state.focus {
                     Focus::Approval => {
                         match logical_key {
@@ -699,6 +842,9 @@ impl ApplicationHandler for WindowApp {
                     }
                     Focus::AiPanel => {
                         route_panel(state, &logical_key, text.as_deref(), mods);
+                    }
+                    Focus::Help | Focus::About => {
+                        route_overlay(state, &logical_key, mods);
                     }
                     Focus::Terminal => {
                         // Window chrome first: composer, panel, quit.
@@ -840,6 +986,10 @@ impl ApplicationHandler for WindowApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(state) = self.state.as_mut() {
+            #[cfg(target_os = "macos")]
+            if let Some(menu) = &self.mac_menu {
+                menu.drain(state);
+            }
             let now = Instant::now();
             if now >= state.next_redraw {
                 state.window.request_redraw();
@@ -1019,6 +1169,31 @@ fn route_panel(
     clamp_panel(state);
 }
 
+fn route_overlay(
+    state: &mut WindowState,
+    logical_key: &Key,
+    mods: winit::keyboard::ModifiersState,
+) {
+    match logical_key {
+        Key::Named(NamedKey::Escape) | Key::Named(NamedKey::F1) | Key::Named(NamedKey::F2) => {
+            state.focus = Focus::Terminal;
+            state.overlay_scroll = 0;
+        }
+        Key::Named(NamedKey::PageDown)
+        | Key::Named(NamedKey::ArrowDown)
+        | Key::Named(NamedKey::Space)
+            if !mods.control_key() && !mods.alt_key() && !mods.super_key() =>
+        {
+            state.overlay_scroll = state.overlay_scroll.saturating_add(10);
+        }
+        Key::Named(NamedKey::PageUp) | Key::Named(NamedKey::ArrowUp) => {
+            state.overlay_scroll = state.overlay_scroll.saturating_sub(10);
+        }
+        Key::Named(NamedKey::Home) => state.overlay_scroll = 0,
+        _ => {}
+    }
+}
+
 fn clamp_panel(state: &mut WindowState) {
     if state.ai.is_empty() {
         state.panel_sel = 0;
@@ -1116,6 +1291,31 @@ fn status_line(state: &WindowState) -> String {
     )
 }
 
+fn menu_line() -> String {
+    format!(
+        "r105   v{}   Help [F1]   About [F2]",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+fn about_text() -> String {
+    format!(
+        "r105\nVersion {}\nBuilt by BNE Labs\n\nLocal-first AI harness for OpenAI-compatible backends.\nA native Rust terminal surface with a real PTY,\nstreaming answers, approvals, and workspace tools.\n\nLicense: MIT\n\nPress Esc to close.",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+fn help_text() -> &'static str {
+    "r105 help\n\nWINDOW\nCtrl+J  Focus the composer\nEnter   Submit the current request\nAlt+Enter  Insert a new line\nCtrl+C  Cancel a live request\nEsc     Close the current surface or overlay\nCtrl+K  Open or close the answer panel\nF1      Open this help\nF2      Open About r105\nCmd/Ctrl+Q  Quit the window\n\nREADING ANSWERS\nMouse wheel  Scroll the surface under the pointer\nSpace       Page down in a focused answer panel\nPgUp/PgDn   Scroll the focused answer\nHome/End    Go to the beginning or end\nUp/Down     Select an answer in the list\nCmd/Ctrl+C/V  Copy or paste\n\nTERMINAL\nThe terminal forwards normal keys to the PTY, including shell\nediting, arrows, function keys, and interrupt controls. Drag\nacross terminal output to select text.\n\nCOMMANDS\nr105                  Start the interactive harness in this terminal\nr105 run              Same as above, explicitly\nr105 window           Open an independent native window\nr105 terminal         Start a standalone shell session in this terminal\nr105 send <request>   Run one request and exit\nr105 --help           List commands and options\nr105 --version        Print the installed version\n\nAPPROVALS\nWhen a workspace tool needs permission, choose y for Once,\na for Always for the session, or n to Deny. Esc cancels.\n\nMore configuration and provider guidance is available in the\nREADME and docs shipped with this release."
+}
+
+fn overlay_text(focus: Focus) -> String {
+    match focus {
+        Focus::About => about_text(),
+        _ => help_text().to_string(),
+    }
+}
+
 /// Shape against the actual layer width, including after a resize with unchanged text.
 fn set_cached(
     font_system: &mut FontSystem,
@@ -1161,7 +1361,11 @@ fn text_area(
 /// First terminal row boundary at or below `y`, so overlay backgrounds
 /// start on whole rows and never bisect a glyph.
 fn row_floor(y: f32) -> f32 {
-    PAD_Y + (((y - PAD_Y) / CELL_H).floor() * CELL_H).max(0.0)
+    terminal_origin_y() + (((y - terminal_origin_y()) / CELL_H).floor() * CELL_H).max(0.0)
+}
+
+fn terminal_origin_y() -> f32 {
+    MENU_PX + PAD_Y
 }
 
 fn wheel_lines(delta: MouseScrollDelta, scale: f64) -> i32 {
@@ -1182,63 +1386,99 @@ fn panel_scroll_max(visual_lines: usize, viewport_height: f32) -> usize {
 #[derive(Debug)]
 struct ChromeLayout {
     size: (f32, f32),
+    menu: BoxRect,
     terminal: BoxRect,
     status: BoxRect,
     list: BoxRect,
     detail: BoxRect,
     composer: BoxRect,
     approval: BoxRect,
+    overlay: BoxRect,
 }
 
 impl ChromeLayout {
     fn new(width: f32, height: f32) -> Self {
+        let menu = BoxRect::new(0.0, 0.0, width, MENU_PX.min(height));
         let status = BoxRect::new(
             0.0,
             (height - STATUS_PX).max(0.0),
             width,
             STATUS_PX.min(height),
         );
-        let margin = CHROME_MARGIN.min(width * 0.04).min(height * 0.04);
+        let content_top = menu.y + menu.h;
+        let content_height = (status.y - content_top).max(0.0);
+        let margin = CHROME_MARGIN.min(width * 0.04).min(content_height * 0.04);
         let panel = BoxRect::new(
             margin,
-            margin,
+            content_top + margin,
             width - 2.0 * margin,
-            status.y - 2.0 * margin,
+            content_height - 2.0 * margin,
         );
         let list_w = (panel.w * 0.3).clamp(0.0, 260.0);
         let list = BoxRect::new(panel.x, panel.y, list_w, panel.h).inset(12.0);
         let detail = BoxRect::new(panel.x + list_w, panel.y, panel.w - list_w, panel.h).inset(12.0);
-        let composer_h = (height * 0.42).clamp(0.0, 240.0).min(status.y);
+        let composer_h = (height * 0.42)
+            .clamp(0.0, 240.0)
+            .min(content_height.max(0.0));
         let composer = BoxRect::new(
             margin,
-            (status.y - composer_h - 8.0).max(0.0),
+            (status.y - composer_h - 8.0).max(content_top),
             width - margin * 2.0,
             composer_h,
         );
         // Keep the decision keys on a dedicated line; preview scrolls above them.
-        let approval_h = (height * 0.5).clamp(0.0, 280.0).min(status.y);
+        let approval_h = (height * 0.5)
+            .clamp(0.0, 280.0)
+            .min(content_height.max(0.0));
         let approval = BoxRect::new(
             margin,
-            (status.y - approval_h - 8.0).max(0.0),
+            (status.y - approval_h - 8.0).max(content_top),
             width - margin * 2.0,
             approval_h,
         );
+        let overlay = BoxRect::new(
+            margin,
+            content_top + margin,
+            width - 2.0 * margin,
+            content_height - 2.0 * margin,
+        );
         Self {
             size: (width, height),
-            terminal: BoxRect::new(PAD_X, PAD_Y, width - 2.0 * PAD_X, status.y - 2.0 * PAD_Y),
+            menu,
+            terminal: BoxRect::new(
+                PAD_X,
+                terminal_origin_y(),
+                width - 2.0 * PAD_X,
+                (status.y - terminal_origin_y() - PAD_Y).max(0.0),
+            ),
             status,
             list,
             detail,
             composer,
             approval,
+            overlay,
         }
+    }
+
+    fn help_menu(&self) -> BoxRect {
+        let about = self.about_menu();
+        BoxRect::new((about.x - 112.0).max(96.0), 0.0, 104.0, self.menu.h)
+    }
+
+    fn about_menu(&self) -> BoxRect {
+        BoxRect::new((self.size.0 - 104.0).max(200.0), 0.0, 96.0, self.menu.h)
     }
 
     /// Full-bleed sheet behind the open panel. Terminal text runs to the
     /// window edge, so an inset background would leave glyph slivers in
     /// the margin; hit-testing shares this rectangle too.
     fn panel_sheet(&self) -> BoxRect {
-        BoxRect::new(0.0, 0.0, self.size.0, self.status.y)
+        BoxRect::new(
+            0.0,
+            self.menu.h,
+            self.size.0,
+            (self.status.y - self.menu.h).max(0.0),
+        )
     }
 }
 
@@ -1308,7 +1548,7 @@ fn terminal_spans(screen: &vt100::Screen) -> (Vec<(String, Attrs<'static>)>, Vec
                 rects.push((
                     BoxRect::new(
                         PAD_X + f32::from(col) * CELL_W,
-                        PAD_Y + f32::from(row) * CELL_H,
+                        terminal_origin_y() + f32::from(row) * CELL_H,
                         width,
                         CELL_H,
                     ),
@@ -1319,7 +1559,7 @@ fn terminal_spans(screen: &vt100::Screen) -> (Vec<(String, Attrs<'static>)>, Vec
                 rects.push((
                     BoxRect::new(
                         PAD_X + f32::from(col) * CELL_W,
-                        PAD_Y + f32::from(row) * CELL_H + CELL_H - 2.0,
+                        terminal_origin_y() + f32::from(row) * CELL_H + CELL_H - 2.0,
                         width,
                         1.0,
                     ),
@@ -1378,6 +1618,14 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
         .buffer
         .shape_until_scroll(&mut state.font_system, false);
     let status = status_line(state);
+    let menu = menu_line();
+    set_cached(
+        &mut state.font_system,
+        &mut state.menu_buf,
+        &mut state.last_menu,
+        &menu,
+        layout.menu.w - 24.0,
+    );
     set_cached(
         &mut state.font_system,
         &mut state.status_buf,
@@ -1385,6 +1633,22 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
         &status,
         layout.status.w - 24.0,
     );
+
+    if matches!(state.focus, Focus::Help | Focus::About) {
+        let overlay_body = layout.overlay.inset(18.0);
+        let overlay = overlay_text(state.focus);
+        set_cached(
+            &mut state.font_system,
+            &mut state.overlay_buf,
+            &mut state.last_overlay,
+            &overlay,
+            overlay_body.w,
+        );
+        let visual_lines = state.overlay_buf.layout_runs().count();
+        state.overlay_scroll = state
+            .overlay_scroll
+            .min(panel_scroll_max(visual_lines, overlay_body.h));
+    }
 
     if state.panel_open {
         let rows = ((layout.list.h / LINE_HEIGHT) as usize)
@@ -1523,8 +1787,8 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
     // The terminal canvas is visible only above the topmost open overlay;
     // clipping on a row boundary keeps every row either fully drawn or
     // fully covered by an overlay sheet.
-    let terminal_bottom = if state.panel_open {
-        PAD_Y
+    let terminal_bottom = if state.panel_open || matches!(state.focus, Focus::Help | Focus::About) {
+        layout.menu.h
     } else if state.approval.is_some() {
         row_floor(layout.approval.y)
     } else if state.focus == Focus::Composer {
@@ -1532,7 +1796,7 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
     } else {
         layout.terminal.y + layout.terminal.h
     };
-    let mut layers: Vec<(Vec<ColoredRect>, Vec<TextArea<'_>>)> = Vec::with_capacity(5);
+    let mut layers: Vec<(Vec<ColoredRect>, Vec<TextArea<'_>>)> = Vec::with_capacity(7);
     let mut terminal_rects = state.terminal_rects.clone();
     terminal_rects.extend(selection_rects(state));
     if !state.session.screen().hide_cursor()
@@ -1543,7 +1807,7 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
         terminal_rects.push((
             BoxRect::new(
                 PAD_X + f32::from(col) * CELL_W,
-                PAD_Y + f32::from(row) * CELL_H + CELL_H - 2.0,
+                terminal_origin_y() + f32::from(row) * CELL_H + CELL_H - 2.0,
                 CELL_W,
                 2.0,
             ),
@@ -1552,7 +1816,7 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
         state.window.set_ime_cursor_area(
             winit::dpi::LogicalPosition::new(
                 PAD_X + f32::from(col) * CELL_W,
-                PAD_Y + f32::from(row) * CELL_H,
+                terminal_origin_y() + f32::from(row) * CELL_H,
             ),
             winit::dpi::LogicalSize::new(CELL_W, CELL_H),
         );
@@ -1567,10 +1831,26 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
             0.0,
             Some(BoxRect::new(
                 0.0,
-                PAD_Y,
+                layout.terminal.y,
                 layout.size.0,
-                terminal_bottom - PAD_Y,
+                terminal_bottom - layout.terminal.y,
             )),
+        )],
+    ));
+    layers.push((
+        vec![(layout.menu, px((0x11, 0x18, 0x26)))],
+        vec![text_area(
+            &state.menu_buf,
+            BoxRect::new(
+                12.0,
+                layout.menu.y + 6.0,
+                layout.menu.w - 24.0,
+                layout.menu.h - 6.0,
+            ),
+            scale,
+            FG,
+            0.0,
+            None,
         )],
     ));
     layers.push((
@@ -1595,7 +1875,12 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
         let sheet = layout.panel_sheet();
         panel_rects.push((sheet, px((0x0E, 0x13, 0x1F))));
         panel_rects.push((
-            BoxRect::new(layout.detail.x - 12.0, 0.0, 1.0, layout.status.y),
+            BoxRect::new(
+                layout.detail.x - 12.0,
+                layout.menu.h,
+                1.0,
+                layout.status.y - layout.menu.h,
+            ),
             px((0x2A, 0x35, 0x4A)),
         ));
         panel_areas.push(text_area(
@@ -1656,6 +1941,22 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
     } else {
         (Vec::new(), Vec::new())
     });
+    let mut overlay_rects = Vec::new();
+    let mut overlay_areas = Vec::new();
+    if matches!(state.focus, Focus::Help | Focus::About) {
+        let sheet = layout.panel_sheet();
+        overlay_rects.push((sheet, px((0x0B, 0x10, 0x1B))));
+        overlay_rects.push((layout.overlay, px((0x14, 0x1D, 0x2B))));
+        overlay_areas.push(text_area(
+            &state.overlay_buf,
+            layout.overlay.inset(18.0),
+            scale,
+            FG,
+            state.overlay_scroll as f32 * LINE_HEIGHT,
+            None,
+        ));
+    }
+    layers.push((overlay_rects, overlay_areas));
 
     let mut rects = Vec::new();
     let mut ranges = Vec::new();
@@ -1955,7 +2256,11 @@ mod tests {
             .map(|(text, _)| text.as_str())
             .collect::<String>();
         assert_eq!(text, "abcde\nfghij\n     \nZ    ");
-        assert!(rects.iter().any(|(rect, _)| rect.y == PAD_Y + 3.0 * CELL_H));
+        assert!(
+            rects
+                .iter()
+                .any(|(rect, _)| rect.y == terminal_origin_y() + 3.0 * CELL_H)
+        );
     }
 
     #[test]
@@ -1979,19 +2284,46 @@ mod tests {
             let layout = ChromeLayout::new(width, height);
             for y in [layout.composer.y, layout.approval.y] {
                 let top = row_floor(y);
-                assert_eq!((top - PAD_Y) % CELL_H, 0.0, "{width}x{height}: y={y}");
+                assert_eq!(
+                    (top - terminal_origin_y()) % CELL_H,
+                    0.0,
+                    "{width}x{height}: y={y}"
+                );
                 assert!(top <= y && top + CELL_H > y, "{width}x{height}: y={y}");
                 assert!(
-                    top >= PAD_Y && top < layout.status.y,
+                    top >= terminal_origin_y() && top < layout.status.y,
                     "{width}x{height}: y={y}"
                 );
             }
             let sheet = layout.panel_sheet();
             assert_eq!(
                 (sheet.x, sheet.y, sheet.w, sheet.h),
-                (0.0, 0.0, width, layout.status.y)
+                (0.0, layout.menu.h, width, layout.status.y - layout.menu.h)
             );
         }
+    }
+
+    #[test]
+    fn menu_content_is_versioned_and_branded() {
+        assert!(menu_line().contains(env!("CARGO_PKG_VERSION")));
+        assert!(about_text().contains("Built by BNE Labs"));
+        assert!(about_text().contains(env!("CARGO_PKG_VERSION")));
+        assert!(help_text().contains("r105 window"));
+        assert!(help_text().contains("r105 terminal"));
+    }
+
+    #[test]
+    fn bundled_icon_decodes_for_native_windows() {
+        assert!(load_window_icon().is_some());
+    }
+
+    #[test]
+    fn menu_hit_regions_are_inside_the_top_bar() {
+        let layout = ChromeLayout::new(900.0, 600.0);
+        assert!(layout.menu.contains(layout.help_menu().x + 1.0, 1.0));
+        assert!(layout.menu.contains(layout.about_menu().x + 1.0, 1.0));
+        assert!(!layout.help_menu().contains(layout.help_menu().x, MENU_PX));
+        assert_eq!(layout.terminal.y, terminal_origin_y());
     }
 
     #[test]

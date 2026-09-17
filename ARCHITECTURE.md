@@ -46,6 +46,7 @@ native plugins, and MCP transports.
 | window.rs | native OS window, layered GPU text/ANSI renderer, PTY input, selection, IME, and AI chrome |
 | window/input.rs | native-window clipboard, selection, paste sanitization, and pointer mapping |
 | window/rect.rs | solid-rectangle GPU pipeline for window chrome |
+| assets/r105-icon.png | shared application icon source decoded into native window icons and macOS `.icns` packaging |
 | security.rs | workspace containment, DNS/IP blocklist, input limits |
 | sandbox.rs | nsjail, bubblewrap, Docker, or timeout fallback execution |
 | plugin.rs | executable plugin manifests and JSON stdin/stdout protocol |
@@ -96,9 +97,9 @@ The UI is designed around the working loop used by modern coding harnesses:
 - TUI tabs own a persistent split tree: right/down splits, compact headers,
   active-adjacent dividers, and a reversible focused-pane zoom keep each live
   session visible without boxing every surface;
-- the native window is a separate single PTY surface with status bar,
-  composer, AI panel, inline approval bar, selection, clipboard, IME, and
-  scrollback; it does not share the TUI tab tree;
+- the native window is a separate single PTY surface with a versioned menu bar,
+  status bar, composer, AI panel, inline approval bar, selection, clipboard,
+  IME, and scrollback; it does not share the TUI tab tree;
 - the composer is always available;
 - slash commands open a fuzzy palette instead of a separate screen;
 - provider and model setup use focused, scrollable pickers;

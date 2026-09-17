@@ -24,7 +24,7 @@ no runtime beyond the OS.
   Window close quits; the shell is killed on exit.
 - `--smoke N` runs N frames headless-ish then exits with a
   `frames=`/`screen_bytes=` report for CI and agents.
-- `harness`, `send`, `sandbox`, and `terminal` are untouched. The AI merge
+- `r105`/`run`, `send`, `sandbox`, and `terminal` are untouched. The AI merge
   (composer + blocks in the window) is the next spec, not this one.
 
 ## Non-goals

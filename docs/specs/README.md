@@ -38,4 +38,5 @@ and inline-AI surfaces. In particular:
 - 0021 documents the shared PTY and command-block core.
 - 0022 documents the GPU window and platform input foundation.
 - 0023 documents the assistant lifecycle, approvals, window persistence,
-  selection/clipboard/IME behavior, smoke snapshots, and local app packaging.
+  selection/clipboard/IME behavior, smoke snapshots, local app packaging, and
+  the versioned cross-platform Help/About menu.

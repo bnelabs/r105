@@ -1,6 +1,6 @@
 # 0023: AI merge — composer and harness blocks in the native window
 
-- Status: implemented; released in 2.5.0
+- Status: implemented; released in 2.5.1
 - Author: r105
 - Scope: `src/assistant.rs` (new), `src/window.rs` (chrome), `src/main.rs` (pass backend/state/config), `src/ui/approve.rs` (share card text)
 
@@ -25,8 +25,8 @@ canvas plus inline AI, sharing one block timeline.
 - Pure, tested helpers in the same module: `ComposerState`
   (multiline insert/newline/backspace/arrows/word-kill) and
   `AiHistory` (prompt/response/rounds/wall per block).
-- `src/window.rs` chrome, all GPU: status bar (always, PTY grid
-  shrinks by one line), composer overlay (`Ctrl+J`, `Enter`
+- `src/window.rs` chrome, all GPU: versioned menu bar and Help/About overlays,
+  status bar (always, PTY grid shrinks by the fixed chrome rows), composer overlay (`Ctrl+J`, `Enter`
   submits, `Alt+Enter` newline, `Esc` closes, `Ctrl+C` cancels a
   run), AI panel (`Ctrl+K`, block list plus selected full text),
   approval bar (`y` once, `a` always, `n` deny). Solid-rect pipeline
@@ -87,5 +87,5 @@ canvas plus inline AI, sharing one block timeline.
 The released window surface owns one PTY, one assistant history, and one
 approval queue. It checkpoints to a named session and restores through
 `r105 --session <name> window`. Persistent tabs and nested split trees belong
-to the TUI (`r105 harness`) and are stored in `tabs.json`; the window does not
+to the current-terminal workspace (`r105`) and are stored in `tabs.json`; the window does not
 share that layout.

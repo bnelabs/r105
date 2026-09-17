@@ -62,7 +62,7 @@ struct Cli {
     /// Workspace for generated files.
     #[arg(long)]
     workspace: Option<std::path::PathBuf>,
-    /// Model name to use for harness requests.
+    /// Model name to use for interactive requests.
     #[arg(long)]
     model: Option<String>,
     /// Backend type: direct or router.
@@ -109,7 +109,8 @@ struct Cli {
 enum Command {
     /// Send one prompt and exit.
     Send { message: Vec<String> },
-    /// Start the interactive native Rust harness.
+    /// Start r105 in the current terminal (the default).
+    #[command(name = "run", alias = "harness")]
     Harness,
     /// Check the selected backend health.
     Health,

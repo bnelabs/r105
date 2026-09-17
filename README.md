@@ -2,7 +2,7 @@
 
 r105 is a local-first AI harness for terminal work. It connects to local or cloud OpenAI-compatible backends, keeps your sessions on your machine, and gives the model bounded tools for files, calculations, web research, and native Rust execution.
 
-The current release is 2.5.0. The application is written in Rust: installed builds are single native executables and do not require Python, Node.js, or a runtime virtual environment.
+The current release is 2.5.1. The application is written in Rust: installed builds are single native executables and do not require Python, Node.js, or a runtime virtual environment.
 
 <p align="center">
   <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust">
@@ -49,7 +49,7 @@ brew install bnelabs/tap/r105
 Download the archive for your operating system and architecture from GitHub Releases, verify its checksum, then place the executable on your PATH.
 
 ```sh
-VERSION=2.5.0
+VERSION=2.5.1
 curl -LO https://github.com/bnelabs/r105/releases/download/v$VERSION/r105-macos-arm64.tar.gz
 curl -LO https://github.com/bnelabs/r105/releases/download/v$VERSION/SHA256SUMS
 grep 'r105-macos-arm64.tar.gz$' SHA256SUMS | shasum -a 256 -c -
@@ -62,7 +62,7 @@ install -m 755 r105 /usr/local/bin/r105
 Use the package that matches the distribution:
 
 ```sh
-VERSION=2.5.0
+VERSION=2.5.1
 
 # Ubuntu / Debian
 sudo apt install "./r105_${VERSION}_amd64.deb"
@@ -82,7 +82,7 @@ sudo apk add --allow-untrusted "./r105-${VERSION}-r0.apk"
 
 The Alpine package is unsigned for public release convenience; verify SHA256SUMS before installing it. Distributions with signed package repositories can rebuild the recipe and sign it with their own key.
 
-### Build from source
+### Install from source
 
 Install the Rust toolchain from rustup or your operating system package manager:
 
@@ -90,18 +90,6 @@ Install the Rust toolchain from rustup or your operating system package manager:
 git clone https://github.com/bnelabs/r105.git
 cd r105
 cargo install --path . --locked
-```
-
-For a local development build:
-
-```sh
-cargo run -- harness
-```
-
-To run the native window during development:
-
-```sh
-cargo run -- window
 ```
 
 ### Docker
@@ -113,28 +101,32 @@ docker build -t r105 .
 docker run -it --rm \
   -v ~/.config/r105:/root/.config/r105 \
   -v ~/r105-workspace:/root/r105-workspace \
-  r105 harness
+  r105
 ```
 
 For a local llama-router stack:
 
 ```sh
 docker compose up -d llama-router
-docker compose run --rm r105 harness
+docker compose run --rm r105
 ```
 
 ## Quick start
 
-Start the TUI:
+Choose the surface that matches how you want to work:
 
 ```sh
-r105 harness
+r105                 # interactive workspace in the terminal you already use
+r105 window          # independent native window with its own terminal surface
+r105 terminal        # standalone shell session with block tracking
 ```
 
-The TUI is the full workspace surface: it provides persistent tabs, nested
-split panes, session management, completion, approvals, and exports. The
-native window is a separate single-window PTY surface with inline AI; use
-`r105 window` when you want the terminal and AI panel in an OS window.
+`r105` is the normal interactive workspace inside the current terminal. It
+provides persistent tabs, split panes, session management, completion,
+approvals, and exports. `r105 window` opens a separate desktop window with its
+own PTY and inline AI panel. `r105 terminal` is shell-only when you need a
+standalone PTY without the workspace UI. `r105 run` is an explicit alias for
+the default `r105` command.
 
 The default connection is a local llama-router at http://127.0.0.1:8010. You can also send one prompt and exit:
 
@@ -182,7 +174,7 @@ Start an OpenAI-compatible llama-server:
 
 ```sh
 llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
-r105 harness
+r105
 ```
 
 In the TUI, open `/connect` and choose `llama.cpp`. The menu asks for the base URL and uses `http://127.0.0.1:8080/v1` when submitted empty. For a server on your LAN, enter an address such as `http://192.168.1.50:8080/v1`; r105 checks `/v1/models`, then lets you choose a model and saves the working endpoint. The provider supports model listing, SSE streaming, tool calls, prompt caching with /cache-prompt on, and model switching.
@@ -600,7 +592,7 @@ Exports have no optional runtime dependencies:
 r105 [OPTIONS] [COMMAND]
 
 Commands:
-  harness        Start the interactive native Rust harness
+  run             Start r105 in the current terminal (the default)
   send           Send one prompt and exit
   health         Check the selected backend
   doctor         Diagnose config, sandbox, backend, and workspace
@@ -622,8 +614,8 @@ prints its block (command, cwd, exit code, output tail).
 Interactive blocks use OSC 7/133/633 shell integration for cwd, command
 boundaries, and exit codes when the shell is recognized (bash, zsh, or
 fish); other shells fall back to an honest completed status. The one-shot
-path records exact exits independently. `harness`, `send`, and `sandbox`
-remain available as separate commands.
+path records exact exits independently. The interactive workspace, `send`,
+and `sandbox` remain available as separate commands.
 
 ## Native window
 
@@ -631,7 +623,11 @@ remain available as separate commands.
 hosting the same PTY shell core. Typing runs in the shell, resize reflows the
 grid, and `Cmd/Ctrl+Q` or the close button quits. This surface is intentionally
 one live PTY and one AI history; persistent tabs and nested split panes belong
-to `r105 harness`.
+to the interactive `r105` workspace in the current terminal.
+The top bar is consistent on macOS, Linux, Windows, and other desktop targets:
+it shows the installed version and opens Help or About. On macOS, the system
+application menu also provides About r105 with “Built by BNE Labs”, the version,
+and the same Help content.
 `r105 window --smoke 60` renders 60 frames and exits with a frame
 report for automated checks (`--smoke-chrome` also seeds the
 composer, AI panel, and approval bar for headless coverage).
@@ -668,7 +664,7 @@ Common options:
 | --timeout <SECONDS> | Backend and tool timeout |
 | --yes | Select full access without prompting |
 
-## Development
+## Project layout
 
 The Rust code is organized by responsibility:
 
@@ -698,23 +694,6 @@ src/
 ├── window.rs    native GPU terminal and inline AI chrome
 └── ui/          Ratatui TUI (panes, tabs, commands, completion, render)
 ```
-
-Run the checks before a change:
-
-```sh
-cargo fmt --all -- --check
-cargo check --locked --all-targets --all-features
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-targets
-cargo build --release --locked
-target/release/r105 window --smoke 60
-target/release/r105 window --smoke 90 --smoke-chrome
-```
-
-A local OpenAI-compatible mock can validate the non-streaming CLI path and
-assistant lifecycle. A live backend is required for real model, streaming,
-and tool-loop checks; endpoint availability is environment-dependent and is
-not assumed by the deterministic release gate.
 
 ## Documentation
 
