@@ -5,7 +5,11 @@
 //! composer, `Ctrl+K` the AI panel; tool approvals arrive inline.
 //! Layers are composited back-to-front with explicit bounds and logical sizing.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use glyphon::{
@@ -16,7 +20,7 @@ use wgpu::{MultisampleState, SurfaceConfiguration};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
@@ -52,6 +56,9 @@ const ACCENT: glyphon::Color = glyphon::Color::rgb(0x6E, 0xD3, 0xFF);
 /// Logical-pixel status bar; the PTY grid shrinks by this height.
 const STATUS_PX: f32 = 30.0;
 const CHROME_MARGIN: f32 = 24.0;
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const SURFACE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+const SMOKE_MAX_DURATION: Duration = Duration::from_secs(10);
 
 fn px(color: (u8, u8, u8)) -> [f32; 4] {
     let linear = |value: u8| {
@@ -249,6 +256,9 @@ struct WindowState {
     selecting: bool,
     preedit: String,
     approval_scroll: usize,
+    next_redraw: Instant,
+    smoke_started: Instant,
+    render_attempts: u64,
 }
 
 impl WindowApp {
@@ -422,6 +432,9 @@ impl ApplicationHandler for WindowApp {
                 selecting: false,
                 preedit: String::new(),
                 approval_scroll: 0,
+                next_redraw: Instant::now(),
+                smoke_started: Instant::now(),
+                render_attempts: 0,
             })
         })();
         match outcome {
@@ -715,6 +728,30 @@ impl ApplicationHandler for WindowApp {
                 state.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                if self
+                    .options
+                    .smoke_frames
+                    .is_some_and(|budget| state.frames >= budget)
+                {
+                    event_loop.exit();
+                    return;
+                }
+                state.render_attempts = state.render_attempts.saturating_add(1);
+                if let Some(budget) = self.options.smoke_frames {
+                    let attempt_limit = budget.saturating_mul(4).max(60);
+                    if state.render_attempts > attempt_limit
+                        || state.smoke_started.elapsed() > SMOKE_MAX_DURATION
+                    {
+                        self.error = Some(anyhow::anyhow!(
+                            "window smoke stalled: presented {} of {} frames after {} render attempts",
+                            state.frames,
+                            budget,
+                            state.render_attempts,
+                        ));
+                        event_loop.exit();
+                        return;
+                    }
+                }
                 if self.options.smoke_chrome {
                     if state.frames == 30 {
                         state.focus = Focus::Composer;
@@ -742,6 +779,12 @@ impl ApplicationHandler for WindowApp {
                     // Timeout/Occluded surfaces skip the frame; only count
                     // presented frames toward the smoke budget.
                     Ok(presented) => {
+                        state.next_redraw = Instant::now()
+                            + if presented {
+                                FRAME_INTERVAL
+                            } else {
+                                SURFACE_RETRY_INTERVAL
+                            };
                         if presented {
                             state.frames += 1;
                             self.report.frames = state.frames;
@@ -764,9 +807,14 @@ impl ApplicationHandler for WindowApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(state) = self.state.as_mut() {
-            state.window.request_redraw();
+            let now = Instant::now();
+            if now >= state.next_redraw {
+                state.window.request_redraw();
+                state.next_redraw = now + FRAME_INTERVAL;
+            }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(state.next_redraw));
         }
     }
 }
@@ -1285,15 +1333,11 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
             .saturating_sub(2)
             .max(1);
         let start = state.panel_sel.saturating_sub(rows - 1);
-        let mut list_text = String::from("AI history · ↑↓ select\nPgUp/PgDn scroll\n");
+        let mut list_text = String::from("AI · ↑↓ select\nPgUp/PgDn scroll\n");
         let max_chars = (layout.list.w / CELL_W).floor() as usize;
         for (index, block) in state.ai.list().iter().enumerate().skip(start).take(rows) {
             let first = block.prompt.lines().next().unwrap_or("(empty)");
-            let prefix = format!(
-                "{} #{} ",
-                if index == state.panel_sel { "›" } else { " " },
-                block.seq
-            );
+            let prefix = format!("{} ", if index == state.panel_sel { "›" } else { " " });
             let line = format!("{prefix}{first}");
             let truncated = line.chars().count() > max_chars;
             let mut line: String = line.chars().take(max_chars).collect();
@@ -1315,7 +1359,7 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
         );
         let detail = match state.ai.list().get(state.panel_sel) {
             Some(block) => format!(
-                "> {}\n\n{}\n\n[{} rounds · {:.1}s · {}]",
+                "› {}\n\n● {}\n\n· {} rounds · {:.1}s · {}",
                 block.prompt,
                 if block.response.is_empty() && !block.done {
                     "…"

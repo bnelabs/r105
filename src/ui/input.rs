@@ -73,7 +73,8 @@ impl UiApp {
             return Ok(());
         }
         // Tabs: Ctrl+Shift+T new, Ctrl+Shift+W close,
-        // Ctrl+Tab / Ctrl+Shift+Tab cycle, Alt+1..9 select.
+        // Ctrl+Tab / Ctrl+Shift+Tab cycle, Alt+1..9 select. Alt+Shift
+        // arrows reorder the active tab without disturbing its session.
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && key.modifiers.contains(KeyModifiers::SHIFT)
             && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
@@ -89,8 +90,8 @@ impl UiApp {
             self.pane_close();
             return Ok(());
         }
-        // Panes: Ctrl+Shift+D splits right, arrows move
-        // focus (Ctrl+Alt+arrows are the macOS-friendly alias).
+        // Panes: Ctrl+Shift+D/E split right/down, arrows move focus
+        // (Ctrl+Alt+arrows are the macOS-friendly alias).
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && key.modifiers.contains(KeyModifiers::SHIFT)
             && matches!(key.code, KeyCode::Char('d') | KeyCode::Char('D'))
@@ -99,15 +100,43 @@ impl UiApp {
             return Ok(());
         }
         if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(key.code, KeyCode::Char('e') | KeyCode::Char('E'))
+        {
+            self.pane_split_down();
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.modifiers.contains(KeyModifiers::SHIFT)
+            && key.code == KeyCode::Enter
+        {
+            self.toggle_pane_zoom();
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
             && (key.modifiers.contains(KeyModifiers::SHIFT)
                 || key.modifiers.contains(KeyModifiers::ALT))
-            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+            && matches!(
+                key.code,
+                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+            )
         {
-            self.pane_next(key.code == KeyCode::Right);
+            if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+                self.pane_direction(key.code);
+            } else {
+                self.pane_next(key.code == KeyCode::Right);
+            }
             return Ok(());
         }
         if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.tab_next(!key.modifiers.contains(KeyModifiers::SHIFT));
+            return Ok(());
+        }
+        if key.modifiers.contains(KeyModifiers::ALT)
+            && key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+        {
+            self.tab_move(key.code == KeyCode::Right);
             return Ok(());
         }
         if key.modifiers.contains(KeyModifiers::ALT)
@@ -959,6 +988,10 @@ impl UiApp {
                 }
                 if self.tab_plus_hit(col, row) {
                     self.tab_new();
+                    return;
+                }
+                if let Some(index) = self.tab_close_hit(col, row) {
+                    self.tab_close_at(index);
                     return;
                 }
                 if let Some(index) = self.tab_hit(col, row) {

@@ -1,6 +1,6 @@
 [package]
 name = "r105"
-version = "2.4.0"
+version = "2.5.0"
 edition = "2024"
 description = "r105 — Beyond the prompt. Local-first AI harness for OpenAI-compatible backends."
 license = "MIT"

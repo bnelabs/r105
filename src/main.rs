@@ -134,14 +134,14 @@ enum Command {
         #[arg(last = true)]
         command: Vec<String>,
     },
-    /// Open the terminal prototype (PTY shell with block list).
+    /// Open the PTY shell with block tracking.
     /// With a command, runs it once in a PTY and prints the block.
     Terminal {
         /// Command to run once in a PTY; empty opens the interactive shell.
         #[arg(last = true)]
         command: Vec<String>,
     },
-    /// Open the native r105 window (GPU terminal prototype).
+    /// Open the native r105 terminal and AI window.
     Window {
         /// Render this many frames then exit (smoke test).
         #[arg(long)]
@@ -318,8 +318,13 @@ async fn main() -> Result<()> {
             // assistant tasks onto the runtime workers.
             let mut parts = assistant::AssistantParts::from_config(&config);
             if smoke.is_none() {
-                let name = format!("window-{}", uuid::Uuid::new_v4().simple());
-                eprintln!("Window AI session: {name} (resume with --session {name} window)");
+                let name = cli
+                    .session
+                    .clone()
+                    .unwrap_or_else(|| format!("window-{}", uuid::Uuid::new_v4().simple()));
+                if cli.session.is_none() {
+                    eprintln!("Window AI session: {name} (resume with --session {name} window)");
+                }
                 parts.persistence = Some((paths.clone(), name));
             }
             let report = window::run_window(window::WindowOptions {

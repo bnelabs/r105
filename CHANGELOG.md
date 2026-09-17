@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] — 2026-09-17
+
+### Added
+- TUI transcripts now use answer-first conversational blocks (`>` prompts and
+  `●` replies); reasoning and tool output stay compact and expandable instead
+  of leaking internal traces or `USER #N` debug banners into the chat.
+- Pane layouts are now persistent split trees: right/down splits, focused-pane
+  zoom, active-adjacent separators, tab reordering, and an explicit active-tab
+  close affordance are covered by the same session-backed tab state.
+- Tabs keep their sessions, pane order, focus, zoom state, and nested layout
+  across tab switches and restarts; legacy tab files repair to a valid layout.
+- Right/down split shortcuts, directional pane focus, tab reordering, and
+  direct active-tab closure are covered by keyboard and mouse paths.
+
+### Fixed
+- Split panes now use compact headers and tree-owned dividers instead of four
+  full border boxes competing with the transcript.
+- Native window redraw retries now back off on occluded or unavailable GPU
+  surfaces, and smoke runs fail with a bounded diagnostic instead of spinning
+  indefinitely.
+- `window --session <name>` now checkpoints the requested session name rather
+  than silently creating a new random one.
+- Interactive bash, zsh, and fish PTYs now install and parse OSC 7/133/633
+  markers so command blocks receive live cwd and exit status information.
+
 ## [2.4.0] — 2026-09-17
 
 ### Fixed
@@ -45,7 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Window session persistence: AI history checkpoints to a
   `window-<uuid>` session and restores into the panel via
   `--session <name> window`.
-- Window input: `Cmd/Ctrl+C/V` clipboard, drag selection with
+- Window input: `Cmd+C/V` on macOS or `Ctrl+Shift+C/V` on Linux/Windows
+  clipboard, drag selection with
   scrollback, IME preedit input, and `--smoke-snapshot` PPM capture of
   the final smoke frame.
 - macOS app bundle: `packaging/build_macos_app.sh` builds an ad-hoc
@@ -105,19 +131,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whenever the line would execute.
 - Tabs: session-backed tabs in a top bar (Ctrl+Shift+T new,
   Ctrl+Shift+W close, Ctrl+Tab / Ctrl+Shift+Tab cycle, Alt+1..9
-  select, click to switch). Switching autosaves the live session
-  first, so a tab never drops work; the bar persists to `tabs.json`
-  and restores on startup.
-- Split panes: Ctrl+Shift+D opens a second (up to four) live session
-  side by side inside the tab, Ctrl+Shift+←/→ or Ctrl+Alt+←/→ moves
-  focus, a click focuses the pane under the pointer, and Ctrl+Shift+W
-  closes the focused pane (the last pane closes its tab). Every pane
-  is a real session with its own composer, transcript, queue, and
-  cancellation: a background pane keeps streaming while you type in
-  its sibling, its frame shows `…` while running and `•` when it
-  finishes unseen, and its footer carries its own status and tokens.
-  Tabs stash pane layouts, each pane autosaves to its session, and a
-  restored split comes back with both transcripts and focus.
+  select, Alt+Shift+←/→ reorder, click to switch, and an active-chip
+  `×` closes directly). Switching autosaves the live session first, so
+  a tab never drops work; the bar persists to `tabs.json` and restores
+  on startup.
+- Split panes: Ctrl+Shift+D/E opens a second (up to four) live session
+  to the right or below inside the tab, directional Ctrl+Shift/Alt
+  arrows move focus, a click focuses the pane under the pointer, and
+  Ctrl+Shift+Enter zooms the focused pane. Ctrl+Shift+W closes it (the
+  last pane closes its tab). Every pane is a real session with its own
+  composer, transcript, queue, and cancellation: a background pane
+  keeps streaming while you type in its sibling, its frame shows `…`
+  while running and `•` when it finishes unseen, and its footer carries
+  its own status and tokens. Tabs persist the nested split tree, pane
+  sessions, zoom state, and focus, then restore them together.
 - Natural-language command search on `#`: describe what you want
   (`# list large files`) and the model drafts one shell command into
   the composer for review.

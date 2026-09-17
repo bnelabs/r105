@@ -200,11 +200,11 @@ composer.
 
 ```
  r105  1 night-run  2 parallel  +     build · llamacpp · model
-─ USER #1 ─
-  list the rust files
+> list the rust files
 
-─ ASSISTANT #2 ─
-  Sure — here they are.
+● Sure — here they are.
+
+  ◌ thought · 2 lines · click or /expand to inspect
 
 ──────────────────────── Shell · Enter runs
 > git checkout main▌
@@ -212,8 +212,12 @@ composer.
  ~/r105-workspace · nsjail  context ██░░ 34% 12k/32k
 ```
 
-- Tabs are session-backed: Ctrl+Shift+T opens one on a fresh session, Ctrl+Shift+W closes it (or the focused pane in a split), Ctrl+Tab cycles, Alt+1..9 selects, and clicking the bar works too. Switching autosaves the live session first; the bar persists across restarts in `tabs.json`.
-- Panes split side by side inside a tab: Ctrl+Shift+D opens a fresh session to the right, Ctrl+Shift+←/→ (or Ctrl+Alt+←/→) moves focus, clicking a pane focuses it, and Ctrl+Shift+W closes the focused pane (the last pane closes the tab). Every pane is a live session: a request keeps streaming while you work in the sibling, the pane frame titles show the session name plus `…` while running and `•` when a background pane finished, and up to four panes fit. Tab switches stash the whole layout — each pane autosaves its own session and the split restores with focus intact.
+Conversation turns stay answer-first: `>` marks the prompt, `●` marks the
+assistant reply, and reasoning/tool output stays in compact expandable rows
+(`click` or `/expand`) instead of printing internal traces into the chat.
+
+- Tabs are session-backed: Ctrl+Shift+T opens one on a fresh session, Ctrl+Shift+W closes it (or the focused pane in a split), Ctrl+Tab cycles, Alt+1..9 selects, Alt+Shift+←/→ reorders, and clicking the bar works too. The active chip exposes `×` for direct closure. Switching autosaves the live session first; the bar persists across restarts in `tabs.json`.
+- Panes use a persistent nested layout inside a tab: Ctrl+Shift+D opens a fresh session to the right, Ctrl+Shift+E stacks one below, Ctrl+Shift+←/→ (or Ctrl+Alt+←/→) moves focus, clicking a pane focuses it, Ctrl+Shift+Enter temporarily maximizes the focused pane, and Ctrl+Shift+W closes it (the last pane closes the tab). Split view uses compact pane headers and tree-owned dividers; the active pane and its adjacent divider get the accent marker while background panes stay quiet. Every pane is a live session: a request keeps streaming while you work in a sibling, the header shows the session name plus `…` while running and `•` when a background pane finished, and up to four panes fit. Tab switches stash the whole layout — each pane autosaves its own session and the exact split, zoom state, and focus restore together.
 - Ctrl+R searches shell history in reverse: the current draft seeds the query, typing narrows (case-insensitive), ↑↓/wheel move the highlight, the composer previews the match live, Enter accepts it without running, Esc restores the draft. Clicking a row selects it; clicking the highlighted row accepts.
 - Type / or press Ctrl+P to open the action palette (`*` marks saved workflows from Markdown files). Click a row to pick it; click again to fill it in.
 - Press Ctrl+B for the session pane: a left column listing saved sessions (`●` marks the loaded one) and recent workspaces with the live one pinned first. ↑↓ move, Enter opens (`+ New session` starts fresh), `d` deletes a saved file, typing filters, click selects (click again opens), wheel scrolls, Esc returns to the composer. Switching sessions or starting fresh autosaves the live session first, so the pane never discards work; `/session` and `/workspace` stay for everything scripted.
@@ -579,11 +583,11 @@ Commands:
   profiles       Print llama-router profiles
   config-schema  Print or write the config JSON Schema
   sandbox        Run a command in the sandbox boundary (tester)
-  terminal       Open the terminal prototype (PTY shell with block list)
-  window         Open the native r105 window (GPU terminal prototype)
+  terminal       Open the PTY shell with block tracking
+  window         Open the native r105 terminal and AI window
 ```
 
-## Terminal prototype
+## Terminal command
 
 `r105 terminal` opens a persistent shell in a real PTY with a block
 list. Each submitted line snapshots a block (command, working
@@ -591,9 +595,11 @@ directory, elapsed time); `Ctrl+B` toggles the block list, `Ctrl+Q`
 quits. `r105 terminal -- <cmd>` runs one command in a fresh PTY and
 prints its block (command, cwd, exit code, output tail).
 
-Interactive block exits stay pending until shell integration lands;
-the one-shot path already records exact exits. `chat`, `send`, and
-`sandbox` are untouched by this prototype.
+Interactive blocks use OSC 7/133/633 shell integration for cwd, command
+boundaries, and exit codes when the shell is recognized (bash, zsh, or
+fish); other shells fall back to an honest completed status. The one-shot
+path records exact exits independently. `chat`, `send`, and `sandbox`
+remain available as separate commands.
 
 ## Native window
 
@@ -610,11 +616,12 @@ composer, AI panel, and approval bar for headless coverage).
 panel (`Ctrl+K`, arrows move, `PgUp`/`PgDn` scroll); tool calls run
 the same approve-then-execute loop as the TUI, with `y`/`a`/`n`
 verdicts inline. `Esc` in the terminal cancels a live run, otherwise
-it goes to the shell. Drag selects terminal text, `Cmd/Ctrl+C/V`
-copies and pastes, scroll and wheel reach scrollback, IME input
+it goes to the shell. Drag selects terminal text, `Cmd+C/V` on macOS
+or `Ctrl+Shift+C/V` on Linux/Windows copies and pastes; plain `Ctrl+C`
+remains the shell interrupt. Scroll and wheel reach scrollback, IME input
 commits into the focused surface, and each window session checkpoints
-itself (resume with `--session <name> window`). Cursor quad and
-markdown rendering are follow-ups.
+itself (resume with `--session <name> window`). AI responses are plain
+text; markdown rendering remains deliberately out of scope.
 
 Common options:
 
@@ -634,6 +641,7 @@ Common options:
 | --session <NAME> | Load a saved session |
 | --timeout <SECONDS> | Backend and tool timeout |
 | --yes | Select full access without prompting |
+| --smoke-snapshot <PATH> | Save a smoke frame as a PPM image (with `--smoke`) |
 
 ## Development
 

@@ -461,25 +461,25 @@ pub(crate) fn split_repeat_suffix(content: &str) -> (&str, usize) {
 pub(crate) fn push_thinking_lines(lines: &mut Vec<Line>, body: &str, show: bool, expanded: bool) {
     let dim = Style::default().fg(Color::DarkGray);
     if !show {
-        lines.push(Line::from(Span::styled(
-            "  ⋯ thinking hidden (/thinking to show)",
-            dim,
-        )));
         return;
     }
     let body_lines: Vec<&str> = body.lines().collect();
-    if body_lines.is_empty() {
-        lines.push(Line::from(Span::styled("  ⋯ empty thinking block", dim)));
-    } else if expanded || body_lines.len() <= 3 {
-        for line in &body_lines {
-            lines.push(Line::from(Span::styled(format!("  {line}"), dim)));
+    if expanded {
+        if body_lines.is_empty() {
+            lines.push(Line::from(Span::styled("  ┊ thinking (empty)", dim)));
+        } else {
+            lines.push(Line::from(Span::styled("  ┊ thinking", dim)));
+            for line in &body_lines {
+                lines.push(Line::from(Span::styled(format!("  ┊ {line}"), dim)));
+            }
         }
     } else {
-        for line in body_lines.iter().take(2) {
-            lines.push(Line::from(Span::styled(format!("  {line}"), dim)));
-        }
         lines.push(Line::from(Span::styled(
-            format!("  ⋯ {} more thinking lines", body_lines.len() - 2),
+            format!(
+                "  ◌ thought · {} line{} · click or /expand to inspect",
+                body_lines.len(),
+                if body_lines.len() == 1 { "" } else { "s" }
+            ),
             dim,
         )));
     }

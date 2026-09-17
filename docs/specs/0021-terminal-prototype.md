@@ -1,4 +1,4 @@
-# 0021: Terminal core prototype (PTY + blocks, behind a flag)
+# 0021: Terminal core (PTY + blocks, behind a flag)
 
 - Status: implemented
 - Author: r105
@@ -30,24 +30,27 @@ Land the core behind a separate subcommand; `chat` stays untouched.
   `Enter` snapshots a block (command line mirror, spawn cwd, start
   time); `Ctrl+Q` quits; `Ctrl+B` toggles the block list overlay;
   resize events forward to the PTY.
-- Exit codes for interactive blocks stay `None` until shell
-  integration (OSC 7 / 633 markers) lands; the one-shot path already
-  records exact exits. This is honest scaffolding, not fake data.
+- Recognized interactive shells install and parse OSC 7/133/633 markers for
+  cwd, command boundaries, and exit codes. Shells without integration fall
+  back to a completed block with no fabricated exit code; the one-shot path
+  records exact exits independently.
 
 ## Non-goals
 
 - No `chat` UI changes in this change.
-- No prompt detection, no OSC parsing, no persistent allowlists.
+- No persistent allowlists or block-session persistence.
 - No AI blocks, no block search, no session persistence for blocks.
 - No Windows PTY hardening beyond `cmd.exe` fallback.
 
 ## Acceptance
 
 - `cargo test terminal::` passes: one-shot exit 0/nonzero, echo,
-  block store, resize, ANSI parse.
+  block store, resize, ANSI parse, split OSC marker parsing, and
+  recognized-shell exit/cwd integration.
 - Manual: `r105 terminal -- echo hi` prints command, cwd, exit 0,
-  output; `r105 terminal` opens a shell, typing works, `Ctrl+Q`
-  exits, `--help` lists the subcommand.
+  output; `r105 terminal` opens a shell, typing works, recognized shells
+  report interactive exit/cwd markers, `Ctrl+Q` exits, and `--help` lists
+  the subcommand.
 - `chat`, `send`, `sandbox` behave exactly as before.
 
 ## Amendments

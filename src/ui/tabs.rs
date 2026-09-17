@@ -10,6 +10,148 @@
 use super::render::accent_color;
 use super::*;
 
+/// Direction of a split inside a tab. `Right` keeps the two children
+/// side-by-side; `Down` stacks them vertically. The tree is intentionally
+/// small and serializable so a restored tab keeps the exact arrangement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum SplitDirection {
+    Right,
+    Down,
+}
+
+/// Persistent pane layout. Leaves refer to the pane's position in the
+/// tab's pane list; insert/remove operations keep those indexes in sync.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum LayoutNode {
+    Pane(usize),
+    Split {
+        direction: SplitDirection,
+        #[serde(default = "default_split_ratio")]
+        ratio: u16,
+        first: Box<LayoutNode>,
+        second: Box<LayoutNode>,
+    },
+}
+
+fn default_split_ratio() -> u16 {
+    500
+}
+
+impl LayoutNode {
+    /// Build a balanced left-to-right layout for old tab files that had no
+    /// layout field, or when a hand-edited file is invalid.
+    pub(crate) fn flat(count: usize) -> Option<Self> {
+        fn build(start: usize, end: usize) -> LayoutNode {
+            if end - start == 1 {
+                return LayoutNode::Pane(start);
+            }
+            let mid = start + (end - start) / 2;
+            let left = mid - start;
+            let total = end - start;
+            let ratio = ((left as u32 * 1000) / total as u32).clamp(100, 900) as u16;
+            LayoutNode::Split {
+                direction: SplitDirection::Right,
+                ratio,
+                first: Box::new(build(start, mid)),
+                second: Box::new(build(mid, end)),
+            }
+        }
+
+        (count > 0).then(|| build(0, count))
+    }
+
+    pub(crate) fn leaves(&self, output: &mut Vec<usize>) {
+        match self {
+            LayoutNode::Pane(index) => output.push(*index),
+            LayoutNode::Split { first, second, .. } => {
+                first.leaves(output);
+                second.leaves(output);
+            }
+        }
+    }
+
+    pub(crate) fn valid_for(&self, count: usize) -> bool {
+        let mut leaves = Vec::new();
+        self.leaves(&mut leaves);
+        leaves.len() == count
+            && leaves.iter().copied().eq(0..count)
+            && leaves.iter().all(|index| *index < count)
+    }
+
+    /// Replace one leaf with a two-child split. The caller inserts the new
+    /// pane into the pane vector and reindexes existing leaves first.
+    pub(crate) fn split_leaf(
+        &mut self,
+        target: usize,
+        new_index: usize,
+        direction: SplitDirection,
+    ) -> bool {
+        match self {
+            LayoutNode::Pane(index) if *index == target => {
+                *self = LayoutNode::Split {
+                    direction,
+                    ratio: default_split_ratio(),
+                    first: Box::new(LayoutNode::Pane(target)),
+                    second: Box::new(LayoutNode::Pane(new_index)),
+                };
+                true
+            }
+            LayoutNode::Pane(_) => false,
+            LayoutNode::Split { first, second, .. } => {
+                first.split_leaf(target, new_index, direction)
+                    || second.split_leaf(target, new_index, direction)
+            }
+        }
+    }
+
+    pub(crate) fn reindex_insert(&mut self, index: usize) {
+        match self {
+            LayoutNode::Pane(value) => {
+                if *value >= index {
+                    *value += 1;
+                }
+            }
+            LayoutNode::Split { first, second, .. } => {
+                first.reindex_insert(index);
+                second.reindex_insert(index);
+            }
+        }
+    }
+
+    pub(crate) fn reindex_remove(&mut self, index: usize) {
+        match self {
+            LayoutNode::Pane(value) => {
+                if *value > index {
+                    *value -= 1;
+                }
+            }
+            LayoutNode::Split { first, second, .. } => {
+                first.reindex_remove(index);
+                second.reindex_remove(index);
+            }
+        }
+    }
+
+    /// Remove a leaf and collapse its parent. A root leaf is never removed
+    /// by the UI because the last pane is represented by the tab itself.
+    pub(crate) fn remove_leaf(&mut self, target: usize) -> bool {
+        match self {
+            LayoutNode::Pane(_) => false,
+            LayoutNode::Split { first, second, .. } => {
+                if matches!(first.as_ref(), LayoutNode::Pane(index) if *index == target) {
+                    *self = (**second).clone();
+                    true
+                } else if matches!(second.as_ref(), LayoutNode::Pane(index) if *index == target) {
+                    *self = (**first).clone();
+                    true
+                } else {
+                    first.remove_leaf(target) || second.remove_leaf(target)
+                }
+            }
+        }
+    }
+}
+
 /// One pane stub inside a tab: the session file to restore, plus the
 /// label shown while the tab is inactive. The live transcript and
 /// request state do not persist; sessions carry the conversation.
@@ -30,6 +172,13 @@ pub(crate) struct Tab {
     pub(crate) panes: Vec<PaneStub>,
     #[serde(default)]
     pub(crate) focus: usize,
+    /// Nested split arrangement for this tab. `None` is accepted for old
+    /// files and normalized to a flat layout on load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) layout: Option<LayoutNode>,
+    /// Temporarily show only the focused pane while keeping the split intact.
+    #[serde(default)]
+    pub(crate) zoomed: bool,
     /// Legacy single-pane fields; migrated into `panes` on load and
     /// dropped on the next save.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,6 +195,8 @@ impl Tab {
                 title: title.to_string(),
             }],
             focus: 0,
+            layout: Some(LayoutNode::Pane(0)),
+            zoomed: false,
             session: None,
             title: String::new(),
         }
@@ -74,6 +225,16 @@ impl Tab {
         if self.focus >= self.panes.len() {
             self.focus = 0;
         }
+        if self
+            .layout
+            .as_ref()
+            .is_none_or(|layout| !layout.valid_for(self.panes.len()))
+        {
+            self.layout = LayoutNode::flat(self.panes.len());
+        }
+        if self.panes.len() <= 1 {
+            self.zoomed = false;
+        }
         self
     }
 
@@ -93,6 +254,58 @@ struct TabsFile {
 }
 
 impl UiApp {
+    /// Ensure the active tab has a valid layout before drawing or mutating
+    /// panes. This also repairs old or manually edited tabs safely.
+    pub(crate) fn ensure_active_layout(&mut self) {
+        let count = self.panes.len();
+        let Some(tab) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
+        if tab
+            .layout
+            .as_ref()
+            .is_none_or(|layout| !layout.valid_for(count))
+        {
+            tab.layout = LayoutNode::flat(count);
+        }
+        if count <= 1 {
+            tab.zoomed = false;
+        }
+    }
+
+    pub(crate) fn active_layout(&self) -> Option<&LayoutNode> {
+        self.tabs
+            .get(self.active_tab)
+            .and_then(|tab| tab.layout.as_ref())
+    }
+
+    pub(crate) fn pane_zoomed(&self) -> bool {
+        self.tabs
+            .get(self.active_tab)
+            .map(|tab| tab.zoomed)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn toggle_pane_zoom(&mut self) {
+        if self.panes.len() <= 1 {
+            self.set_status("Only pane already fills the tab".into());
+            return;
+        }
+        self.ensure_active_layout();
+        let zoomed = if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.zoomed = !tab.zoomed;
+            tab.zoomed
+        } else {
+            return;
+        };
+        self.set_status(if zoomed {
+            "Pane maximized · Ctrl+Shift+Enter restores".into()
+        } else {
+            "Pane layout restored".into()
+        });
+        self.save_tabs();
+    }
+
     fn tabs_path(&self) -> PathBuf {
         self.paths.config_dir.join("tabs.json")
     }
@@ -130,6 +343,7 @@ impl UiApp {
     /// Store the live pane names on the active tab before leaving it.
     /// Every pane autosaves, so a tab switch never drops work.
     fn stash_active_tab(&mut self) {
+        self.ensure_active_layout();
         let paths = self.paths.clone();
         let stubs: Vec<tabs::PaneStub> = self
             .panes
@@ -152,6 +366,7 @@ impl UiApp {
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
             tab.panes = stubs;
             tab.focus = focus;
+            // The layout refers to the same pane order and remains intact.
         }
     }
 
@@ -222,6 +437,7 @@ impl UiApp {
         self.refresh_git_branch();
         self.refresh_custom_commands();
         self.refresh_sidebar();
+        self.ensure_active_layout();
     }
 
     /// The focused pane's live session name, for labels drawn live.
@@ -250,6 +466,7 @@ impl UiApp {
     /// Record the live pane layout on the active tab without saving
     /// anything; names come from each pane's current session.
     pub(crate) fn sync_tab_layout(&mut self) {
+        self.ensure_active_layout();
         let stubs: Vec<tabs::PaneStub> = self
             .panes
             .iter()
@@ -297,6 +514,30 @@ impl UiApp {
         self.save_tabs();
     }
 
+    /// Move an inactive tab one position without touching its persisted
+    /// sessions. The active live tab stays materialized in place.
+    pub(crate) fn tab_move(&mut self, forward: bool) {
+        let count = self.tabs.len();
+        if count <= 1 {
+            return;
+        }
+        let target = if forward {
+            if self.active_tab + 1 >= count {
+                return;
+            }
+            self.active_tab + 1
+        } else {
+            if self.active_tab == 0 {
+                return;
+            }
+            self.active_tab - 1
+        };
+        self.tabs.swap(self.active_tab, target);
+        self.active_tab = target;
+        self.save_tabs();
+        self.set_status(format!("Tab moved · {} of {}", target + 1, count));
+    }
+
     pub(crate) fn tab_next(&mut self, forward: bool) {
         let count = self.tabs.len();
         if count <= 1 {
@@ -332,9 +573,31 @@ impl UiApp {
         self.set_status(format!("Tab {}", self.active_tab + 1));
     }
 
-    /// The tab-bar row: `r105` brand, one chip per tab (`N label`, the
-    /// active chip filled), a `+` affordance, then the right-aligned
-    /// mode · provider · model. Clicks resolve against `last_tab_rect`.
+    /// Close a tab selected by its bar close affordance. An inactive tab has
+    /// no live panes, so it can be removed immediately.
+    pub(crate) fn tab_close_at(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        if index == self.active_tab {
+            self.tab_close();
+            return;
+        }
+        if self.tabs.len() <= 1 {
+            self.set_status("Last tab stays open".into());
+            return;
+        }
+        self.tabs.remove(index);
+        if index < self.active_tab {
+            self.active_tab -= 1;
+        }
+        self.save_tabs();
+        self.set_status(format!("Closed tab · {} remaining", self.tabs.len()));
+    }
+
+    /// The tab-bar row: one chip per tab, a close affordance on the active
+    /// chip, a `+` affordance, then the right-aligned connection summary.
+    /// Clicks resolve against `last_tab_rect`.
     pub(crate) fn draw_tab_bar(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.last_tab_rect = area;
         let connection = self.backend.connection();
@@ -347,16 +610,7 @@ impl UiApp {
         let mut used = 6usize;
         for (index, tab) in self.tabs.iter().enumerate() {
             let active = index == self.active_tab;
-            let label = if active {
-                match sessions.len() {
-                    0 => tab.title.clone(),
-                    1 => sessions[0].clone(),
-                    count => format!("{} ({} panes)", sessions[0], count),
-                }
-            } else {
-                tab.label(0, None)
-            };
-            let text = format!(" {} {} ", index + 1, label);
+            let text = self.tab_chip_text(index, tab, &sessions);
             used += text.chars().count();
             let style = if active {
                 Style::default()
@@ -382,9 +636,51 @@ impl UiApp {
         let width = area.width as usize;
         if used + right_width < width {
             spans.push(Span::raw(" ".repeat(width - used - right_width)));
+            spans.push(Span::styled(right, Style::default().fg(Color::DarkGray)));
+        } else if used < width {
+            spans.push(Span::raw(" ".repeat(width - used)));
         }
-        spans.push(Span::styled(right, Style::default().fg(Color::DarkGray)));
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
+    fn tab_chip_text(&self, index: usize, tab: &Tab, sessions: &[String]) -> String {
+        let active = index == self.active_tab;
+        let label = if active {
+            match sessions.len() {
+                0 => tab.title.clone(),
+                1 => sessions[0].clone(),
+                count => format!("{} · {} panes", sessions[0], count),
+            }
+        } else if tab.panes.len() > 1 {
+            format!("{} · {} panes", tab.label(0, None), tab.panes.len())
+        } else {
+            tab.label(0, None)
+        };
+        let label = compact_tab_label(&label, 28);
+        if active {
+            format!(" {} {} × ", index + 1, label)
+        } else {
+            format!(" {} {} ", index + 1, label)
+        }
+    }
+
+    fn tab_regions(&self) -> Vec<(usize, usize, usize)> {
+        let area = self.last_tab_rect;
+        let sessions = self.pane_sessions();
+        let mut offset = area.x as usize + 6;
+        let limit = area.x as usize + area.width as usize;
+        let mut regions = Vec::with_capacity(self.tabs.len());
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let text = self.tab_chip_text(index, tab, &sessions);
+            let start = offset;
+            let end = start.saturating_add(text.chars().count());
+            if start >= limit {
+                break;
+            }
+            regions.push((index, start, end.min(limit)));
+            offset = end.saturating_add(1);
+        }
+        regions
     }
 
     /// Whether a click lands on the `+` affordance after the chips.
@@ -393,17 +689,28 @@ impl UiApp {
         if area.width == 0 || row != area.y || column < area.x || column >= area.x + area.width {
             return false;
         }
-        let mut offset = 6usize;
-        for (index, tab) in self.tabs.iter().enumerate() {
-            let label = if index == self.active_tab {
-                self.pane_sessions().first().cloned().unwrap_or_default()
-            } else {
-                tab.label(0, None)
-            };
-            offset += format!(" {} {} ", index + 1, label).chars().count() + 1;
-        }
+        let offset = self
+            .tab_regions()
+            .last()
+            .map(|(_, _, end)| end + 1)
+            .unwrap_or(area.x as usize + 6);
         let column = column as usize;
         column >= offset && column < offset + 2
+    }
+
+    /// The active chip's `×` cell, used for direct mouse closure.
+    pub(crate) fn tab_close_hit(&self, column: u16, row: u16) -> Option<usize> {
+        let area = self.last_tab_rect;
+        if area.width == 0 || row != area.y {
+            return None;
+        }
+        self.tab_regions().into_iter().find_map(|(index, _, end)| {
+            if index == self.active_tab && column as usize + 2 == end {
+                Some(index)
+            } else {
+                None
+            }
+        })
     }
 
     /// Tab index under a click in the bar, or `None` outside the chips.
@@ -412,24 +719,25 @@ impl UiApp {
         if area.width == 0 || row != area.y || column < area.x || column >= area.x + area.width {
             return None;
         }
-        let mut offset = 6usize;
-        for (index, tab) in self.tabs.iter().enumerate() {
-            let label = if index == self.active_tab {
-                self.pane_sessions().first().cloned().unwrap_or_default()
-            } else {
-                tab.label(0, None)
-            };
-            let text = format!(" {} {} ", index + 1, label);
-            let start = offset;
-            let end = start + text.chars().count();
-            let column = column as usize;
+        let column = column as usize;
+        for (index, start, end) in self.tab_regions() {
             if column >= start && column < end {
                 return Some(index);
             }
-            offset = end + 1;
         }
         None
     }
+}
+
+fn compact_tab_label(label: &str, max_chars: usize) -> String {
+    let count = label.chars().count();
+    if count <= max_chars {
+        return label.to_string();
+    }
+    let keep = max_chars.saturating_sub(1).max(1);
+    let mut compact: String = label.chars().take(keep).collect();
+    compact.push('…');
+    compact
 }
 
 #[cfg(test)]
@@ -458,5 +766,32 @@ mod tests {
         assert_eq!(tab.panes.len(), 1);
         assert_eq!(tab.panes[0].title, "session");
         assert!(tab.panes[0].session.is_none());
+    }
+
+    #[test]
+    fn layout_tree_inserts_and_removes_without_losing_order() {
+        let mut layout = LayoutNode::flat(2).expect("two leaves");
+        layout.reindex_insert(1);
+        assert!(layout.split_leaf(0, 1, SplitDirection::Down));
+        assert!(layout.valid_for(3));
+        assert!(layout.remove_leaf(1));
+        layout.reindex_remove(1);
+        assert!(layout.valid_for(2));
+    }
+
+    #[test]
+    fn invalid_layout_repairs_to_flat() {
+        let mut tab = Tab::new("session");
+        tab.panes.push(PaneStub {
+            session: None,
+            title: "session 2".into(),
+        });
+        tab.layout = Some(LayoutNode::Pane(99));
+        let tab = tab.normalize();
+        assert!(
+            tab.layout
+                .as_ref()
+                .is_some_and(|layout| layout.valid_for(2))
+        );
     }
 }

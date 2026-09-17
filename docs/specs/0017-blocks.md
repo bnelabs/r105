@@ -7,17 +7,19 @@
 ## Goal
 
 Every transcript message is an addressable **block** (number = 1-based
-history position, rendered as `#n` on non-section headers). Blocks can be
+history position). Blocks can be
 filtered, copied, and rerun, implemented on r105's message model. Shell
 `!cmd` and its output notice stay separate adjacent messages, which
 block addressing makes unambiguous.
 
 ## Behavior
 
-- Gutter: user/assistant/system headers render `USER #3` etc. Tool and
-  thinking sections keep their `[n]` section gutters for `/expand`, so
-  the two numbering spaces never collide. Block addresses accept the
-  rendered `#n` form or a bare number in every command below.
+- Conversation turns render as compact prompt/answer glyphs (`>` for the
+  user and `●` for the assistant). System notices are muted metadata; tool
+  output and model reasoning are compact expandable rows. Block numbers are
+  intentionally internal so the transcript reads like a conversation rather
+  than a debug log. Block addresses still accept `#n` or a bare number in
+  every command below.
 - `/filter <block> <pattern> [--regex] [--case] [--invert] [--context N]`
   stores a filter on that block. Bare `/filter <block>` or `--clear`
   removes it; bare `/filter` lists active filters. Matching is
@@ -63,4 +65,5 @@ block addressing makes unambiguous.
 - `/rerun` target resolution: default last user turn, explicit n,
   non-user block rejected, out-of-range rejected, empty history.
 - `/expand #n` maps to sections; failed/non-section blocks refuse.
-- Render: `#n` gutters appear; `/help` groups cover the new commands.
+- Render: prompt/answer glyphs are present, debug-style role gutters do not
+  leak into the transcript, and `/help` groups cover the new commands.

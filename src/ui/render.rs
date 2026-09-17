@@ -1,9 +1,162 @@
 //! UiApp render: Ratatui rendering: transcript, palette, composer, overlays.
 
+use super::tabs::{LayoutNode, SplitDirection};
 use super::*;
+
+#[derive(Clone, Copy)]
+struct PaneFrame {
+    index: usize,
+    rect: Rect,
+}
+
+#[derive(Clone, Copy)]
+struct LayoutSeparator {
+    rect: Rect,
+    direction: SplitDirection,
+    first: usize,
+    second: usize,
+}
+
+fn collect_layout_frames(
+    layout: &LayoutNode,
+    rect: Rect,
+    frames: &mut Vec<PaneFrame>,
+    separators: &mut Vec<LayoutSeparator>,
+) {
+    match layout {
+        LayoutNode::Pane(index) => frames.push(PaneFrame {
+            index: *index,
+            rect,
+        }),
+        LayoutNode::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            let ratio = (*ratio as u32).clamp(100, 900);
+            match direction {
+                SplitDirection::Right => {
+                    if rect.width >= 3 {
+                        let usable = rect.width - 1;
+                        let first_width = ((usable as u32 * ratio) / 1000)
+                            .clamp(1, usable.saturating_sub(1) as u32)
+                            as u16;
+                        let second_width = usable - first_width;
+                        let first_rect = Rect {
+                            x: rect.x,
+                            y: rect.y,
+                            width: first_width,
+                            height: rect.height,
+                        };
+                        let separator = Rect {
+                            x: rect.x + first_width,
+                            y: rect.y,
+                            width: 1,
+                            height: rect.height,
+                        };
+                        let second_rect = Rect {
+                            x: separator.x + 1,
+                            y: rect.y,
+                            width: second_width,
+                            height: rect.height,
+                        };
+                        let first_index = first_leaf(first);
+                        let second_index = first_leaf(second);
+                        collect_layout_frames(first, first_rect, frames, separators);
+                        collect_layout_frames(second, second_rect, frames, separators);
+                        separators.push(LayoutSeparator {
+                            rect: separator,
+                            direction: *direction,
+                            first: first_index,
+                            second: second_index,
+                        });
+                    } else {
+                        let first_width = (rect.width / 2).max(1);
+                        let first_rect = Rect {
+                            x: rect.x,
+                            y: rect.y,
+                            width: first_width,
+                            height: rect.height,
+                        };
+                        let second_rect = Rect {
+                            x: rect.x + first_width,
+                            y: rect.y,
+                            width: rect.width.saturating_sub(first_width),
+                            height: rect.height,
+                        };
+                        collect_layout_frames(first, first_rect, frames, separators);
+                        collect_layout_frames(second, second_rect, frames, separators);
+                    }
+                }
+                SplitDirection::Down => {
+                    if rect.height >= 3 {
+                        let usable = rect.height - 1;
+                        let first_height = ((usable as u32 * ratio) / 1000)
+                            .clamp(1, usable.saturating_sub(1) as u32)
+                            as u16;
+                        let second_height = usable - first_height;
+                        let first_rect = Rect {
+                            x: rect.x,
+                            y: rect.y,
+                            width: rect.width,
+                            height: first_height,
+                        };
+                        let separator = Rect {
+                            x: rect.x,
+                            y: rect.y + first_height,
+                            width: rect.width,
+                            height: 1,
+                        };
+                        let second_rect = Rect {
+                            x: rect.x,
+                            y: separator.y + 1,
+                            width: rect.width,
+                            height: second_height,
+                        };
+                        let first_index = first_leaf(first);
+                        let second_index = first_leaf(second);
+                        collect_layout_frames(first, first_rect, frames, separators);
+                        collect_layout_frames(second, second_rect, frames, separators);
+                        separators.push(LayoutSeparator {
+                            rect: separator,
+                            direction: *direction,
+                            first: first_index,
+                            second: second_index,
+                        });
+                    } else {
+                        let first_height = (rect.height / 2).max(1);
+                        let first_rect = Rect {
+                            x: rect.x,
+                            y: rect.y,
+                            width: rect.width,
+                            height: first_height,
+                        };
+                        let second_rect = Rect {
+                            x: rect.x,
+                            y: rect.y + first_height,
+                            width: rect.width,
+                            height: rect.height.saturating_sub(first_height),
+                        };
+                        collect_layout_frames(first, first_rect, frames, separators);
+                        collect_layout_frames(second, second_rect, frames, separators);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn first_leaf(layout: &LayoutNode) -> usize {
+    match layout {
+        LayoutNode::Pane(index) => *index,
+        LayoutNode::Split { first, .. } => first_leaf(first),
+    }
+}
 
 impl UiApp {
     pub(crate) fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
+        self.ensure_active_layout();
         let area = frame.area();
         // A visible pane takes a fixed left column; narrow screens keep
         // the full width for the transcript instead.
@@ -29,31 +182,76 @@ impl UiApp {
         self.draw_tab_bar(frame, rows[0]);
         let content = rows[1];
         let count = self.panes.len();
-        let rects: Vec<Rect> = if count <= 1 {
-            vec![content]
-        } else {
-            let mut constraints = Vec::with_capacity(count);
-            for _ in 0..count {
-                constraints.push(Constraint::Ratio(1, count as u32));
-            }
-            ratatui::layout::Layout::default()
-                .direction(ratatui::layout::Direction::Horizontal)
-                .constraints(constraints)
-                .split(content)
-                .to_vec()
-        };
         let focused = self.focus;
-        for (index, rect) in rects.into_iter().enumerate() {
-            self.focus = index;
-            self.draw_pane(frame, rect, index, index == focused, count > 1);
+        let (frames, separators) = if self.pane_zoomed() {
+            (
+                vec![PaneFrame {
+                    index: focused,
+                    rect: content,
+                }],
+                Vec::new(),
+            )
+        } else {
+            let mut frames = Vec::with_capacity(count);
+            let mut separators = Vec::new();
+            if let Some(layout) = self.active_layout() {
+                collect_layout_frames(layout, content, &mut frames, &mut separators);
+            }
+            (frames, separators)
+        };
+        for pane in frames {
+            self.focus = pane.index;
+            self.draw_pane(
+                frame,
+                pane.rect,
+                pane.index,
+                pane.index == focused,
+                count > 1 || self.pane_zoomed(),
+            );
         }
         self.focus = focused;
+        self.draw_layout_separators(frame, &separators);
         self.draw_overlay(frame, area);
     }
 
-    /// One pane: transcript, completion panels, composer, and footer,
-    /// with a titled frame once a tab holds more than one. Rendering a
-    /// background pane sets `focus` for the call, so every draw helper
+    fn draw_layout_separators(
+        &self,
+        frame: &mut ratatui::Frame<'_>,
+        separators: &[LayoutSeparator],
+    ) {
+        let accent = accent_color(&self.state.theme);
+        for separator in separators {
+            let active = self.focus >= separator.first.min(separator.second)
+                && self.focus <= separator.first.max(separator.second);
+            let style = if active {
+                Style::default().fg(accent)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            match separator.direction {
+                SplitDirection::Right => {
+                    let lines = std::iter::repeat_n(
+                        Line::from(Span::styled("│", style)),
+                        separator.rect.height as usize,
+                    )
+                    .collect::<Vec<_>>();
+                    frame.render_widget(Paragraph::new(lines), separator.rect);
+                }
+                SplitDirection::Down => {
+                    let line = Line::from(Span::styled(
+                        "─".repeat(separator.rect.width as usize),
+                        style,
+                    ));
+                    frame.render_widget(Paragraph::new(line), separator.rect);
+                }
+            }
+        }
+    }
+
+    /// One pane: transcript, completion panels, composer, and footer. Split
+    /// panes use a compact header and a tree-owned divider instead of boxing
+    /// every surface; the active header/divider carry the focus signal. Rendering
+    /// a background pane sets `focus` for the call, so every draw helper
     /// addresses the right pane through `Deref`.
     pub(crate) fn draw_pane(
         &mut self,
@@ -79,27 +277,35 @@ impl UiApp {
             } else {
                 ""
             };
-            let style = if focused {
-                Style::default().fg(accent_color(&theme))
+            let header_style = if focused {
+                Style::default()
+                    .fg(accent_color(&theme))
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-            frame.render_widget(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(style)
-                    .title(format!(" {} {label}{marker} ", index + 1)),
-                rect,
+            let header = format!(
+                "{} {} {}{} ",
+                if focused { "›" } else { " " },
+                index + 1,
+                label,
+                marker
             );
-            let inner = rect.inner(ratatui::layout::Margin {
-                vertical: 0,
-                horizontal: 1,
-            });
+            let header_rect = Rect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: 1.min(rect.height),
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(header, header_style))),
+                header_rect,
+            );
             Rect {
-                x: inner.x,
-                y: rect.y + 1,
-                width: inner.width,
-                height: rect.height.saturating_sub(2),
+                x: rect.x,
+                y: rect.y.saturating_add(1),
+                width: rect.width,
+                height: rect.height.saturating_sub(1),
             }
         } else {
             rect
@@ -234,17 +440,12 @@ impl UiApp {
         for (index, message) in self.state.history.iter().enumerate() {
             let block = index + 1;
             if !lines.is_empty() {
-                // A blank row between blocks reads lighter than a rule.
+                // A blank row separates turns without the old debug-style
+                // role rules. The glyph on the first content line carries
+                // the role, like modern coding harnesses.
                 lines.push(Line::default());
                 headers.push(None);
             }
-            let color = match message.role.as_str() {
-                "user" => palette.user,
-                "assistant" => palette.assistant,
-                "tool" => palette.tool,
-                _ => Color::Magenta,
-            };
-            let label = message.role.to_ascii_uppercase();
             // Reasoning lives in its own field on new messages; older
             // reasoning-only replies arrive wrapped in the content.
             let thinking = if message.role == "assistant" {
@@ -262,84 +463,146 @@ impl UiApp {
                 && thinking.is_some();
             let is_tool = message.role == "tool";
             let failed = is_tool && message.content.contains("tool error:");
-            // A message is one section: tool output, or the thinking part
-            // of an assistant message (shown only when thinking is on).
+            // A message is one expandable section only when it carries
+            // tool output or visible reasoning. Ordinary user/assistant
+            // turns are intentionally not sectioned or numbered on screen.
             let is_section = is_tool || (thinking.is_some() && show_thinking);
-            let (gutter, header_id) = if is_section {
+            let header_id = if is_section {
                 let default = if is_tool {
                     details_default
                 } else {
                     thinking_default
                 };
                 order.push((message.id.clone(), default));
-                (format!(" [{}]", order.len()), Some(message.id.clone()))
+                Some(message.id.clone())
             } else {
-                // `#n` is the block address (/filter, /block, /rerun);
-                // section gutters keep `[n]` for /expand.
-                (format!(" #{block}"), None)
+                None
             };
-            let mark = if failed {
-                " ✗"
-            } else if is_tool {
-                " ✓"
-            } else {
-                ""
-            };
-            lines.push(Line::from(Span::styled(
-                format!("─ {label}{gutter}{mark} ─"),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            )));
-            headers.push(header_id);
             let filtered = self
                 .block_filters
                 .get(&message.id)
                 .map(|filter| apply_block_filter(&message.content, filter));
-            if message.role == "assistant"
-                && let Some(body) = thinking
-            {
-                let expanded = if is_section {
-                    let (id, default) = order.last().cloned().unwrap_or_default();
-                    self.section_expanded(&id, default)
-                } else {
-                    thinking_default
-                };
-                let body = match &filtered {
-                    // Wrapped-only traces filter like ordinary content;
-                    // separate traces keep their own text.
-                    Some(filtered) if wrapped_only => filtered.shown.join("\n"),
-                    _ => body.to_string(),
-                };
-                push_thinking_lines(&mut lines, &body, show_thinking, expanded);
-                if let Some(filtered) = &filtered
-                    && wrapped_only
-                {
-                    push_filter_trailer(&mut lines, filtered.hidden, block);
+            headers.push(header_id.clone());
+
+            match message.role.as_str() {
+                "user" => {
+                    // User prompts are the visual anchor of a turn. Keep
+                    // block addressing available to commands internally,
+                    // but never expose `USER #N` bookkeeping in the chat.
+                    push_prefixed_filtered(
+                        &mut lines,
+                        filtered.as_ref(),
+                        &message.content,
+                        ">",
+                        "│",
+                        Style::default()
+                            .fg(palette.user)
+                            .add_modifier(Modifier::BOLD),
+                        Style::default(),
+                    );
+                    if let Some(filtered) = &filtered {
+                        push_filter_trailer(&mut lines, filtered.hidden, block);
+                    }
                 }
-                // Separate trace plus a visible reply: show both.
-                if !wrapped_only && !message.content.is_empty() {
-                    push_block_body(&mut lines, message, &filtered, block);
+                "assistant" => {
+                    if let Some(body) = thinking {
+                        let expanded = if is_section {
+                            let (id, default) = order.last().cloned().unwrap_or_default();
+                            self.section_expanded(&id, default)
+                        } else {
+                            thinking_default
+                        };
+                        let body = match &filtered {
+                            // Wrapped-only traces filter like ordinary
+                            // content; separate traces retain their own
+                            // reasoning field.
+                            Some(filtered) if wrapped_only => filtered.shown.join("\n"),
+                            _ => body.to_string(),
+                        };
+                        push_thinking_lines(&mut lines, &body, show_thinking, expanded);
+                        if let Some(filtered) = &filtered
+                            && wrapped_only
+                        {
+                            push_filter_trailer(&mut lines, filtered.hidden, block);
+                        }
+                    }
+                    // Reasoning is never allowed to become the answer. The
+                    // visible assistant content is answer-first and gets a
+                    // single compact marker rather than a role banner.
+                    if !wrapped_only && !message.content.is_empty() {
+                        push_prefixed_filtered(
+                            &mut lines,
+                            filtered.as_ref(),
+                            &message.content,
+                            "●",
+                            "│",
+                            Style::default()
+                                .fg(palette.assistant)
+                                .add_modifier(Modifier::BOLD),
+                            Style::default(),
+                        );
+                        if let Some(filtered) = &filtered {
+                            push_filter_trailer(&mut lines, filtered.hidden, block);
+                        }
+                    } else if message.content.is_empty() && thinking.is_some() && !show_thinking {
+                        // A hidden reasoning-only response still needs a
+                        // stable visual footprint while it is in history.
+                        lines.push(Line::from(Span::styled(
+                            "  · thinking hidden",
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
                 }
-            } else if is_tool {
-                let expanded = failed || self.section_expanded(&message.id, details_default);
-                if !expanded {
-                    let first = filtered
-                        .as_ref()
-                        .and_then(|filtered| filtered.shown.first().cloned())
-                        .or_else(|| message.content.lines().next().map(str::to_string))
-                        .unwrap_or_default();
-                    let number = order.len();
+                "tool" => {
+                    let expanded = failed || self.section_expanded(&message.id, details_default);
+                    let (name, body) = tool_payload(&message.content);
+                    let output_lines = body.lines().count();
+                    let status = if failed { "✗ failed" } else { "✓ done" };
+                    let detail = if output_lines == 0 {
+                        "no output".to_string()
+                    } else if output_lines == 1 {
+                        "1 line".to_string()
+                    } else {
+                        format!("{output_lines} lines")
+                    };
+                    let marker = format!("  ⏺ {name} · {status} · {detail}");
                     lines.push(Line::from(Span::styled(
-                        format!(
-                            "  ▸[{number}] {}…",
-                            first.chars().take(96).collect::<String>()
-                        ),
-                        Style::default().fg(Color::DarkGray),
+                        marker,
+                        Style::default()
+                            .fg(palette.tool)
+                            .add_modifier(Modifier::BOLD),
                     )));
-                } else {
-                    push_block_body(&mut lines, message, &filtered, block);
+                    if expanded {
+                        push_indented_filtered(
+                            &mut lines,
+                            filtered.as_ref(),
+                            &body,
+                            "│",
+                            Style::default(),
+                        );
+                        if let Some(filtered) = &filtered {
+                            push_filter_trailer(&mut lines, filtered.hidden, block);
+                        }
+                    } else {
+                        lines.push(Line::from(Span::styled(
+                            "    click or /expand to inspect output",
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
                 }
-            } else {
-                push_block_body(&mut lines, message, &filtered, block);
+                _ => {
+                    // Notices and system messages are quiet metadata, never
+                    // full-width role cards.
+                    push_prefixed_filtered(
+                        &mut lines,
+                        filtered.as_ref(),
+                        &message.content,
+                        "·",
+                        " ",
+                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(Color::DarkGray),
+                    );
+                }
             }
             if !message.tool_calls.is_empty() {
                 let names: Vec<String> = message
@@ -353,11 +616,10 @@ impl UiApp {
                     format!("{} calls", message.tool_calls.len())
                 };
                 lines.push(Line::from(Span::styled(
-                    format!("  ↳ {count}: {}", tool_names(&names)),
-                    Style::default().fg(Color::Yellow),
+                    format!("  ⏺ {count} · {}", tool_names(&names)),
+                    Style::default().fg(palette.tool),
                 )));
             }
-            lines.push(Line::from(""));
             while headers.len() < lines.len() {
                 headers.push(None);
             }
@@ -366,7 +628,6 @@ impl UiApp {
             use crate::model::TodoStatus;
 
             order.push(("todos".to_string(), true));
-            let number = order.len();
             let done = self
                 .state
                 .todos
@@ -374,7 +635,7 @@ impl UiApp {
                 .filter(|item| item.status == TodoStatus::Completed)
                 .count();
             lines.push(Line::from(Span::styled(
-                format!("─ TASKS [{number}] {done}/{} ─", self.state.todos.len()),
+                format!("  ◷ tasks · {done}/{} complete", self.state.todos.len()),
                 Style::default()
                     .fg(palette.tool)
                     .add_modifier(Modifier::BOLD),
@@ -391,44 +652,47 @@ impl UiApp {
                 }
             } else {
                 lines.push(Line::from(Span::styled(
-                    format!("  ▸[{number}] {done}/{} done…", self.state.todos.len()),
+                    format!(
+                        "    click or /expand to inspect {done}/{} tasks",
+                        self.state.todos.len()
+                    ),
                     Style::default().fg(Color::DarkGray),
                 )));
             }
-            lines.push(Line::from(""));
             while headers.len() < lines.len() {
                 headers.push(None);
             }
         }
         self.section_order = order;
+        if (!self.streaming_reasoning.is_empty() && self.state.show_thinking
+            || !self.streaming.is_empty())
+            && !lines.is_empty()
+        {
+            lines.push(Line::default());
+            headers.push(None);
+        }
         if !self.streaming_reasoning.is_empty() && self.state.show_thinking {
             lines.push(Line::from(Span::styled(
-                "─ THINKING … ─",
+                "  ◌ thinking…",
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD),
             )));
-            let preview: Vec<&str> = self.streaming_reasoning.lines().take(3).collect();
-            for line in preview {
-                lines.push(Line::from(Span::styled(
-                    format!("  {line}"),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
             while headers.len() < lines.len() {
                 headers.push(None);
             }
         }
         if !self.streaming.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "─ ASSISTANT … ─",
+            push_prefixed_text(
+                &mut lines,
+                &self.streaming,
+                "●",
+                "│",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(palette.assistant)
                     .add_modifier(Modifier::BOLD),
-            )));
-            for line in self.streaming.lines() {
-                lines.push(Line::from(format!("  {line}")));
-            }
+                Style::default(),
+            );
             while headers.len() < lines.len() {
                 headers.push(None);
             }
@@ -885,7 +1149,7 @@ impl UiApp {
             ),
             Span::raw("  "),
             Span::styled(
-                "Ctrl+P palette · Ctrl+R history · Ctrl+B sessions · Ctrl+Shift+T tab",
+                "Ctrl+P palette · Ctrl+R history · Ctrl+B sessions · Ctrl+Shift+T tab · Ctrl+Shift+D/E split",
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
@@ -1254,28 +1518,126 @@ pub(crate) fn accent_color(theme: &str) -> Color {
     theme_palette(theme).accent
 }
 
-/// Body lines of one block: the filtered view when a `/filter` is set,
-/// otherwise the raw content. `FilteredLines::shown` already carries the
-/// context windows, so the renderer only adds the trailer.
-fn push_block_body(
+/// Push a conversational body with a stable role glyph on the first line
+/// and a quiet continuation rail on following lines. The glyph avoids the
+/// old full-width `─ ROLE #N ─` banners while keeping multi-line turns easy
+/// to scan.
+fn push_prefixed_text(
     lines: &mut Vec<Line<'static>>,
-    message: &Message,
-    filtered: &Option<FilteredLines>,
-    block: usize,
+    text: &str,
+    first_prefix: &str,
+    continuation_prefix: &str,
+    prefix_style: Style,
+    body_style: Style,
+) {
+    push_prefixed_body(
+        lines,
+        text.lines().map(str::to_string),
+        first_prefix,
+        continuation_prefix,
+        prefix_style,
+        body_style,
+    );
+}
+
+fn push_prefixed_body<I>(
+    lines: &mut Vec<Line<'static>>,
+    body: I,
+    first_prefix: &str,
+    continuation_prefix: &str,
+    prefix_style: Style,
+    body_style: Style,
+) where
+    I: IntoIterator<Item = String>,
+{
+    let mut body = body.into_iter().peekable();
+    if body.peek().is_none() {
+        lines.push(Line::from(Span::styled(
+            format!("{first_prefix} "),
+            prefix_style,
+        )));
+        return;
+    }
+    for (index, line) in body.enumerate() {
+        let prefix = if index == 0 {
+            first_prefix
+        } else {
+            continuation_prefix
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{prefix} "), prefix_style),
+            Span::styled(line, body_style),
+        ]));
+    }
+}
+
+fn push_prefixed_filtered(
+    lines: &mut Vec<Line<'static>>,
+    filtered: Option<&FilteredLines>,
+    raw: &str,
+    first_prefix: &str,
+    continuation_prefix: &str,
+    prefix_style: Style,
+    body_style: Style,
 ) {
     match filtered {
-        Some(filtered) => {
-            for line in &filtered.shown {
-                lines.push(Line::from(format!("  {line}")));
-            }
-            push_filter_trailer(lines, filtered.hidden, block);
-        }
-        None => {
-            for line in message.content.lines() {
-                lines.push(Line::from(format!("  {line}")));
-            }
-        }
+        Some(filtered) => push_prefixed_body(
+            lines,
+            filtered.shown.iter().cloned(),
+            first_prefix,
+            continuation_prefix,
+            prefix_style,
+            body_style,
+        ),
+        None => push_prefixed_body(
+            lines,
+            raw.lines().map(str::to_string),
+            first_prefix,
+            continuation_prefix,
+            prefix_style,
+            body_style,
+        ),
     }
+}
+
+fn push_indented_filtered(
+    lines: &mut Vec<Line<'static>>,
+    filtered: Option<&FilteredLines>,
+    raw: &str,
+    prefix: &str,
+    style: Style,
+) {
+    match filtered {
+        Some(filtered) => push_indented_owned(lines, filtered.shown.iter().cloned(), prefix, style),
+        None => push_indented_owned(lines, raw.lines().map(str::to_string), prefix, style),
+    }
+}
+
+fn push_indented_owned<I>(lines: &mut Vec<Line<'static>>, body: I, prefix: &str, style: Style)
+where
+    I: IntoIterator<Item = String>,
+{
+    for line in body {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("    {prefix} "),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(line, style),
+        ]));
+    }
+}
+
+/// Split the wire-format tool result (`[name]\noutput`) into a compact
+/// label and output body. Older sessions may not contain the bracketed
+/// prefix, so those remain readable as an anonymous tool result.
+fn tool_payload(content: &str) -> (String, String) {
+    if let Some(rest) = content.strip_prefix('[')
+        && let Some(end) = rest.find("]\n")
+    {
+        return (rest[..end].to_string(), rest[end + 2..].to_string());
+    }
+    ("tool".to_string(), content.to_string())
 }
 
 /// Dim trailer under a filtered block: hidden count plus the undo path.

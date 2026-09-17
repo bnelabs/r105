@@ -35,8 +35,8 @@ r105 is a Rust terminal AI harness. The binary owns the terminal UI, backend pro
 | tool.rs | native tool schemas, dispatch, parallel tool execution |
 | edit.rs | anchored edits and structured patches |
 | instructions.rs | global plus workspace instruction chain |
-| terminal.rs | PTY sessions, vt100 screen, command blocks (prototype) |
-| window.rs | native OS window, GPU text, hosts the PTY core (prototype) |
+| terminal.rs | PTY sessions, vt100 screen, OSC shell markers, command blocks, bounded output and scrollback |
+| window.rs | native OS window, layered GPU text/ANSI renderer, PTY input, selection and AI chrome |
 | assistant.rs | headless prompt → stream → approve → tools loop for windows |
 | security.rs | workspace containment, DNS/IP blocklist, input limits |
 | sandbox.rs | nsjail, bubblewrap, Docker, or timeout fallback execution |
@@ -75,6 +75,11 @@ Streaming is cancellation aware. A cancellation token is selected against both t
 The UI is designed around the working loop used by modern coding harnesses:
 
 - the transcript remains the main surface;
+- prompts and answers render as compact conversational blocks (`>` and `●`),
+  while reasoning and tool output remain expandable metadata;
+- tabs own a small persistent split tree: right/down splits, compact headers,
+  active-adjacent dividers, and a reversible focused-pane zoom keep the
+  transcript visible without boxing every surface;
 - the composer is always available;
 - slash commands open a fuzzy palette instead of a separate screen;
 - provider and model setup use focused, scrollable pickers;

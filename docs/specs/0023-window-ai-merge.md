@@ -69,9 +69,18 @@ canvas plus inline AI, sharing one block timeline.
   server: streamed reply, a `write_file` approval, and the approved write.
 - Window AI history persists: each window session checkpoints to a
   `window-<uuid>` session and restores into the panel on `--session`.
-- Window usability: clipboard copy/paste (Cmd/Ctrl+C/V), terminal drag
+- Window usability: clipboard copy/paste (Cmd+C/V on macOS,
+  Ctrl+Shift+C/V on Linux/Windows), terminal drag
   selection with scrollback, IME preedit input, and smoke snapshots
   (`--smoke-snapshot`) backed by explicit GPU acceptance tests.
 - macOS `.app` bundling via `packaging/build_macos_app.sh` (ad-hoc signed;
   distribution still requires Developer ID signing and notarization) and
   app-bundle launch defaults to the window surface.
+- Current readiness check (2026-09-17): release build, exact 120-frame smoke
+  runs, clean PPM capture, local HTTP/SSE orchestration tests, ignored GPU
+  tests, and the rebuilt ad-hoc app bundle pass. The configured
+  `192.168.68.57:8001` llama.cpp router is reachable; its loaded
+  `Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp` model passed the live streamed reply plus
+  approved `write_file` acceptance test and the release CLI `READY` probe.
+  Other catalog entries may remain unloaded, so live checks must name a loaded
+  model explicitly.

@@ -1,6 +1,6 @@
 # 0022: Native windowed terminal (own window)
 
-- Status: implemented
+- Status: implemented; renderer/input hardening is covered by 0023
 - Author: r105
 - Scope: `src/window.rs`, `src/main.rs` (`window` subcommand), `Cargo.toml` (`winit`, `wgpu`, `glyphon`, `pollster`)
 

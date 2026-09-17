@@ -1539,10 +1539,11 @@ mod tests {
         );
     }
 
-    /// The transcript renders block addresses as `#n` so `/filter`,
-    /// `/block`, and `/rerun` targets are visible.
+    /// The transcript keeps block addresses for command semantics but uses
+    /// conversational prompt/answer glyphs instead of debug-style role
+    /// banners.
     #[test]
-    fn transcript_renders_block_numbers() {
+    fn transcript_renders_conversational_turns() {
         let (mut app, _workspace, _skills) = test_app();
         app.state.history.push(Message::user("hello"));
         app.state
@@ -1550,12 +1551,46 @@ mod tests {
             .push(Message::assistant_with_tools("hi", vec![]));
         let joined = render_lines(&mut app, 80, 24).join("\n");
         assert!(
-            joined.contains("USER #1"),
-            "block gutter missing:\n{joined}"
+            joined.contains("> hello"),
+            "user prompt glyph missing:\n{joined}"
         );
         assert!(
-            joined.contains("ASSISTANT #2"),
-            "block gutter missing:\n{joined}"
+            joined.contains("● hi"),
+            "assistant answer glyph missing:\n{joined}"
+        );
+        assert!(
+            !joined.contains("USER #") && !joined.contains("ASSISTANT #"),
+            "debug role banners leaked into transcript:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn transcript_keeps_reasoning_collapsed_and_answer_first() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.state.history.push(Message::assistant_with_reasoning(
+            "Hey! How can I help you today?",
+            "The user is greeting me.\nRespond briefly and naturally.",
+            vec![],
+        ));
+        let collapsed = render_lines(&mut app, 80, 24).join("\n");
+        assert!(
+            collapsed.contains("● Hey! How can I help you today?"),
+            "answer should be visible first:\n{collapsed}"
+        );
+        assert!(
+            collapsed.contains("◌ thought · 2 lines"),
+            "reasoning should be represented by a compact row:\n{collapsed}"
+        );
+        assert!(
+            !collapsed.contains("The user is greeting me"),
+            "raw reasoning leaked into the default transcript:\n{collapsed}"
+        );
+
+        app.command_expand(&["1".to_string()]);
+        let expanded = render_lines(&mut app, 80, 24).join("\n");
+        assert!(
+            expanded.contains("The user is greeting me"),
+            "explicit expansion should reveal reasoning:\n{expanded}"
         );
     }
 
@@ -1578,7 +1613,7 @@ mod tests {
             },
         ];
         let joined = render_lines(&mut app, 80, 30).join("\n");
-        assert!(joined.contains("TASKS"), "section missing:\n{joined}");
+        assert!(joined.contains("tasks ·"), "section missing:\n{joined}");
         assert!(joined.contains("✓ first"), "done marker missing:\n{joined}");
         assert!(
             joined.contains("▶ second"),
@@ -1591,7 +1626,7 @@ mod tests {
         app.section_state.insert("todos".to_string(), false);
         let collapsed = render_lines(&mut app, 80, 30).join("\n");
         assert!(
-            collapsed.contains("1/2 done"),
+            collapsed.contains("inspect 1/2 tasks"),
             "collapsed summary missing:\n{collapsed}"
         );
         assert!(
@@ -1999,6 +2034,74 @@ mod tests {
         assert_eq!(app.panes.len(), MAX_PANES);
     }
 
+    /// Down splits preserve a nested layout, physical arrow focus follows
+    /// the stacked rectangles, and zoom can be toggled without losing it.
+    #[tokio::test]
+    async fn ctrl_shift_e_stacks_and_zoom_restores() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _workspace, _skills) = test_app();
+        let split_down = KeyEvent::new(
+            KeyCode::Char('E'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        app.handle_key(split_down).await.unwrap();
+        assert_eq!(app.panes.len(), 2);
+        assert!(matches!(
+            app.tabs[0].layout,
+            Some(super::tabs::LayoutNode::Split {
+                direction: super::tabs::SplitDirection::Down,
+                ..
+            })
+        ));
+        // Draw once so directional focus uses the real stacked rectangles.
+        let _ = render_lines(&mut app, 100, 24);
+        assert_eq!(app.focus, 1);
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        app.handle_key(up).await.unwrap();
+        assert_eq!(app.focus, 0);
+        let zoom = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        app.handle_key(zoom).await.unwrap();
+        assert!(app.tabs[0].zoomed);
+        app.handle_key(zoom).await.unwrap();
+        assert!(!app.tabs[0].zoomed);
+        assert!(
+            app.tabs[0]
+                .layout
+                .as_ref()
+                .is_some_and(|layout| layout.valid_for(2))
+        );
+    }
+
+    #[test]
+    fn mixed_split_tree_collapses_cleanly_when_a_child_closes() {
+        let (mut app, _workspace, _skills) = test_app();
+        app.pane_split_down();
+        app.pane_split();
+        assert_eq!(app.panes.len(), 3);
+        assert!(
+            app.tabs[0]
+                .layout
+                .as_ref()
+                .is_some_and(|layout| layout.valid_for(3))
+        );
+        let _ = render_lines(&mut app, 100, 24);
+        app.pane_close();
+        assert_eq!(app.panes.len(), 2);
+        assert!(
+            app.tabs[0]
+                .layout
+                .as_ref()
+                .is_some_and(|layout| layout.valid_for(2))
+        );
+        let lines = render_lines(&mut app, 100, 24);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains('│') || line.contains('─'))
+        );
+    }
+
     /// The wheel scrolls the pane under the pointer without focusing it.
     #[test]
     fn wheel_scrolls_pane_under_pointer() {
@@ -2056,14 +2159,13 @@ mod tests {
         assert_eq!(app.panes.len(), 4);
         let lines = render_lines(&mut app, 100, 24);
         for index in 1..=4 {
-            let title = if index == 1 {
-                " 1 session ".to_string()
-            } else {
-                format!(" {index} session {index} ")
-            };
+            // Narrow panes clip the trailing numeric suffix, but the
+            // compact header always keeps the pane number and session stem.
+            let title = format!("{index} session");
             assert!(
                 lines.iter().any(|line| line.contains(&title)),
-                "missing pane title {title:?}"
+                "missing pane title {title:?}:\n{}",
+                lines.join("\n")
             );
         }
         let lines = render_lines(&mut app, 40, 12);
@@ -2190,6 +2292,12 @@ mod tests {
         app.tab_new();
         assert_eq!(app.tabs[0].panes.len(), 2);
         assert_eq!(app.tabs[0].focus, 1);
+        assert!(
+            app.tabs[0]
+                .layout
+                .as_ref()
+                .is_some_and(|layout| layout.valid_for(2))
+        );
         app.tab_switch(0);
         assert_eq!(app.panes.len(), 2, "both panes come back");
         assert_eq!(app.focus, 1, "focus restores too");
@@ -2248,6 +2356,30 @@ mod tests {
         let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
         app.handle_key(ctrl_w).await.unwrap();
         assert_eq!(app.input, "one ");
+    }
+
+    #[test]
+    fn tabs_reorder_and_active_close_hit_are_stable() {
+        let (mut app, _workspace, _skills, _dirs) = sidebar_app();
+        app.tab_new();
+        app.tab_new();
+        assert_eq!(app.active_tab, 2);
+        app.tab_move(false);
+        assert_eq!(app.active_tab, 1);
+        app.tab_move(false);
+        assert_eq!(app.active_tab, 0);
+        app.last_tab_rect = Rect::new(0, 0, 120, 1);
+        let close = (0..120)
+            .find(|column| app.tab_close_hit(*column, 0).is_some())
+            .expect("active close cell");
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: close,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab, 0);
     }
 
     #[test]
@@ -2475,10 +2607,13 @@ mod tests {
         // Collapsed by default: only the first line shows, with a marker.
         let collapsed = render_lines(&mut app, 80, 24).join("\n");
         assert!(
-            collapsed.contains("TOOL [1]"),
-            "gutter missing:\n{collapsed}"
+            collapsed.contains("⏺ tool"),
+            "tool marker missing:\n{collapsed}"
         );
-        assert!(collapsed.contains("▸[1]"), "marker missing:\n{collapsed}");
+        assert!(
+            collapsed.contains("click or /expand to inspect output"),
+            "collapsed affordance missing:\n{collapsed}"
+        );
         assert!(!collapsed.contains("line2"), "should start collapsed");
         app.command_expand(&["1".to_string()]);
         let expanded = render_lines(&mut app, 80, 24).join("\n");

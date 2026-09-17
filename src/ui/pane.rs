@@ -292,14 +292,25 @@ impl UiApp {
 pub(crate) const MAX_PANES: usize = 4;
 
 impl UiApp {
-    /// Split right (Ctrl+Shift+D): a fresh session beside the
-    /// focused one, which becomes focused. The running pane keeps
-    /// streaming — that is the point of panes.
+    /// Split right (Ctrl+Shift+D): a fresh session beside the focused one.
+    /// The running pane keeps streaming — that is the point of panes.
     pub(crate) fn pane_split(&mut self) {
+        self.pane_split_with(tabs::SplitDirection::Right);
+    }
+
+    /// Split down (Ctrl+Shift+E): a fresh session below the focused one.
+    pub(crate) fn pane_split_down(&mut self) {
+        self.pane_split_with(tabs::SplitDirection::Down);
+    }
+
+    fn pane_split_with(&mut self, direction: tabs::SplitDirection) {
         if self.panes.len() >= MAX_PANES {
             self.set_status(format!("{MAX_PANES} panes is the limit"));
             return;
         }
+        self.ensure_active_layout();
+        let target = self.focus;
+        let index = target + 1;
         let id = self.next_pane_id;
         self.next_pane_id += 1;
         let state = self.state.fresh_like();
@@ -312,14 +323,25 @@ impl UiApp {
         );
         pane.title = format!("session {}", self.panes.len() + 1);
         pane.status = "Ready · new pane".into();
-        let index = self.focus + 1;
+        if let Some(layout) = self
+            .tabs
+            .get_mut(self.active_tab)
+            .and_then(|tab| tab.layout.as_mut())
+        {
+            layout.reindex_insert(index);
+            let _ = layout.split_leaf(target, index, direction);
+        }
         self.panes.insert(index, pane);
         self.focus = index;
         self.hist_search = None;
         self.sync_tab_layout();
         self.save_tabs();
+        let direction_label = match direction {
+            tabs::SplitDirection::Right => "right",
+            tabs::SplitDirection::Down => "down",
+        };
         self.set_status(format!(
-            "Split · pane {} of {} — Ctrl+Shift+←/→ focuses",
+            "Split {direction_label} · pane {} of {} — arrows focus",
             self.focus + 1,
             self.panes.len()
         ));
@@ -335,6 +357,16 @@ impl UiApp {
         if self.busy {
             self.set_status("Busy — finish or cancel first".into());
             return;
+        }
+        self.ensure_active_layout();
+        let target = self.focus;
+        if let Some(layout) = self
+            .tabs
+            .get_mut(self.active_tab)
+            .and_then(|tab| tab.layout.as_mut())
+        {
+            let _ = layout.remove_leaf(target);
+            layout.reindex_remove(target);
         }
         let paths = self.paths.clone();
         let mut closed = self.panes.remove(self.focus);
@@ -377,6 +409,52 @@ impl UiApp {
         };
         self.pane_focus(index);
         self.set_status(format!("Pane {} of {}", self.focus + 1, count));
+    }
+
+    /// Move to the nearest pane in a physical direction. Rectangles come
+    /// from the last draw, so this follows nested right/down splits instead
+    /// of treating the layout as a flat tab order.
+    pub(crate) fn pane_direction(&mut self, direction: KeyCode) {
+        if self.panes.len() <= 1 {
+            return;
+        }
+        let current = self.panes[self.focus].rect;
+        if current.width == 0 || current.height == 0 {
+            self.pane_next(matches!(direction, KeyCode::Right | KeyCode::Down));
+            return;
+        }
+        let current_x = current.x as i32 + (current.width / 2) as i32;
+        let current_y = current.y as i32 + (current.height / 2) as i32;
+        let mut best: Option<(usize, i32, i32)> = None;
+        for (index, pane) in self.panes.iter().enumerate() {
+            if index == self.focus || pane.rect.width == 0 || pane.rect.height == 0 {
+                continue;
+            }
+            let x = pane.rect.x as i32 + (pane.rect.width / 2) as i32;
+            let y = pane.rect.y as i32 + (pane.rect.height / 2) as i32;
+            let (primary, secondary) = match direction {
+                KeyCode::Left if x < current_x => (current_x - x, (current_y - y).abs()),
+                KeyCode::Right if x > current_x => (x - current_x, (current_y - y).abs()),
+                KeyCode::Up if y < current_y => (current_y - y, (current_x - x).abs()),
+                KeyCode::Down if y > current_y => (y - current_y, (current_x - x).abs()),
+                _ => continue,
+            };
+            let candidate = (index, primary, secondary);
+            if best
+                .map(|(_, best_primary, best_secondary)| {
+                    (primary, secondary) < (best_primary, best_secondary)
+                })
+                .unwrap_or(true)
+            {
+                best = Some(candidate);
+            }
+        }
+        if let Some((index, _, _)) = best {
+            self.pane_focus(index);
+            self.set_status(format!("Pane {} of {}", self.focus + 1, self.panes.len()));
+        } else {
+            self.pane_next(matches!(direction, KeyCode::Right | KeyCode::Down));
+        }
     }
 
     /// The pane whose last drawn frame contains the point.
