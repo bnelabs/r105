@@ -7,11 +7,11 @@
   "architecture": {
     "64bit": {
       "url": "https://github.com/bnelabs/r105/releases/download/v2.5.1/r105-windows-x86_64.zip",
-      "hash": "cd994104d41bce05713acd9601fe6d01048ac28fea238fa694a3f558ad6ac3c8"
+      "hash": "f83579f442861dd37d5cc7592789e09789b98b2fe7fb026d2868124a96acf0f4"
     },
     "arm64": {
       "url": "https://github.com/bnelabs/r105/releases/download/v2.5.1/r105-windows-arm64.zip",
-      "hash": "5d4549348c5634e7b17de47058dbea167f6f0221f5c457daae29d44285a95264"
+      "hash": "cfae1dc38f11d9471604773260fb2f92c954179e1a0623007445dece7c2efe20"
     }
   },
   "bin": "r105.exe",
