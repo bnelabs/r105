@@ -69,7 +69,7 @@ case "$1" in
     
     dev)
         echo "Starting development build..."
-        cargo run -- chat
+        cargo run -- harness
         ;;
     
     *)

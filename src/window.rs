@@ -532,26 +532,57 @@ impl ApplicationHandler for WindowApp {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (y * 3.0) as i32,
-                    MouseScrollDelta::PixelDelta(p) => {
-                        (p.y / state.window.scale_factor() / f64::from(LINE_HEIGHT)).round() as i32
-                    }
-                };
-                match state.focus {
-                    Focus::AiPanel => {
-                        state.panel_scroll =
-                            state.panel_scroll.saturating_add_signed(-lines as isize)
-                    }
-                    Focus::Approval => {
+                let lines = wheel_lines(delta, state.window.scale_factor());
+                if lines != 0 {
+                    let scale = state.window.scale_factor() as f32;
+                    let layout = ChromeLayout::new(
+                        state.config.width as f32 / scale,
+                        state.config.height as f32 / scale,
+                    );
+                    // Scroll the surface under the pointer. Focus can remain in
+                    // the composer or terminal while the pointer is over the
+                    // answer sheet, so using focus alone makes the answer feel
+                    // stuck after a click or a streamed update.
+                    if state.focus == Focus::Composer
+                        && layout.composer.contains(state.pointer.0, state.pointer.1)
+                    {
+                        // The composer owns the pointer region while it is open.
+                    } else if state.approval.is_some()
+                        && layout.approval.contains(state.pointer.0, state.pointer.1)
+                    {
                         state.approval_scroll =
-                            state.approval_scroll.saturating_add_signed(-lines as isize)
-                    }
-                    Focus::Terminal => {
+                            state.approval_scroll.saturating_add_signed(-lines as isize);
+                        state.focus = Focus::Approval;
+                    } else if state.panel_open
+                        && layout
+                            .panel_sheet()
+                            .contains(state.pointer.0, state.pointer.1)
+                    {
+                        state.panel_scroll =
+                            state.panel_scroll.saturating_add_signed(-lines as isize);
+                        state.focus = Focus::AiPanel;
+                    } else if layout.terminal.contains(state.pointer.0, state.pointer.1) {
                         state.session.scroll(lines);
                         state.selection = None;
+                        state.focus = Focus::Terminal;
+                    } else {
+                        match state.focus {
+                            Focus::AiPanel => {
+                                state.panel_scroll =
+                                    state.panel_scroll.saturating_add_signed(-lines as isize)
+                            }
+                            Focus::Approval => {
+                                state.approval_scroll =
+                                    state.approval_scroll.saturating_add_signed(-lines as isize)
+                            }
+                            Focus::Terminal => {
+                                state.session.scroll(lines);
+                                state.selection = None;
+                            }
+                            Focus::Composer => {}
+                        }
                     }
-                    _ => {}
+                    state.window.request_redraw();
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -877,6 +908,11 @@ fn route_composer(
         Key::Named(NamedKey::ArrowRight) => state.composer.move_right(),
         Key::Named(NamedKey::Home) => state.composer.move_home(),
         Key::Named(NamedKey::End) => state.composer.move_end(),
+        Key::Named(NamedKey::Space) => {
+            if !mods.super_key() && !mods.alt_key() {
+                state.composer.insert_text(" ");
+            }
+        }
         Key::Character(_) => {
             if !mods.super_key()
                 && !mods.alt_key()
@@ -953,6 +989,14 @@ fn route_panel(
         }
         Key::Named(NamedKey::PageUp) => {
             state.panel_scroll = state.panel_scroll.saturating_sub(10);
+        }
+        // A focused answer panel follows the conventional page-down key as
+        // well as PgDn; this keeps keyboard-only reading usable on compact
+        // keyboards that do not expose a dedicated page key.
+        Key::Named(NamedKey::Space)
+            if !mods.control_key() && !mods.alt_key() && !mods.super_key() =>
+        {
+            state.panel_scroll = state.panel_scroll.saturating_add(10);
         }
         Key::Named(NamedKey::Home) => {
             state.panel_sel = 0;
@@ -1118,6 +1162,20 @@ fn text_area(
 /// start on whole rows and never bisect a glyph.
 fn row_floor(y: f32) -> f32 {
     PAD_Y + (((y - PAD_Y) / CELL_H).floor() * CELL_H).max(0.0)
+}
+
+fn wheel_lines(delta: MouseScrollDelta, scale: f64) -> i32 {
+    match delta {
+        MouseScrollDelta::LineDelta(_, y) => (y * 3.0).round() as i32,
+        MouseScrollDelta::PixelDelta(point) => {
+            (point.y / scale / f64::from(LINE_HEIGHT)).round() as i32
+        }
+    }
+}
+
+fn panel_scroll_max(visual_lines: usize, viewport_height: f32) -> usize {
+    let visible_lines = (viewport_height / LINE_HEIGHT).floor().max(1.0) as usize;
+    visual_lines.saturating_sub(visible_lines)
 }
 
 /// Shared geometry keeps background, clipping, layout width and hit regions aligned.
@@ -1386,7 +1444,7 @@ fn render_frame(state: &mut WindowState) -> Result<bool> {
         let visual_lines = state.detail_buf.layout_runs().count();
         state.panel_scroll = state
             .panel_scroll
-            .min(visual_lines.saturating_sub((layout.detail.h / LINE_HEIGHT) as usize));
+            .min(panel_scroll_max(visual_lines, layout.detail.h));
     }
 
     let composer_body = layout.composer.inset(12.0);
@@ -1812,6 +1870,13 @@ fn map_key(logical_key: &Key, text: Option<&str>, modifiers: &Modifiers) -> KeyA
                 KeyAction::Bytes(vec![b'\t'])
             }
         }
+        Key::Named(NamedKey::Space) => {
+            if state.super_key() || state.alt_key() {
+                KeyAction::Ignore
+            } else {
+                KeyAction::Bytes(vec![b' '])
+            }
+        }
         Key::Named(NamedKey::Escape) => KeyAction::Bytes(vec![0x1b]),
         Key::Named(NamedKey::ArrowLeft) => KeyAction::Bytes(vec![0x1b, b'[', b'D']),
         Key::Named(NamedKey::ArrowRight) => KeyAction::Bytes(vec![0x1b, b'[', b'C']),
@@ -1947,6 +2012,30 @@ mod tests {
         let _physical = PhysicalKey::Code(KeyCode::KeyQ);
         let action = map_key(&Key::Character("q".into()), Some("q"), &no_modifiers());
         assert!(matches!(action, KeyAction::Bytes(bytes) if bytes == b"q"));
+    }
+
+    #[test]
+    fn space_maps_to_a_literal_pty_byte() {
+        let action = map_key(&Key::Named(NamedKey::Space), Some(" "), &no_modifiers());
+        assert!(matches!(action, KeyAction::Bytes(bytes) if bytes == b" "));
+    }
+
+    #[test]
+    fn wheel_delta_and_panel_overflow_are_stable() {
+        assert_eq!(wheel_lines(MouseScrollDelta::LineDelta(0.0, 1.0), 1.0), 3);
+        assert_eq!(
+            wheel_lines(MouseScrollDelta::LineDelta(0.0, -0.25), 1.0),
+            -1
+        );
+        assert_eq!(
+            wheel_lines(
+                MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, 40.0)),
+                2.0,
+            ),
+            1
+        );
+        assert_eq!(panel_scroll_max(8, 100.0), 3);
+        assert_eq!(panel_scroll_max(1, 100.0), 0);
     }
 
     fn shaped_buffer(text: &str) -> (FontSystem, Buffer) {

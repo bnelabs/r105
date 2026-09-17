@@ -7,7 +7,7 @@
 ## Problem
 
 The native window (0022) runs a shell but has no AI; the harness
-lives in the separate `chat` TUI. The goal is one surface: terminal
+lives in the separate harness TUI. The goal is one surface: terminal
 canvas plus inline AI, sharing one block timeline.
 
 ## Proposal
@@ -87,5 +87,5 @@ canvas plus inline AI, sharing one block timeline.
 The released window surface owns one PTY, one assistant history, and one
 approval queue. It checkpoints to a named session and restores through
 `r105 --session <name> window`. Persistent tabs and nested split trees belong
-to the TUI (`r105 chat`) and are stored in `tabs.json`; the window does not
+to the TUI (`r105 harness`) and are stored in `tabs.json`; the window does not
 share that layout.

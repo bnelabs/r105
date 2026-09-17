@@ -95,7 +95,7 @@ cargo install --path . --locked
 For a local development build:
 
 ```sh
-cargo run -- chat
+cargo run -- harness
 ```
 
 To run the native window during development:
@@ -113,14 +113,14 @@ docker build -t r105 .
 docker run -it --rm \
   -v ~/.config/r105:/root/.config/r105 \
   -v ~/r105-workspace:/root/r105-workspace \
-  r105 chat
+  r105 harness
 ```
 
 For a local llama-router stack:
 
 ```sh
 docker compose up -d llama-router
-docker compose run --rm r105 chat
+docker compose run --rm r105 harness
 ```
 
 ## Quick start
@@ -128,7 +128,7 @@ docker compose run --rm r105 chat
 Start the TUI:
 
 ```sh
-r105 chat
+r105 harness
 ```
 
 The TUI is the full workspace surface: it provides persistent tabs, nested
@@ -182,7 +182,7 @@ Start an OpenAI-compatible llama-server:
 
 ```sh
 llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
-r105 chat
+r105 harness
 ```
 
 In the TUI, open `/connect` and choose `llama.cpp`. The menu asks for the base URL and uses `http://127.0.0.1:8080/v1` when submitted empty. For a server on your LAN, enter an address such as `http://192.168.1.50:8080/v1`; r105 checks `/v1/models`, then lets you choose a model and saves the working endpoint. The provider supports model listing, SSE streaming, tool calls, prompt caching with /cache-prompt on, and model switching.
@@ -225,7 +225,7 @@ composer.
 
 Conversation turns stay answer-first: `>` marks the prompt, `●` marks the
 assistant reply, and reasoning/tool output stays in compact expandable rows
-(`click` or `/expand`) instead of printing internal traces into the chat.
+(`click` or `/expand`) instead of printing internal traces into the conversation.
 
 - Tabs are session-backed: Ctrl+Shift+T opens one on a fresh session, Ctrl+Shift+W closes it (or the focused pane in a split), Ctrl+Tab and Ctrl+Shift+Tab cycle, Alt+1..9 selects, Alt+Shift+←/→ reorders, and clicking the bar works too. The active chip exposes `×` for direct closure. Switching autosaves the live session first; the bar persists across restarts in `tabs.json`.
 - Panes use a persistent nested layout inside a tab: Ctrl+Shift+D opens a fresh session to the right, Ctrl+Shift+E stacks one below, Ctrl+Shift+←/→ (or Ctrl+Alt+←/→) moves focus, clicking a pane focuses it, Ctrl+Shift+Enter temporarily maximizes the focused pane, and Ctrl+Shift+W closes it (the last pane closes the tab). Split view uses compact pane headers and tree-owned dividers; the active pane and its adjacent divider get the accent marker while background panes stay quiet. Every pane is a live session: a request keeps streaming while you work in a sibling, the header shows the session name plus `…` while running and `•` when a background pane finished, and up to four panes fit. Tab switches stash the whole layout — each pane autosaves its own session and the exact split, zoom state, and focus restore together.
@@ -316,7 +316,7 @@ assistant reply, and reasoning/tool output stays in compact expandable rows
 | /model [name] | Show or select the active model |
 | /health | Check backend connectivity |
 | /profiles | List llama-router profiles |
-| /profile [name|auto] | Set or clear the llama-router profile |
+| /profile [name or auto] | Set or clear the router profile |
 | /build, /plan, /ask | Switch working mode (enforced, persisted) |
 | /completion [status\|clear\|ai on\|ai off] | Suggestion status; clear history; model ghost toggle |
 | /history | Show a session preview |
@@ -327,23 +327,23 @@ assistant reply, and reasoning/tool output stays in compact expandable rows
 | /skill clear | Deactivate all active skills |
 | /compact | Summarize older conversation context |
 | /tokens | Show context usage |
-| /quality [fast|balanced|best] | Set the router quality hint |
-| /json [on|off] | Toggle JSON response mode |
+| /quality [fast, balanced, or best] | Set the router quality hint |
+| /json [on or off] | Toggle JSON response mode |
 | /max [tokens] | Set or clear the completion token limit |
-| /cache-prompt [on|off] | Toggle llama.cpp prompt prefix caching |
-| /config show|reload | Inspect or reload configuration |
+| /cache-prompt [on or off] | Toggle llama.cpp prompt prefix caching |
+| /config show or reload | Inspect or reload configuration |
 | /clear | Clear the visible session |
 | /workspace [path] | Show or change the workspace |
-| /session save|load|list|search|delete|diff|fork|tree | Manage local sessions |
-| /export markdown|text|json|html|pdf [path] | Export the session |
-| /mcp list|tools|reconnect [server] | Inspect or rediscover MCP tools |
-| /plugin list|reload | Inspect native executable plugins |
+| /session save, load, list, search, delete, diff, fork, tree | Manage local sessions |
+| /export markdown, text, json, html, pdf [path] | Export the session |
+| /mcp list, tools, reconnect [server] | Inspect or rediscover MCP tools |
+| /plugin list, reload | Inspect native executable plugins |
 | /theme [name] | Show or switch the theme |
-| /autocompact [on|off] | Toggle automatic context compaction |
+| /autocompact [on or off] | Toggle automatic context compaction |
 | /reasoning [effort] | Set the reasoning effort hint |
-| /thinking [on|off] | Show or hide the model's thinking blocks |
-| /attention [on|off] | Toggle the bell when a request finishes |
-| /mouse [on|off] | Toggle mouse capture |
+| /thinking [on or off] | Show or hide the model's thinking blocks |
+| /attention [on or off] | Toggle the bell when a request finishes |
+| /mouse [on or off] | Toggle mouse capture |
 | /commands [reload] | List saved workflows |
 | /workflows [reload] | List saved reusable workflows |
 | /settings | Change theme, permissions, reasoning, and toggles |
@@ -600,7 +600,7 @@ Exports have no optional runtime dependencies:
 r105 [OPTIONS] [COMMAND]
 
 Commands:
-  chat           Start the interactive native Rust TUI
+  harness        Start the interactive native Rust harness
   send           Send one prompt and exit
   health         Check the selected backend
   doctor         Diagnose config, sandbox, backend, and workspace
@@ -622,7 +622,7 @@ prints its block (command, cwd, exit code, output tail).
 Interactive blocks use OSC 7/133/633 shell integration for cwd, command
 boundaries, and exit codes when the shell is recognized (bash, zsh, or
 fish); other shells fall back to an honest completed status. The one-shot
-path records exact exits independently. `chat`, `send`, and `sandbox`
+path records exact exits independently. `harness`, `send`, and `sandbox`
 remain available as separate commands.
 
 ## Native window
@@ -631,7 +631,7 @@ remain available as separate commands.
 hosting the same PTY shell core. Typing runs in the shell, resize reflows the
 grid, and `Cmd/Ctrl+Q` or the close button quits. This surface is intentionally
 one live PTY and one AI history; persistent tabs and nested split panes belong
-to `r105 chat`.
+to `r105 harness`.
 `r105 window --smoke 60` renders 60 frames and exits with a frame
 report for automated checks (`--smoke-chrome` also seeds the
 composer, AI panel, and approval bar for headless coverage).

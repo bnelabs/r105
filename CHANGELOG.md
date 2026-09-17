@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Native-window input now accepts the operating system's named Space event in
+  the composer and forwards literal spaces to the PTY shell.
+- Answer-panel scrolling follows the surface under the pointer, handles
+  fractional trackpad deltas, and supports Space/PgUp/PgDn for keyboard-only
+  reading.
+
+### Changed
+- The interactive command is now `r105 harness`; documentation and container
+  entrypoints use the harness terminology consistently.
+
 ### Documentation
 - Synchronized the README, architecture, configuration, contributor guide,
   security policy, tool/skill/export guides, packaging notes, and current
@@ -21,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - TUI transcripts now use answer-first conversational blocks (`>` prompts and
   `●` replies); reasoning and tool output stay compact and expandable instead
-  of leaking internal traces or `USER #N` debug banners into the chat.
+  of leaking internal traces or `USER #N` debug banners into the conversation.
 - Pane layouts are now persistent split trees: right/down splits, focused-pane
   zoom, active-adjacent separators, tab reordering, and an explicit active-tab
   close affordance are covered by the same session-backed tab state.
@@ -69,7 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sandbox` subcommand to probe the selected backend.
 - Terminal prototype behind `r105 terminal`: persistent PTY shell with
   vt100 screen, block list (command, cwd, elapsed), and one-shot
-  `terminal -- <cmd>` runs with exact exit codes. `chat` untouched.
+  `terminal -- <cmd>` runs with exact exit codes. The harness remains intact.
 - Native window behind `r105 window`: own OS window with GPU text
   rendering the PTY shell (winit, wgpu, glyphon), resize reflows the
   grid, `--smoke N` frame report for automated checks.
@@ -489,7 +500,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] — 2026-09-11
 
 ### Added
-- Typed `Client` facade with stable `chat()`, `stream_chat()`, and
+- Typed `Client` facade with stable request and streaming methods and
   `list_models()` methods, while preserving concrete backend compatibility
 - Correlation IDs on `ChatState`, backend request headers, structured logs, and
   local tool executions
@@ -599,7 +610,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interactive `💭 THINKING` panel that can be expanded/folded with a click or
   `t`/`Enter`/`Space` — previously the panel was a static folded preview.
   `thinking_default_expanded` still controls the initial state
-- Virtualized transcript (roadmap): the chat view materializes only the
+- Virtualized transcript (roadmap): the transcript view materializes only the
   messages visible in the viewport (plus an overscan window) as widgets, so
   very long sessions stay fast and memory-bounded while the full transcript
   is preserved and re-rendered on scroll; auto-follow pins to the newest
@@ -620,7 +631,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of a hardcoded 262144 — fixes wrong ctx reported for models like
   muse-glimmer-30B (131072). New `r105/model_catalog.py`; overridable via
   `model_contexts` and `context_tokens` in config.json
-- `reasoning_effort` chat setting (`auto|off|low|medium|high`): explicit levels
+- `reasoning_effort` setting (`auto|off|low|medium|high`): explicit levels
   are sent to reasoning-capable backends; `/reasoning` slash command; persists
   to config.json
 - Thinking-model support in the TUI: Gemma-4-style thinking blocks
@@ -649,7 +660,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI crash on Ctrl+U / Ctrl+W / Ctrl+K edit keybindings (Textual 8 changed
   `Document.replace` to `replace_range`; found and fixed during live
   verification)
-- Chat input kept a stray newline after Enter, hiding typed text on an
+- Composer input kept a stray newline after Enter, hiding typed text on an
   invisible second line (found and fixed during live verification); Shift+Enter
   now inserts a newline as documented
 
@@ -657,7 +668,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - TUI ignored keyboard input at startup on Textual 8 (RichLog stole focus from
-  the chat input); the input is now focused explicitly on mount
+  the composer); the input is now focused explicitly on mount
 - Blank assistant replies from thinking models (Qwen3, DeepSeek, Glimmer, etc.)
   that emit output in `reasoning_content`; r105 now falls back to
   reasoning_content when content is empty and renders it in the TUI
@@ -738,7 +749,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Initial release: TUI frontend for llama-router
-- Interactive chat with streaming SSE support
+- Interactive harness with streaming SSE support
 - Built-in tools: `execute_python`, `write_file`, `read_file`, `list_files`, `web_search`, `web_fetch`, `get_time`, `calculate`, `system_info`
 - Slash-command system with fuzzy command palette
 - Theme system with 4 built-in themes (r105, dracula, solarized-dark, high-contrast)

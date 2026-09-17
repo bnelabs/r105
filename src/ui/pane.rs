@@ -42,8 +42,8 @@ pub(crate) struct Pane {
     pub(crate) slow_hint_shown: bool,
     pub(crate) queue: VecDeque<(String, Option<String>)>,
     /// In-flight compaction backup name: doubles as the "a compaction
-    /// (not a chat) failed" flag so `ChatError` reports `/compact to
-    /// retry` instead of the chat `/retry` path. Cleared in both arms.
+    /// (not a request) failed" flag so `ChatError` reports `/compact to
+    /// retry` instead of the `/retry` path. Cleared in both arms.
     pub(crate) compact_backup: Option<String>,
     /// Name of the session this transcript was saved as or loaded from
     /// (fork sources and checkpoint parents). Forks leave it alone: you

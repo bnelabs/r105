@@ -15,7 +15,7 @@ feature batch makes navigation, review, and parallel work harder.
 Mechanical, namespace-preserving split — no behavior change:
 
 - `mod.rs`: `UiApp` struct (fields become `pub(crate)`), lifecycle
-  (`new`, `event_loop`, `process_events`, chat start/cancel, refresh),
+  (`new`, `event_loop`, `process_events`, request start/cancel, refresh),
   `run`, `MAX_TOOL_ROUNDS`, supporting types, `mod tests` unchanged.
 - `input.rs`: key/mouse handling, composer editing, submit paths
   (including `#` classify and Tab-accept), key-spec helpers.

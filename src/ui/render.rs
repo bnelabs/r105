@@ -488,7 +488,7 @@ impl UiApp {
                 "user" => {
                     // User prompts are the visual anchor of a turn. Keep
                     // block addressing available to commands internally,
-                    // but never expose `USER #N` bookkeeping in the chat.
+                    // but never expose `USER #N` bookkeeping in the transcript.
                     push_prefixed_filtered(
                         &mut lines,
                         filtered.as_ref(),

@@ -24,7 +24,7 @@ no runtime beyond the OS.
   Window close quits; the shell is killed on exit.
 - `--smoke N` runs N frames headless-ish then exits with a
   `frames=`/`screen_bytes=` report for CI and agents.
-- `chat`, `send`, `sandbox`, `terminal` are untouched. The AI merge
+- `harness`, `send`, `sandbox`, and `terminal` are untouched. The AI merge
   (composer + blocks in the window) is the next spec, not this one.
 
 ## Non-goals
@@ -48,4 +48,4 @@ no runtime beyond the OS.
   AI composer/panel/approval chrome, clipboard, drag selection, IME commits,
   smoke snapshots, named window-session checkpoints, and local macOS app
   packaging. The native window remains a single PTY surface; TUI tabs and
-  nested split panes are a separate `chat` surface.
+  nested split panes are a separate harness surface.

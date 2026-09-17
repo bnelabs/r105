@@ -9,11 +9,11 @@
 The harness has no real terminal: no PTY, no interactive shell, no
 command blocks with working directory and exit status. The full
 terminal canvas (persistent shell, block list, AI blocks) is the
-largest change and must land without breaking the working `chat` flow.
+largest change and must land without breaking the working harness flow.
 
 ## Proposal
 
-Land the core behind a separate subcommand; `chat` stays untouched.
+Land the core behind a separate subcommand; the harness stays untouched.
 
 - New `src/terminal.rs`: PTY session via `portable-pty`, screen via
   `vt100::Parser`, block store with `seq`, `command`, `cwd`,
@@ -37,7 +37,7 @@ Land the core behind a separate subcommand; `chat` stays untouched.
 
 ## Non-goals
 
-- No `chat` UI changes in this change.
+- No harness UI changes in this change.
 - No persistent allowlists or block-session persistence.
 - No AI blocks, no block search, no session persistence for blocks.
 - No Windows PTY hardening beyond `cmd.exe` fallback.
@@ -51,7 +51,7 @@ Land the core behind a separate subcommand; `chat` stays untouched.
   output; `r105 terminal` opens a shell, typing works, recognized shells
   report interactive exit/cwd markers, `Ctrl+Q` exits, and `--help` lists
   the subcommand.
-- `chat`, `send`, `sandbox` behave exactly as before.
+- `harness`, `send`, and `sandbox` behave exactly as before.
 
 ## Amendments
 

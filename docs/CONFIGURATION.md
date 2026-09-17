@@ -12,7 +12,7 @@ to use another directory. On systems that provide `XDG_CONFIG_HOME`, r105 uses
 | `tabs.json` | TUI tab order, pane sessions, focus, zoom, and split-tree layout |
 | `plugins/` | Native plugin manifests and executable tool definitions |
 | `skills/` | Markdown skill prompts (the path is configurable) |
-| `r105.log` | Interactive `chat`/`terminal` diagnostics; headless commands use stderr |
+| `r105.log` | Interactive harness/terminal diagnostics; headless commands use stderr |
 
 ## Example
 

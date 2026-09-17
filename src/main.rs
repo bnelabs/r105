@@ -62,7 +62,7 @@ struct Cli {
     /// Workspace for generated files.
     #[arg(long)]
     workspace: Option<std::path::PathBuf>,
-    /// Model name to use for chat requests.
+    /// Model name to use for harness requests.
     #[arg(long)]
     model: Option<String>,
     /// Backend type: direct or router.
@@ -109,8 +109,8 @@ struct Cli {
 enum Command {
     /// Send one prompt and exit.
     Send { message: Vec<String> },
-    /// Start the interactive native Rust TUI.
-    Chat,
+    /// Start the interactive native Rust harness.
+    Harness,
     /// Check the selected backend health.
     Health,
     /// Diagnose config, sandbox, backend, and workspace.
@@ -172,7 +172,7 @@ async fn main() -> Result<()> {
     // a file; headless subcommands keep stderr.
     let tui = matches!(
         &cli.command,
-        None | Some(Command::Chat) | Some(Command::Terminal { .. })
+        None | Some(Command::Harness) | Some(Command::Terminal { .. })
     );
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "r105=warn".into());
@@ -265,7 +265,7 @@ async fn main() -> Result<()> {
     let backend = backend::Backend::new(connection, cli.timeout.unwrap_or(config.timeout_seconds))?;
     config.apply_runtime_connection(backend.connection());
 
-    match cli.command.unwrap_or(Command::Chat) {
+    match cli.command.unwrap_or(Command::Harness) {
         Command::Send { message } => {
             let prompt = message.join(" ");
             let result = backend
@@ -278,7 +278,7 @@ async fn main() -> Result<()> {
             println!("{}", result.content);
             eprintln!("[wall={:.2}s]", result.wall_seconds);
         }
-        Command::Chat => ui::run(backend, state, paths, config).await?,
+        Command::Harness => ui::run(backend, state, paths, config).await?,
         Command::Terminal { command } => {
             if command.is_empty() {
                 terminal::run_interactive(&workspace)?;

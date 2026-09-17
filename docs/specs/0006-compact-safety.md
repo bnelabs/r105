@@ -20,7 +20,7 @@ compaction reports a generic `/retry` that would resend a stale prompt.
   `set_error("Compaction returned an empty summary · /compact to retry")`.
 - A `compacting: bool` flag (set in `start_compaction`, cleared in both
   arms) lets the `ChatError` arm report
-  `"compaction failed: … · /compact to retry"` instead of the chat
+  `"compaction failed: … · /compact to retry"` instead of the transcript
   `/retry` path.
 
 ## Non-goals

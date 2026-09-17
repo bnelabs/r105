@@ -10,7 +10,7 @@ native plugins, and MCP transports.
 │ session / panes / composer  │                      │ direct or router      │
 └──────────────┬──────────────┘                      └───────────────────────┘
                │
-               ├── ChatState + Assistant lifecycle
+               ├── session state + Assistant lifecycle
                │    ├── streamed tokens and reasoning
                │    ├── approval precheck and verdicts
                │    ├── parallel tool execution
@@ -34,7 +34,7 @@ native plugins, and MCP transports.
 | provider.rs | provider presets, environment credentials, connection selection |
 | backend.rs | OpenAI-compatible payloads, health, models, profiles, streaming |
 | sse.rs | split frame parsing and streaming tool call accumulation |
-| model.rs | messages, chat state, usage estimates, skill injection |
+| model.rs | messages, session state, usage estimates, skill injection |
 | ui/ | Ratatui event loop, panes, tabs, overlays, palette, session view, cancellation |
 | command.rs | slash registry, shell word parsing, fuzzy ranking, visible scrolling |
 | custom.rs | Markdown workflow discovery and argument expansion |

@@ -1,7 +1,7 @@
 # r105 native Rust image
 # Usage:
 #   docker build -t r105 .
-#   docker run -it --rm r105 chat
+#   docker run -it --rm r105 harness
 
 FROM rust:1.88-bookworm AS build
 WORKDIR /src
@@ -18,4 +18,4 @@ RUN useradd --create-home --shell /bin/sh r105
 USER r105
 WORKDIR /home/r105
 ENTRYPOINT ["r105"]
-CMD ["chat"]
+CMD ["harness"]

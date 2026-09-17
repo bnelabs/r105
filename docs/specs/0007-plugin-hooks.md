@@ -30,7 +30,7 @@ audit logging, or result post-processing without forking r105.
 ## Non-goals
 
 No hook chaining UI, no per-tool hook subscriptions (all declared hooks
-see all tools), no hook for chat/completion events.
+see all tools), no hook for model-turn or completion events.
 
 ## Acceptance
 

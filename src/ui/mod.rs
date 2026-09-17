@@ -456,7 +456,7 @@ impl UiApp {
                     self.cursor = self.input.len();
                 }
                 // A failed compaction retries via `/compact` (history is
-                // intact), not via the chat `/retry` path.
+                // intact), not via the `/retry` path.
                 let compact_failed = self.compact_backup.take().is_some();
                 self.set_error(if compact_failed {
                     format!("Compaction failed: {error} · /compact to retry")
