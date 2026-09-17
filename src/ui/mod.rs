@@ -251,6 +251,8 @@ impl UiApp {
             &paths.config_dir.join("shell_history.json"),
             history_max,
         );
+        let mut state = state;
+        state.config_dir = paths.config_dir.clone();
         let base_state = state.fresh_like();
         let template = Pane::new(
             1,
@@ -424,12 +426,18 @@ impl UiApp {
                 self.set_status("Generating…".into());
                 self.follow_transcript = true;
             }
+            crate::ui::events::UiEvent::Backend(BackendEvent::Reasoning(delta)) => {
+                self.streaming_reasoning.push_str(&delta);
+                self.awaiting_first_token = false;
+                self.follow_transcript = true;
+            }
             crate::ui::events::UiEvent::Backend(BackendEvent::Status(status)) => {
                 self.set_status(status)
             }
             crate::ui::events::UiEvent::ChatDone(result) => self.chat_done(result),
             crate::ui::events::UiEvent::ChatError(error) => {
                 self.streaming.clear();
+                self.streaming_reasoning.clear();
                 self.awaiting_first_token = false;
                 self.busy = false;
                 self.cancellation = None;
@@ -631,6 +639,7 @@ impl UiApp {
 
     pub(crate) fn chat_done(&mut self, result: ChatResult) {
         self.streaming.clear();
+        self.streaming_reasoning.clear();
         self.awaiting_first_token = false;
         self.state.last_usage = result.usage.clone();
         if let Some(tokens) = result.usage.prompt_tokens {
@@ -638,6 +647,9 @@ impl UiApp {
         }
         if let Some(tokens) = result.usage.completion_tokens {
             self.session_out += tokens;
+        }
+        if let Some(tokens) = result.usage.prompt_cache_hit_tokens {
+            self.session_cached += tokens;
         }
         if let Some(prompt) = self.active_user.take() {
             self.state.history.push(Message::user(prompt));
@@ -647,10 +659,28 @@ impl UiApp {
                 .history
                 .push(Message::system(format!("Attached context:\n{context}")));
         }
-        self.state.history.push(Message::assistant_with_tools(
-            result.content.clone(),
-            result.tool_calls.clone(),
-        ));
+        // Content holds the display text; reasoning travels alongside so
+        // tool loops can echo it back verbatim. Reasoning-only replies
+        // arrive wrapped for the collapsed view and keep the raw trace.
+        let reasoning = if result.reasoning.is_empty() {
+            crate::ui::transcript::thinking_body(&result.content)
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            result.reasoning.clone()
+        };
+        if reasoning.is_empty() {
+            self.state.history.push(Message::assistant_with_tools(
+                result.content.clone(),
+                result.tool_calls.clone(),
+            ));
+        } else {
+            self.state.history.push(Message::assistant_with_reasoning(
+                result.content.clone(),
+                reasoning,
+                result.tool_calls.clone(),
+            ));
+        }
         self.last_response = result.content.clone();
         self.follow_transcript = true;
 
@@ -764,6 +794,7 @@ impl UiApp {
         self.state.last_usage = Usage::default();
         self.tool_round = 0;
         self.streaming.clear();
+        self.streaming_reasoning.clear();
         self.set_status(format!("Sending in {} mode…", self.mode.as_str()));
         let cancellation = CancellationToken::new();
         self.cancellation = Some(cancellation.clone());
@@ -1021,7 +1052,7 @@ mod tests {
         // Default config asks for writes: the call pauses on a card.
         app.precheck_tool_calls(vec![write_call("c1")], context());
         assert!(matches!(app.overlay, crate::ui::events::Overlay::Approval));
-        let (name, summary, remaining) = app.approval_card().unwrap();
+        let (name, summary, _preview, remaining) = app.approval_card().unwrap();
         assert_eq!(name, "write_file");
         assert!(summary.contains("notes.txt"), "{summary}");
         assert_eq!(remaining, 0);
@@ -2749,7 +2780,7 @@ mod tests {
         app.input = "/reasoning ".into();
         app.cursor = app.input.len();
         let items = app.arg_menu_items();
-        assert_eq!(items.len(), 5);
+        assert_eq!(items.len(), crate::model::REASONING_EFFORTS.len());
         assert!(items.contains(&"low".to_string()));
     }
 

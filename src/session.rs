@@ -493,6 +493,11 @@ fn parse_message(value: &Value) -> Option<Message> {
         tool_calls,
         tool_call_id: optional_string(object.get("tool_call_id")),
         name: optional_string(object.get("name")),
+        reasoning_content: object
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 

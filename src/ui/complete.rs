@@ -193,7 +193,7 @@ impl UiApp {
         let token = words.last().unwrap_or(&"").to_ascii_lowercase();
         let mut candidates = self.arg_candidates(words[0], words.get(1));
         candidates.retain(|candidate| candidate.to_ascii_lowercase().starts_with(&token));
-        candidates.truncate(8);
+        candidates.truncate(12);
         self.arg_cache_key = key;
         self.arg_selected = 0;
         self.arg_cache_items = candidates.clone();

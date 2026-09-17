@@ -42,6 +42,7 @@ impl Connection {
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
     Token(String),
+    Reasoning(String),
     Status(String),
 }
 
@@ -131,6 +132,24 @@ impl Backend {
         tools: &[Value],
         stream: bool,
     ) -> Value {
+        // When no tools are requested, reasoning traces are dropped from
+        // the history to save tokens; tool loops keep them verbatim.
+        let messages: Vec<Message> = if tools.is_empty() {
+            messages
+                .iter()
+                .map(|message| {
+                    if message.reasoning_content.is_empty() {
+                        message.clone()
+                    } else {
+                        let mut stripped = message.clone();
+                        stripped.reasoning_content.clear();
+                        stripped
+                    }
+                })
+                .collect()
+        } else {
+            messages.to_vec()
+        };
         let mut payload = json!({
             "model": state.model,
             "messages": messages,
@@ -156,8 +175,10 @@ impl Backend {
                 "reasoning_effort": state.reasoning_effort,
                 "trace_id": state.trace_id,
             });
-        } else if state.reasoning_effort != "auto" {
-            payload["reasoning_effort"] = json!(state.reasoning_effort);
+        } else if let Some(effort) =
+            crate::model::normalize_reasoning_effort(&state.reasoning_effort)
+        {
+            payload["reasoning_effort"] = json!(effort);
         }
         payload
     }
@@ -290,8 +311,14 @@ impl Backend {
                     content.push_str(&chunk.content);
                     let _ = events.send(BackendEvent::Token(chunk.content));
                 }
-                reasoning.push_str(&chunk.reasoning);
-                if chunk.usage.total_tokens.is_some() {
+                if !chunk.reasoning.is_empty() {
+                    reasoning.push_str(&chunk.reasoning);
+                    let _ = events.send(BackendEvent::Reasoning(chunk.reasoning));
+                }
+                if chunk.usage.total_tokens.is_some()
+                    || chunk.usage.prompt_cache_hit_tokens.is_some()
+                    || chunk.usage.prompt_cache_miss_tokens.is_some()
+                {
                     usage = chunk.usage;
                 }
             }
@@ -303,21 +330,30 @@ impl Backend {
             if let Ok(chunk) = parse_stream_data(&event.data, &mut tool_calls) {
                 content.push_str(&chunk.content);
                 reasoning.push_str(&chunk.reasoning);
-                if chunk.usage.total_tokens.is_some() {
+                if chunk.usage.total_tokens.is_some()
+                    || chunk.usage.prompt_cache_hit_tokens.is_some()
+                    || chunk.usage.prompt_cache_miss_tokens.is_some()
+                {
                     usage = chunk.usage;
                 }
             }
         }
-        if content.is_empty() && tool_calls.is_empty() && !reasoning.is_empty() {
-            content = wrap_reasoning(reasoning);
-        }
+        // Reasoning-only replies keep the trace in `reasoning` and wrap a
+        // copy for display, so old sessions and the collapsed view agree.
+        // Tool loops echo `reasoning` back via history instead.
+        let display = if content.is_empty() && tool_calls.is_empty() && !reasoning.is_empty() {
+            wrap_reasoning(reasoning.clone())
+        } else {
+            content.clone()
+        };
         let calls = tool_calls.finish();
         let raw = json!({
-            "choices": [{"message": {"role": "assistant", "content": content, "tool_calls": calls}}],
+            "choices": [{"message": {"role": "assistant", "content": content, "reasoning_content": reasoning, "tool_calls": calls}}],
             "usage": usage,
         });
         Ok(ChatResult {
-            content,
+            content: display,
+            reasoning,
             tool_calls: serde_json::from_value(raw["choices"][0]["message"]["tool_calls"].clone())
                 .unwrap_or_default(),
             raw,
@@ -557,5 +593,84 @@ mod tests {
     fn reasoning_only_replies_are_wrapped() {
         let wrapped = wrap_reasoning("consider alternatives\n".to_string());
         assert_eq!(wrapped, "<thinking>\nconsider alternatives\n</thinking>");
+    }
+
+    #[test]
+    fn payload_keeps_reasoning_only_for_tool_loops() {
+        use crate::model::Message;
+        let backend = Backend::new(
+            Connection {
+                provider_id: Some("custom".into()),
+                backend: "direct".into(),
+                base_url: "http://127.0.0.1:8080/v1".into(),
+                api_key: None,
+                model: "local".into(),
+            },
+            5,
+        )
+        .unwrap();
+        let mut state: ChatState = serde_json::from_value(serde_json::json!({})).unwrap();
+        state.model = "local".into();
+        state.reasoning_effort = "high".into();
+        let history = vec![Message::assistant_with_reasoning(
+            "done",
+            "trace",
+            Vec::new(),
+        )];
+        let with_tools = backend.payload(
+            &state,
+            &history,
+            &[serde_json::json!({"type":"function"})],
+            true,
+        );
+        let sent = with_tools["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert_eq!(sent["reasoning_content"], serde_json::json!("trace"));
+        let without_tools = backend.payload(&state, &history, &[], true);
+        let stripped = without_tools["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert!(
+            stripped
+                .get("reasoning_content")
+                .is_none_or(|value| value == &serde_json::Value::String(String::new()))
+        );
+    }
+
+    #[test]
+    fn payload_normalizes_effort_aliases() {
+        let backend = Backend::new(
+            Connection {
+                provider_id: Some("custom".into()),
+                backend: "direct".into(),
+                base_url: "http://127.0.0.1:8080/v1".into(),
+                api_key: None,
+                model: "local".into(),
+            },
+            5,
+        )
+        .unwrap();
+        let mut state: ChatState = serde_json::from_value(serde_json::json!({})).unwrap();
+        state.model = "local".into();
+        for (input, expected) in [
+            ("auto", None),
+            ("xhigh", Some("max")),
+            ("disabled", Some("off")),
+            ("high", Some("high")),
+        ] {
+            state.reasoning_effort = input.into();
+            let payload = backend.payload(&state, &[], &[], true);
+            match expected {
+                None => assert!(payload.get("reasoning_effort").is_none()),
+                Some(wire) => assert_eq!(payload["reasoning_effort"], wire),
+            }
+        }
     }
 }

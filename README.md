@@ -358,6 +358,8 @@ The model can use these native tools:
 | --- | --- |
 | execute_rust | Compile and run Rust in the configured sandbox |
 | write_file | Write a workspace relative file |
+| edit_file | Replace one anchored span in a workspace file |
+| apply_patch | Apply a structured Add/Update/Delete patch with @@ hunks |
 | read_file | Read a workspace relative file |
 | list_files | List a workspace directory |
 | get_time | Return the local system clock |
@@ -576,7 +578,43 @@ Commands:
   doctor         Diagnose config, sandbox, backend, and workspace
   profiles       Print llama-router profiles
   config-schema  Print or write the config JSON Schema
+  sandbox        Run a command in the sandbox boundary (tester)
+  terminal       Open the terminal prototype (PTY shell with block list)
+  window         Open the native r105 window (GPU terminal prototype)
 ```
+
+## Terminal prototype
+
+`r105 terminal` opens a persistent shell in a real PTY with a block
+list. Each submitted line snapshots a block (command, working
+directory, elapsed time); `Ctrl+B` toggles the block list, `Ctrl+Q`
+quits. `r105 terminal -- <cmd>` runs one command in a fresh PTY and
+prints its block (command, cwd, exit code, output tail).
+
+Interactive block exits stay pending until shell integration lands;
+the one-shot path already records exact exits. `chat`, `send`, and
+`sandbox` are untouched by this prototype.
+
+## Native window
+
+`r105 window` opens r105 in its own OS window: a GPU-rendered
+terminal (winit, wgpu, glyphon with the system monospace font)
+hosting the same PTY shell core. Typing runs in the shell, resize
+reflows the grid, `Cmd/Ctrl+Q` or the close button quits.
+`r105 window --smoke 60` renders 60 frames and exits with a frame
+report for automated checks (`--smoke-chrome` also seeds the
+composer, AI panel, and approval bar for headless coverage).
+
+`Ctrl+J` opens the AI composer (`Enter` sends, `Alt+Enter` newline,
+`Esc` closes, `Ctrl+C` cancels a run). Answers stream into the AI
+panel (`Ctrl+K`, arrows move, `PgUp`/`PgDn` scroll); tool calls run
+the same approve-then-execute loop as the TUI, with `y`/`a`/`n`
+verdicts inline. `Esc` in the terminal cancels a live run, otherwise
+it goes to the shell. Drag selects terminal text, `Cmd/Ctrl+C/V`
+copies and pastes, scroll and wheel reach scrollback, IME input
+commits into the focused surface, and each window session checkpoints
+itself (resume with `--session <name> window`). Cursor quad and
+markdown rendering are follow-ups.
 
 Common options:
 

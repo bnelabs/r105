@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Window AI cancellation preserves the session and queued prompts.
+- Window Once and Deny verdicts no longer create persistent approval grants.
+- Interrupted window tool rounds retain complete call/result history for the
+  next backend request.
+
+### Added
+- Reasoning traces stay separate from replies: streamed deltas render as
+  a collapsed preview, stored traces collapse with the reply below, and
+  tool loops echo the trace back verbatim while tool-free requests drop
+  it to save tokens.
+- Extended `/reasoning` dial to `auto|off|none|disabled|low|medium|high|max|xhigh`
+  with wire normalization and updated completion, schema, and validation.
+- Prefix-cache telemetry: `/tokens` reports last hit/miss and the footer
+  session line shows accumulated cache hits.
+- Stable request prefix ordering (mode preamble, skills, history, new
+  turn) for cache hits.
+- Anchored `edit_file` and structured `apply_patch` tools (Add/Update/Delete
+  with @@ hunks, relative paths only, ambiguous anchors fail).
+- Approval cards preview writes and `a` grants per-file session skips for
+  later writes to the same path.
+- Project instruction chain per request (global plus workspace AGENTS files,
+  32 KiB each).
+- `sandbox` subcommand to probe the selected backend.
+- Terminal prototype behind `r105 terminal`: persistent PTY shell with
+  vt100 screen, block list (command, cwd, elapsed), and one-shot
+  `terminal -- <cmd>` runs with exact exit codes. `chat` untouched.
+- Native window behind `r105 window`: own OS window with GPU text
+  rendering the PTY shell (winit, wgpu, glyphon), resize reflows the
+  grid, `--smoke N` frame report for automated checks.
+- AI merge in the window: `Ctrl+J` composer with streaming answers in
+  the `Ctrl+K` panel, same approve-then-execute tool loop as the TUI
+  with inline `y`/`a`/`n` verdicts, `Esc` cancels a live run.
+
 ## [2.3.1] — 2026-09-16
 
 ### Fixed

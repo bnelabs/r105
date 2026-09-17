@@ -30,6 +30,9 @@ pub(crate) struct Pane {
     /// Request lifecycle.
     pub(crate) busy: bool,
     pub(crate) streaming: String,
+    /// Reasoning deltas for the in-flight request. Kept apart from
+    /// `streaming` so the reply stays clean; rendered collapsed.
+    pub(crate) streaming_reasoning: String,
     pub(crate) status: String,
     pub(crate) status_tone: crate::ui::events::StatusTone,
     /// When the active request started, for the slow-start hint. Cold model
@@ -104,6 +107,8 @@ pub(crate) struct Pane {
     /// Accumulated session token usage for the footer telemetry.
     pub(crate) session_in: u64,
     pub(crate) session_out: u64,
+    /// Accumulated prefix-cache hits for the footer telemetry.
+    pub(crate) session_cached: u64,
     /// `@file` completion state: selected index plus an input-keyed cache so
     /// the workspace walk only reruns when the composer text changes.
     pub(crate) at_selected: usize,
@@ -167,6 +172,7 @@ impl Pane {
             show_details: false,
             busy: false,
             streaming: String::new(),
+            streaming_reasoning: String::new(),
             status: String::new(),
             status_tone: crate::ui::events::StatusTone::Muted,
             request_started: None,
@@ -204,6 +210,7 @@ impl Pane {
             last_response: String::new(),
             session_in: 0,
             session_out: 0,
+            session_cached: 0,
             at_selected: 0,
             at_cache_key: String::new(),
             at_cache_items: Vec::new(),

@@ -4,11 +4,14 @@
 
 mod app;
 mod approve;
+mod assistant;
 mod backend;
 mod command;
 mod config;
 mod custom;
+mod edit;
 mod export;
+mod instructions;
 mod mcp;
 mod model;
 mod plugin;
@@ -18,8 +21,10 @@ mod security;
 mod session;
 mod sse;
 mod suggest;
+mod terminal;
 mod tool;
 mod ui;
+mod window;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -28,6 +33,21 @@ use model::ChatState;
 use provider::resolve_connection;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn launched_from_app_bundle() -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    std::env::current_exe().ok().is_some_and(|path| {
+        path.parent()
+            .is_some_and(|parent| parent.file_name().is_some_and(|name| name == "MacOS"))
+            && path.ancestors().nth(3).is_some_and(|bundle| {
+                bundle
+                    .extension()
+                    .is_some_and(|extension| extension == "app")
+            })
+    })
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -105,17 +125,55 @@ enum Command {
         #[arg(long)]
         output: Option<std::path::PathBuf>,
     },
+    /// Run a command inside the sandbox boundary (dry-run tester).
+    Sandbox {
+        /// Sandbox backend to probe (default auto).
+        #[arg(long)]
+        backend: Option<String>,
+        /// Command to run; empty prints the selected backend.
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    /// Open the terminal prototype (PTY shell with block list).
+    /// With a command, runs it once in a PTY and prints the block.
+    Terminal {
+        /// Command to run once in a PTY; empty opens the interactive shell.
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    /// Open the native r105 window (GPU terminal prototype).
+    Window {
+        /// Render this many frames then exit (smoke test).
+        #[arg(long)]
+        smoke: Option<u64>,
+        /// Seed composer, AI panel, and approval bar for headless runs.
+        #[arg(long)]
+        smoke_chrome: bool,
+        /// Save the final smoke frame as a PPM image for visual inspection.
+        #[arg(long, requires = "smoke")]
+        smoke_snapshot: Option<std::path::PathBuf>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if cli.command.is_none() && launched_from_app_bundle() {
+        cli.command = Some(Command::Window {
+            smoke: None,
+            smoke_chrome: false,
+            smoke_snapshot: None,
+        });
+    }
     let paths = ConfigPaths::discover();
     // The alternate-screen TUI owns every terminal cell: any stderr
     // write mid-run (a tracing warn, today from MCP) scribbles rows
     // ratatui never repaints, stranding "limbo" text. TUI runs log to
     // a file; headless subcommands keep stderr.
-    let tui = matches!(&cli.command, None | Some(Command::Chat));
+    let tui = matches!(
+        &cli.command,
+        None | Some(Command::Chat) | Some(Command::Terminal { .. })
+    );
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "r105=warn".into());
     if tui {
@@ -161,6 +219,7 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&workspace)?;
 
     let mut state = ChatState::from_config(&config, workspace.clone());
+    state.config_dir = paths.config_dir.clone();
     if let Some(model) = cli.model {
         state.model = model;
     } else if let Some(model) = std::env::var_os("R105_MODEL") {
@@ -220,6 +279,92 @@ async fn main() -> Result<()> {
             eprintln!("[wall={:.2}s]", result.wall_seconds);
         }
         Command::Chat => ui::run(backend, state, paths, config).await?,
+        Command::Terminal { command } => {
+            if command.is_empty() {
+                terminal::run_interactive(&workspace)?;
+                return Ok(());
+            }
+            let (program, args) = command.split_first().unwrap();
+            let args: Vec<String> = args.to_vec();
+            let started = std::time::Instant::now();
+            let output = terminal::run_command_in_pty(
+                program,
+                &args,
+                &workspace,
+                std::time::Duration::from_secs(config.timeout_seconds.max(1)),
+            )?;
+            let wall = started.elapsed().as_secs_f64();
+            let mut blocks = terminal::BlockStore::new();
+            let block = blocks.push(
+                &command.join(" "),
+                &output.cwd,
+                Some(output.exit_code),
+                output.output.clone(),
+            );
+            println!("$ {}", block.command);
+            println!("cwd: {}", block.cwd);
+            println!("exit: {}", output.exit_code);
+            println!("wall: {wall:.2}s");
+            if !block.output_tail.is_empty() {
+                println!("--- output ---\n{}", block.output_tail);
+            }
+        }
+        Command::Window {
+            smoke,
+            smoke_chrome,
+            smoke_snapshot,
+        } => {
+            // The window owns the main thread (winit) and spawns
+            // assistant tasks onto the runtime workers.
+            let mut parts = assistant::AssistantParts::from_config(&config);
+            if smoke.is_none() {
+                let name = format!("window-{}", uuid::Uuid::new_v4().simple());
+                eprintln!("Window AI session: {name} (resume with --session {name} window)");
+                parts.persistence = Some((paths.clone(), name));
+            }
+            let report = window::run_window(window::WindowOptions {
+                workspace: workspace.clone(),
+                smoke_frames: smoke,
+                smoke_chrome,
+                smoke_snapshot,
+                backend: backend.clone(),
+                state: state.clone(),
+                parts,
+            })?;
+            eprintln!(
+                "window: frames={} screen_bytes={} blocks={}",
+                report.frames, report.screen_bytes, report.blocks
+            );
+        }
+        Command::Sandbox {
+            backend: requested,
+            command,
+        } => {
+            use tokio_util::sync::CancellationToken;
+            let sandbox = sandbox::Sandbox::detect(
+                requested.as_deref().unwrap_or("auto"),
+                config.docker_image.clone(),
+                config.timeout_seconds,
+            );
+            if command.is_empty() {
+                println!("sandbox backend: {}", sandbox.selected_name());
+                println!("available: {}", sandbox::available_backends().join(", "));
+                return Ok(());
+            }
+            let (program, args) = command.split_first().unwrap();
+            let args: Vec<String> = args.to_vec();
+            let output = sandbox
+                .run(program, &args, &workspace, false, &CancellationToken::new())
+                .await?;
+            println!("backend: {}", sandbox.selected_name());
+            println!("status: {:?}", output.status);
+            if !output.stdout.is_empty() {
+                println!("--- stdout ---\n{}", output.stdout);
+            }
+            if !output.stderr.is_empty() {
+                println!("--- stderr ---\n{}", output.stderr);
+            }
+        }
         Command::Health => println!(
             "{}",
             serde_json::to_string_pretty(&backend.health().await?)?

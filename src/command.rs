@@ -212,7 +212,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/reasoning",
-        usage: "/reasoning [auto|off|low|medium|high]",
+        usage: "/reasoning [auto|off|low|medium|high|max]",
         description: "set reasoning effort hint",
     },
     CommandSpec {
@@ -425,7 +425,7 @@ pub fn static_arg_values(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "/theme" => Some(&crate::config::THEMES),
         "/quality" => Some(&["fast", "balanced", "best"]),
-        "/reasoning" => Some(&["auto", "off", "low", "medium", "high"]),
+        "/reasoning" => Some(&crate::model::REASONING_EFFORTS),
         "/permissions" => Some(&["full-access", "restricted", "sandboxed", "off"]),
         "/json" | "/cache-prompt" | "/autocompact" | "/thinking" | "/attention" | "/mouse" => {
             Some(&["on", "off"])
@@ -893,7 +893,7 @@ mod tests {
     fn static_arg_tables_cover_choice_commands() {
         assert_eq!(
             static_arg_values("/reasoning"),
-            Some(&["auto", "off", "low", "medium", "high"][..])
+            Some(&crate::model::REASONING_EFFORTS[..])
         );
         assert!(static_arg_values("/theme").is_some());
         assert!(static_arg_values("/max").is_none());

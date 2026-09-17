@@ -254,7 +254,7 @@ impl Config {
                 "completion_debounce_ms": {"type": "integer", "minimum": 0, "maximum": 5000},
                 "completion_history_max": {"type": "integer", "minimum": 1, "maximum": 5000},
                 "ai_suggest": {"type": "boolean"},
-                "reasoning_effort": {"type": "string", "enum": ["auto", "off", "low", "medium", "high"]},
+                "reasoning_effort": {"type": "string", "enum": ["auto", "off", "none", "disabled", "low", "medium", "high", "max", "xhigh"]},
                 "show_thinking": {"type": "boolean"},
                 "thinking_default_expanded": {"type": "boolean"},
                 "attention_bell": {"type": "boolean"},
@@ -346,7 +346,7 @@ fn validate(config: &Config) -> Result<()> {
             anyhow::bail!("invalid {key} '{value}'");
         }
     }
-    if !["auto", "off", "low", "medium", "high"].contains(&config.reasoning_effort.as_str()) {
+    if !crate::model::REASONING_EFFORTS.contains(&config.reasoning_effort.as_str()) {
         anyhow::bail!("invalid reasoning_effort '{}'", config.reasoning_effort);
     }
     if let Some(backend) = &config.backend

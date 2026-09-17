@@ -8,6 +8,8 @@ r105 sends tool schemas in the OpenAI compatible request and executes returned c
 | --- | --- | --- |
 | execute_rust | code | Compile and run a Rust program in the configured sandbox |
 | write_file | path, content | Write a UTF-8 file under the workspace |
+| edit_file | path, old_text, new_text, replace_all | Replace one anchored span; fails on missing/ambiguous anchors |
+| apply_patch | patch | Apply a structured patch (Add|Update|Delete File with @@ hunks) |
 | read_file | path | Read a UTF-8 workspace file |
 | list_files | path | List a workspace directory |
 | get_time | none | Return the system clock |
@@ -55,6 +57,27 @@ All workspace paths pass through the canonical workspace root. The following are
 - oversized file writes and reads.
 
 Writes report whether a file was created or updated. Reads and tool results are bounded before they reach the model.
+
+## Patch format
+
+```
+*** Begin Patch
+*** Add File: notes/new.txt
+hello
+*** Update File: src/main.rs
+@@
+ context
+-old line
++new line
+*** Delete File: old.txt
+*** End Patch
+```
+
+Update hunks use ` ` context, `-` removals, `+` additions, `@@` separators (ignored). Paths are workspace-relative only. Each hunk must match exactly once. Approval cards preview one line per file before anything writes.
+
+## Instruction chain
+
+Every request prepends project instructions as system messages: global `AGENTS.md`, then workspace `AGENTS.md`, `AGENTS.override.md`, `.r105/AGENTS.md`. Each file caps at 32 KiB; missing files are skipped. The order is stable for prefix-cache hits.
 
 ## Web security
 

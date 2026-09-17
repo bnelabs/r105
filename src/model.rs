@@ -59,6 +59,11 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Reasoning trace for models that return it alongside content.
+    /// Persisted so tool loops can echo it back verbatim; omitted from
+    /// the wire when a request carries no tools.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reasoning_content: String,
 }
 
 impl Message {
@@ -70,10 +75,19 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
+            reasoning_content: String::new(),
         }
     }
 
     pub fn assistant_with_tools(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self::assistant_with_reasoning(content, String::new(), tool_calls)
+    }
+
+    pub fn assistant_with_reasoning(
+        content: impl Into<String>,
+        reasoning_content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
         Self {
             role: "assistant".to_string(),
             content: content.into(),
@@ -81,6 +95,7 @@ impl Message {
             tool_calls,
             tool_call_id: None,
             name: None,
+            reasoning_content: reasoning_content.into(),
         }
     }
 
@@ -92,6 +107,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: Some(call_id.into()),
             name: None,
+            reasoning_content: String::new(),
         }
     }
 
@@ -103,6 +119,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
+            reasoning_content: String::new(),
         }
     }
 }
@@ -115,11 +132,21 @@ pub struct Usage {
     pub completion_tokens: Option<u64>,
     #[serde(default)]
     pub total_tokens: Option<u64>,
+    /// Prefix-cache accounting when the provider reports it. Optional:
+    /// absent on backends without caching.
+    #[serde(default)]
+    pub prompt_cache_hit_tokens: Option<u64>,
+    #[serde(default)]
+    pub prompt_cache_miss_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResult {
     pub content: String,
+    /// Reasoning trace kept alongside content. Rendered collapsed and
+    /// echoed back on tool loops; never shown as the reply itself.
+    #[serde(default)]
+    pub reasoning: String,
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default)]
@@ -134,6 +161,7 @@ impl Default for ChatResult {
     fn default() -> Self {
         Self {
             content: String::new(),
+            reasoning: String::new(),
             tool_calls: Vec::new(),
             raw: Value::Null,
             usage: Usage::default(),
@@ -217,6 +245,10 @@ pub struct ChatState {
     pub todos: Vec<TodoItem>,
     #[serde(default)]
     pub workspace: PathBuf,
+    /// Config directory for the global instruction file. Transient: never
+    /// written to session files; set at startup from the resolved paths.
+    #[serde(default, skip)]
+    pub config_dir: PathBuf,
     #[serde(default = "new_trace_id")]
     pub trace_id: String,
     #[serde(default)]
@@ -279,6 +311,25 @@ fn new_trace_id() -> String {
     Uuid::new_v4().simple().to_string()[..12].to_string()
 }
 
+/// Accepted reasoning effort settings. `auto` omits the hint; `off`,
+/// `none`, and `disabled` all disable thinking; `xhigh` maps to `max`
+/// on the wire.
+pub const REASONING_EFFORTS: [&str; 9] = [
+    "auto", "off", "none", "disabled", "low", "medium", "high", "max", "xhigh",
+];
+
+/// Normalize a user-facing effort to the wire value, if any.
+/// Returns `None` for `auto` (omit the hint).
+pub fn normalize_reasoning_effort(effort: &str) -> Option<String> {
+    match effort.to_ascii_lowercase().as_str() {
+        "auto" | "" => None,
+        "off" | "none" | "disabled" => Some("off".to_string()),
+        "xhigh" => Some("max".to_string()),
+        "low" | "medium" | "high" | "max" => Some(effort.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
 /// One-line instruction prepended to the request when the session mode
 /// is not build, so the model does not spam calls the gate will deny.
 pub fn mode_preamble(mode: &str) -> Option<&'static str> {
@@ -336,6 +387,7 @@ impl ChatState {
             history: Vec::new(),
             todos: Vec::new(),
             workspace,
+            config_dir: PathBuf::new(),
             trace_id: new_trace_id(),
             last_usage: Usage::default(),
         }
@@ -382,9 +434,19 @@ impl ChatState {
     }
 
     pub fn prompt_messages(&self, user_message: Option<&str>) -> Vec<Message> {
+        // Stable prefix ordering for prefix-cache hits: mode preamble,
+        // then skill instructions, then history, then the new turn.
+        // Callers must not reorder these; history appends only.
         let mut messages = Vec::with_capacity(self.history.len() + 2);
         if let Some(preamble) = mode_preamble(&self.mode) {
             messages.push(Message::system(preamble));
+        }
+        // Project instructions load fresh every request: global first,
+        // workspace files after. Missing files are skipped.
+        for (source, content) in crate::instructions::load(&self.workspace, &self.config_dir) {
+            messages.push(Message::system(format!(
+                "Project instructions ({source}):\n{content}"
+            )));
         }
         for skill in &self.active_skills {
             let name = skill.strip_suffix(".md").unwrap_or(skill);
@@ -440,6 +502,32 @@ mod tests {
         assert!(plan.contains("plan") && plan.contains("Read-only"));
         let ask = mode_preamble("ask").unwrap();
         assert!(ask.contains("ask") && ask.contains("do not call tools"));
+    }
+
+    #[test]
+    fn reasoning_effort_normalizes_aliases() {
+        assert_eq!(normalize_reasoning_effort("auto"), None);
+        assert_eq!(normalize_reasoning_effort("off"), Some("off".to_string()));
+        assert_eq!(
+            normalize_reasoning_effort("disabled"),
+            Some("off".to_string())
+        );
+        assert_eq!(normalize_reasoning_effort("none"), Some("off".to_string()));
+        assert_eq!(normalize_reasoning_effort("xhigh"), Some("max".to_string()));
+        assert_eq!(normalize_reasoning_effort("max"), Some("max".to_string()));
+        assert_eq!(normalize_reasoning_effort("HIGH"), Some("high".to_string()));
+    }
+
+    #[test]
+    fn prompt_messages_keep_stable_prefix_order() {
+        let mut state = state_with_mode("build");
+        state.active_skills = vec!["review.md".to_string()];
+        state.history = vec![Message::user("earlier")];
+        let messages = state.prompt_messages(Some("now"));
+        // Skills (system) come before history, the new turn last.
+        assert_eq!(messages.last().unwrap().content, "now");
+        assert!(messages.len() >= 3);
+        assert_eq!(messages[0].role, "system");
     }
 
     #[test]

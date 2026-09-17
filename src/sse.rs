@@ -145,7 +145,14 @@ pub fn parse_stream_data(data: &str, tools: &mut ToolAccumulator) -> Result<Stre
     if let Some(content) = delta.get("content").and_then(Value::as_str) {
         result.content = content.to_string();
     }
-    if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+    // Reasoning arrives under different keys depending on the backend:
+    // `reasoning_content` is the common one, `reasoning` the short form.
+    // Accumulate either; the caller keeps them separate from content.
+    if let Some(reasoning) = delta
+        .get("reasoning_content")
+        .or_else(|| delta.get("reasoning"))
+        .and_then(Value::as_str)
+    {
         result.reasoning = reasoning.to_string();
     }
     tools.apply(delta);
@@ -153,10 +160,21 @@ pub fn parse_stream_data(data: &str, tools: &mut ToolAccumulator) -> Result<Stre
 }
 
 pub fn parse_usage(value: &Value) -> Usage {
+    let cached_from_details = value
+        .get("prompt_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64);
     Usage {
         prompt_tokens: value.get("prompt_tokens").and_then(Value::as_u64),
         completion_tokens: value.get("completion_tokens").and_then(Value::as_u64),
         total_tokens: value.get("total_tokens").and_then(Value::as_u64),
+        prompt_cache_hit_tokens: value
+            .get("prompt_cache_hit_tokens")
+            .and_then(Value::as_u64)
+            .or(cached_from_details),
+        prompt_cache_miss_tokens: value
+            .get("prompt_cache_miss_tokens")
+            .and_then(Value::as_u64),
     }
 }
 
@@ -172,6 +190,12 @@ pub fn parse_chat_response(value: Value, wall_seconds: f64) -> Result<ChatResult
         Some(Value::Null) | None => String::new(),
         Some(other) => other.to_string(),
     };
+    let reasoning = message
+        .get("reasoning_content")
+        .or_else(|| message.get("reasoning"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     let tool_calls = message
         .get("tool_calls")
         .and_then(Value::as_array)
@@ -185,6 +209,7 @@ pub fn parse_chat_response(value: Value, wall_seconds: f64) -> Result<ChatResult
     let usage = value.get("usage").map(parse_usage).unwrap_or_default();
     Ok(ChatResult {
         content,
+        reasoning,
         tool_calls,
         raw: value,
         usage,
@@ -222,5 +247,61 @@ mod tests {
         assert_eq!(calls[0].id, "call_1");
         assert_eq!(calls[0].function.name, "read_file");
         assert_eq!(calls[0].function.arguments, r#"{"path":"a"}"#);
+    }
+
+    #[test]
+    fn stream_parses_both_reasoning_keys() {
+        let mut accumulator = ToolAccumulator::default();
+        let chunk = parse_stream_data(
+            r#"{"choices":[{"delta":{"content":"hi","reasoning_content":"plan"}}]}"#,
+            &mut accumulator,
+        )
+        .unwrap();
+        assert_eq!(chunk.content, "hi");
+        assert_eq!(chunk.reasoning, "plan");
+        let chunk = parse_stream_data(
+            r#"{"choices":[{"delta":{"reasoning":"think"}}]}"#,
+            &mut accumulator,
+        )
+        .unwrap();
+        assert_eq!(chunk.reasoning, "think");
+    }
+
+    #[test]
+    fn usage_parses_cache_hits() {
+        let usage = parse_usage(&serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110,
+            "prompt_cache_hit_tokens": 60,
+            "prompt_cache_miss_tokens": 40,
+        }));
+        assert_eq!(usage.prompt_cache_hit_tokens, Some(60));
+        assert_eq!(usage.prompt_cache_miss_tokens, Some(40));
+        let fallback = parse_usage(&serde_json::json!({
+            "prompt_tokens": 50,
+            "prompt_tokens_details": {"cached_tokens": 20},
+        }));
+        assert_eq!(fallback.prompt_cache_hit_tokens, Some(20));
+    }
+
+    #[test]
+    fn chat_response_keeps_reasoning_separate() {
+        let result = parse_chat_response(
+            serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "done",
+                        "reasoning_content": "weighed options",
+                    }
+                }],
+                "usage": {"prompt_tokens": 1},
+            }),
+            0.1,
+        )
+        .unwrap();
+        assert_eq!(result.content, "done");
+        assert_eq!(result.reasoning, "weighed options");
     }
 }

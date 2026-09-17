@@ -48,8 +48,16 @@ impl UiApp {
             "/compact" => self.command_compact(),
             "/tokens" => {
                 let usage = self.state.token_usage();
+                let cache = match (
+                    self.state.last_usage.prompt_cache_hit_tokens,
+                    self.state.last_usage.prompt_cache_miss_tokens,
+                ) {
+                    (Some(hit), Some(miss)) => format!(" · cache hit {hit} / miss {miss}"),
+                    (Some(hit), None) => format!(" · cache hit {hit}"),
+                    _ => String::new(),
+                };
                 self.push_system(&format!(
-                    "Context: {} / {} tokens ({:.1}%, {} confidence)",
+                    "Context: {} / {} tokens ({:.1}%, {} confidence){cache}",
                     usage.used_tokens,
                     usage.context_tokens,
                     usage.percent(),
@@ -94,6 +102,7 @@ impl UiApp {
                 };
                 self.state.history.clear();
                 self.streaming.clear();
+                self.streaming_reasoning.clear();
                 self.redo_stack.clear();
                 self.prune_sections();
                 self.set_ok(match backup {
@@ -515,7 +524,9 @@ impl UiApp {
     }
 
     pub(crate) fn command_reasoning(&mut self, args: &[String]) {
-        const VALID: [&str; 5] = ["auto", "off", "low", "medium", "high"];
+        const VALID: [&str; 9] = [
+            "auto", "off", "none", "disabled", "low", "medium", "high", "max", "xhigh",
+        ];
         let Some(value) = args.first() else {
             self.push_system(&format!("reasoning_effort={}", self.state.reasoning_effort));
             return;

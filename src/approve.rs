@@ -69,7 +69,7 @@ pub enum Category {
 pub fn category(name: &str) -> Category {
     match name {
         "execute_rust" => Category::Exec,
-        "write_file" => Category::Write,
+        "write_file" | "edit_file" | "apply_patch" => Category::Write,
         "read_file" | "list_files" => Category::Read,
         "web_search" | "web_fetch" => Category::Network,
         _ if name.starts_with("mcp_") => Category::Mcp,
@@ -80,7 +80,8 @@ pub fn category(name: &str) -> Category {
 
 /// Approval policy: per-category levels plus regex lists matched against
 /// `summarize(name, args)`. `session_allow` holds card-approved (`a`)
-/// patterns for this run only; it is never persisted.
+/// patterns for this run only; `session_files` holds per-file grants from
+/// diff approvals. Neither is persisted.
 #[derive(Debug, Clone)]
 pub struct Policy {
     pub exec: Action,
@@ -92,6 +93,7 @@ pub struct Policy {
     pub allowlist: Vec<Regex>,
     pub denylist: Vec<Regex>,
     pub session_allow: Vec<Regex>,
+    pub session_files: Vec<String>,
 }
 
 impl Default for Policy {
@@ -108,6 +110,7 @@ impl Default for Policy {
             allowlist: Vec::new(),
             denylist: Vec::new(),
             session_allow: Vec::new(),
+            session_files: Vec::new(),
         }
     }
 }
@@ -133,6 +136,7 @@ impl Policy {
             allowlist: compile("command_allowlist", &config.command_allowlist)?,
             denylist: compile("command_denylist", &config.command_denylist)?,
             session_allow: Vec::new(),
+            session_files: Vec::new(),
         })
     }
 
@@ -192,6 +196,15 @@ impl Policy {
             self.session_allow.push(pattern);
         }
     }
+
+    /// Remember per-file grants from a diff approval. Later writes to the
+    /// same relative path skip the card for this run.
+    pub fn allow_session_file(&mut self, path: &str) {
+        let normalized = path.trim();
+        if !normalized.is_empty() && !self.session_files.iter().any(|item| item == normalized) {
+            self.session_files.push(normalized.to_string());
+        }
+    }
 }
 
 /// One-line human summary of a call, used by cards and list matching.
@@ -205,7 +218,10 @@ pub fn summarize(name: &str, args: &Value) -> String {
         })
     }
     let detail = match name {
-        "write_file" | "read_file" | "list_files" => scalar(args, "path").unwrap_or_default(),
+        "write_file" | "read_file" | "list_files" | "edit_file" => {
+            scalar(args, "path").unwrap_or_default()
+        }
+        "apply_patch" => patch_summary(args),
         "web_search" => scalar(args, "query").unwrap_or_default(),
         "web_fetch" => scalar(args, "url").unwrap_or_default(),
         "execute_rust" => scalar(args, "code")
@@ -223,6 +239,64 @@ pub fn summarize(name: &str, args: &Value) -> String {
         format!("{name} {detail}")
     };
     text.chars().take(160).collect()
+}
+
+/// Short file list for a patch, so the card stays one line.
+fn patch_summary(args: &Value) -> String {
+    let patch = args
+        .get("patch")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut files = Vec::new();
+    for line in patch.lines().take(40) {
+        let trimmed = line.trim();
+        for prefix in ["*** Add File:", "*** Update File:", "*** Delete File:"] {
+            if let Some(path) = trimmed.strip_prefix(prefix).map(str::trim) {
+                files.push(path.to_string());
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files.truncate(3);
+    if files.is_empty() {
+        "patch".to_string()
+    } else {
+        files.join(", ")
+    }
+}
+
+/// Relative paths a write-like call would touch. Used for per-file session
+/// grants and diff previews. Unknown shapes yield an empty list (no grant).
+pub fn touched_paths(name: &str, args: &Value) -> Vec<String> {
+    match name {
+        "write_file" | "edit_file" | "read_file" | "list_files" => args
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|path| vec![path.to_string()])
+            .unwrap_or_default(),
+        "apply_patch" => {
+            let patch = args
+                .get("patch")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let mut files = Vec::new();
+            for line in patch.lines() {
+                let trimmed = line.trim();
+                for prefix in ["*** Add File:", "*** Update File:", "*** Delete File:"] {
+                    if let Some(path) = trimmed.strip_prefix(prefix).map(str::trim)
+                        && !path.is_empty()
+                    {
+                        files.push(path.to_string());
+                    }
+                }
+            }
+            files.sort();
+            files.dedup();
+            files
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Pure policy resolution. Order: mode gate → posture → denylist →
@@ -250,6 +324,17 @@ pub fn resolve(
     let text = summarize(name, args);
     if let Some(pattern) = policy.denylist.iter().find(|regex| regex.is_match(&text)) {
         return Decision::Deny(format!("matched denylist '{pattern}'"));
+    }
+    // Per-file session grants from earlier diff approvals skip the card.
+    if matches!(category(name), Category::Write) {
+        let touched = touched_paths(name, args);
+        if !touched.is_empty()
+            && touched
+                .iter()
+                .all(|path| policy.session_files.iter().any(|grant| grant == path))
+        {
+            return Decision::Allow;
+        }
     }
     if policy
         .session_allow
@@ -414,5 +499,62 @@ mod tests {
             resolve("mcp_ping", &json!({}), "build", true, true, &policy),
             Decision::Allow
         ));
+    }
+
+    #[test]
+    fn edit_tools_are_write_gated() {
+        assert_eq!(category("edit_file"), Category::Write);
+        assert_eq!(category("apply_patch"), Category::Write);
+        let mut policy = policy();
+        // Write asks by default.
+        assert!(matches!(
+            resolve(
+                "edit_file",
+                &json!({"path": "a.txt", "old_text": "x", "new_text": "y"}),
+                "build",
+                true,
+                true,
+                &policy
+            ),
+            Decision::Ask(_)
+        ));
+        // A per-file grant skips the card for the same path only.
+        policy.allow_session_file("a.txt");
+        assert_eq!(
+            resolve(
+                "edit_file",
+                &json!({"path": "a.txt", "old_text": "x", "new_text": "y"}),
+                "build",
+                true,
+                true,
+                &policy
+            ),
+            Decision::Allow
+        );
+        assert!(matches!(
+            resolve(
+                "edit_file",
+                &json!({"path": "b.txt", "old_text": "x", "new_text": "y"}),
+                "build",
+                true,
+                true,
+                &policy
+            ),
+            Decision::Ask(_)
+        ));
+    }
+
+    #[test]
+    fn patch_summary_lists_files() {
+        let args = json!({"patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n*** End Patch\n"});
+        assert!(summarize("apply_patch", &args).contains("a.txt"));
+        assert_eq!(
+            touched_paths("apply_patch", &args),
+            vec!["a.txt".to_string()]
+        );
+        assert_eq!(
+            touched_paths("edit_file", &json!({"path": "a.txt"})),
+            vec!["a.txt".to_string()]
+        );
     }
 }

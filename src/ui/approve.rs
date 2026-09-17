@@ -19,6 +19,7 @@ pub(crate) struct PendingApproval {
     pub index: usize,
     pub name: String,
     pub summary: String,
+    pub preview: Option<String>,
 }
 
 pub(crate) struct PendingTools {
@@ -41,10 +42,68 @@ fn precheck_args(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
 }
 
+/// Read-only preview for the approval card. Never writes.
+/// Diff preview for a write-like call, shared with window approvals.
+/// Pure filesystem read; `None` means no preview line.
+pub(crate) fn approval_preview(
+    name: &str,
+    args: &Value,
+    workspace: &std::path::Path,
+) -> Option<String> {
+    match name {
+        "write_file" => {
+            let path = args.get("path").and_then(Value::as_str)?;
+            let content = args
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let old = std::fs::read_to_string(workspace.join(path)).unwrap_or_default();
+            if old.is_empty() {
+                Some(format!("create {path} ({} bytes)", content.len()))
+            } else {
+                Some(format!(
+                    "{}: {} -> {} lines",
+                    path,
+                    old.lines().count(),
+                    content.lines().count()
+                ))
+            }
+        }
+        "edit_file" => {
+            let path = args.get("path").and_then(Value::as_str)?;
+            let old_text = args
+                .get("old_text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let new_text = args
+                .get("new_text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let replace_all = args
+                .get("replace_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let current = std::fs::read_to_string(workspace.join(path)).unwrap_or_default();
+            crate::edit::preview_edit(&current, old_text, new_text, replace_all)
+                .map(|diff| format!("{path}: {diff}"))
+                .ok()
+        }
+        "apply_patch" => {
+            let patch = args
+                .get("patch")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            crate::edit::preview_patch(workspace, patch).ok()
+        }
+        _ => None,
+    }
+}
+
 /// The exact text `execute` will match lists against: repaired arguments
 /// (fenced JSON counts as the object it becomes), then summarized. Card
 /// approvals allow-list this text, so pre-check and enforcement agree.
-fn call_text(call: &ToolCall) -> (Value, String) {
+/// Shared with window approvals so both surfaces read identically.
+pub(crate) fn call_text(call: &ToolCall) -> (Value, String) {
     let args = tool::repair_arguments(&precheck_args(&call.function.arguments));
     let summary = approve::summarize(&call.function.name, &args);
     (args, summary)
@@ -68,6 +127,7 @@ impl UiApp {
         let mut queue = VecDeque::new();
         for (index, call) in calls.iter().enumerate() {
             let (args, summary) = call_text(call);
+            let preview = approval_preview(&call.function.name, &args, &context.workspace);
             match approve::resolve(
                 &call.function.name,
                 &args,
@@ -87,6 +147,7 @@ impl UiApp {
                     index,
                     name: call.function.name.clone(),
                     summary,
+                    preview,
                 }),
             }
         }
@@ -157,6 +218,9 @@ impl UiApp {
         // this exact call text in the spawn context so the enforcement
         // sees the approval the card just granted.
         pending.context.policy.allow_session(&item.summary);
+        // Per-file grants let later writes to the same path skip cards.
+        let (grant_args, _) = call_text(&call);
+        let touched = approve::touched_paths(&call.function.name, &grant_args);
         match verdict {
             ApprovalVerdict::Once => {
                 pending.approved.push((item.index, call));
@@ -164,7 +228,11 @@ impl UiApp {
             }
             ApprovalVerdict::Always => {
                 self.policy.allow_session(&item.summary);
-                pending.approved.push((item.index, call));
+                pending.context.policy.allow_session(&item.summary);
+                for path in &touched {
+                    self.policy.allow_session_file(path);
+                    pending.context.policy.allow_session_file(path);
+                }
                 self.set_ok(format!("Always allow `{}`", item.summary));
             }
             ApprovalVerdict::Deny => {
@@ -256,12 +324,13 @@ impl UiApp {
     }
 
     /// Card copy for the overlay renderer; `None` when no card is up.
-    pub(crate) fn approval_card(&self) -> Option<(String, String, usize)> {
+    pub(crate) fn approval_card(&self) -> Option<(String, String, Option<String>, usize)> {
         let pending = self.pending_tools.as_ref()?;
         let current = pending.queue.front()?;
         Some((
             current.name.clone(),
             current.summary.clone(),
+            current.preview.clone(),
             pending.queue.len() - 1,
         ))
     }

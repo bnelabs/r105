@@ -42,7 +42,8 @@ pub struct ToolContext {
 
 /// Tools usable in plan mode: read-only inspection, web research, and
 /// the todo list (which mutates no workspace state). Everything else —
-/// `execute_rust`, `write_file`, `plugin_*`, `mcp_*` — is denied.
+/// `execute_rust`, `write_file`, `edit_file`, `apply_patch`, `plugin_*`,
+/// `mcp_*` — is denied.
 pub const PLAN_MODE_TOOLS: &[&str] = &[
     "read_file",
     "list_files",
@@ -117,6 +118,25 @@ fn builtin_definitions() -> Vec<Value> {
                 "content": {"type": "string", "description": "UTF-8 file content."}
             }),
             &["path", "content"],
+        ),
+        definition(
+            "edit_file",
+            "Replace one anchored span inside a workspace file. Fails when the anchor is missing or ambiguous unless replace_all is true.",
+            json!({
+                "path": {"type": "string", "description": "Relative path inside the workspace."},
+                "old_text": {"type": "string", "description": "Exact span to replace."},
+                "new_text": {"type": "string", "description": "Replacement text."},
+                "replace_all": {"type": "boolean", "description": "Replace every match (default false)."}
+            }),
+            &["path", "old_text", "new_text"],
+        ),
+        definition(
+            "apply_patch",
+            "Apply a structured patch (*** Begin Patch / Add|Update|Delete File / *** End Patch) with @@ hunks using ' '/-/+ prefixes. Relative paths only.",
+            json!({
+                "patch": {"type": "string", "description": "Full patch text."}
+            }),
+            &["patch"],
         ),
         definition(
             "read_file",
@@ -218,6 +238,8 @@ pub async fn execute(name: &str, raw_arguments: &Value, context: &ToolContext) -
     let content = match name {
         "execute_rust" => execute_rust(&arguments, context).await?,
         "write_file" => write_file(&arguments, &context.workspace)?,
+        "edit_file" => edit_file(&arguments, &context.workspace)?,
+        "apply_patch" => apply_patch(&arguments, &context.workspace)?,
         "read_file" => read_file(&arguments, &context.workspace)?,
         "list_files" => list_files(&arguments, &context.workspace)?,
         "get_time" => current_time(),
@@ -349,6 +371,22 @@ fn read_file(arguments: &Value, workspace: &Path) -> Result<String> {
         );
     }
     fs::read_to_string(&path).with_context(|| format!("decoding {}", path.display()))
+}
+
+fn edit_file(arguments: &Value, workspace: &Path) -> Result<String> {
+    let path = argument_string(arguments, "path")?;
+    let old_text = argument_string(arguments, "old_text")?;
+    let new_text = argument_string(arguments, "new_text")?;
+    let replace_all = arguments
+        .get("replace_all")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    crate::edit::apply_edit(workspace, &path, &old_text, &new_text, replace_all)
+}
+
+fn apply_patch(arguments: &Value, workspace: &Path) -> Result<String> {
+    let patch = argument_string(arguments, "patch")?;
+    crate::edit::apply_patch(workspace, &patch)
 }
 
 fn list_files(arguments: &Value, workspace: &Path) -> Result<String> {
@@ -1040,7 +1078,7 @@ mod tests {
                 .is_ok()
         );
         assert!(execute("get_time", &json!({}), &context).await.is_ok());
-        for name in ["write_file", "execute_rust"] {
+        for name in ["write_file", "edit_file", "apply_patch", "execute_rust"] {
             let error = execute(name, &json!({}), &context).await.unwrap_err();
             assert!(
                 error.to_string().contains("not available in plan mode"),

@@ -245,11 +245,21 @@ impl UiApp {
                 _ => Color::Magenta,
             };
             let label = message.role.to_ascii_uppercase();
+            // Reasoning lives in its own field on new messages; older
+            // reasoning-only replies arrive wrapped in the content.
             let thinking = if message.role == "assistant" {
-                thinking_body(&message.content)
+                if !message.reasoning_content.is_empty() {
+                    Some(message.reasoning_content.as_str())
+                } else {
+                    thinking_body(&message.content)
+                }
             } else {
                 None
             };
+            // A wrapped-only message has no visible reply beyond the trace.
+            let wrapped_only = message.role == "assistant"
+                && message.reasoning_content.is_empty()
+                && thinking.is_some();
             let is_tool = message.role == "tool";
             let failed = is_tool && message.content.contains("tool error:");
             // A message is one section: tool output, or the thinking part
@@ -294,12 +304,20 @@ impl UiApp {
                     thinking_default
                 };
                 let body = match &filtered {
-                    Some(filtered) => filtered.shown.join("\n"),
-                    None => body.to_string(),
+                    // Wrapped-only traces filter like ordinary content;
+                    // separate traces keep their own text.
+                    Some(filtered) if wrapped_only => filtered.shown.join("\n"),
+                    _ => body.to_string(),
                 };
                 push_thinking_lines(&mut lines, &body, show_thinking, expanded);
-                if let Some(filtered) = &filtered {
+                if let Some(filtered) = &filtered
+                    && wrapped_only
+                {
                     push_filter_trailer(&mut lines, filtered.hidden, block);
+                }
+                // Separate trace plus a visible reply: show both.
+                if !wrapped_only && !message.content.is_empty() {
+                    push_block_body(&mut lines, message, &filtered, block);
                 }
             } else if is_tool {
                 let expanded = failed || self.section_expanded(&message.id, details_default);
@@ -383,6 +401,24 @@ impl UiApp {
             }
         }
         self.section_order = order;
+        if !self.streaming_reasoning.is_empty() && self.state.show_thinking {
+            lines.push(Line::from(Span::styled(
+                "─ THINKING … ─",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            let preview: Vec<&str> = self.streaming_reasoning.lines().take(3).collect();
+            for line in preview {
+                lines.push(Line::from(Span::styled(
+                    format!("  {line}"),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            while headers.len() < lines.len() {
+                headers.push(None);
+            }
+        }
         if !self.streaming.is_empty() {
             lines.push(Line::from(Span::styled(
                 "─ ASSISTANT … ─",
@@ -779,6 +815,13 @@ impl UiApp {
         );
         let session_tokens = if self.session_in == 0 && self.session_out == 0 {
             "tokens –".to_string()
+        } else if self.session_cached > 0 {
+            format!(
+                "↑{} ↓{} ⛁{}",
+                compact_number(self.session_in),
+                compact_number(self.session_out),
+                compact_number(self.session_cached)
+            )
         } else {
             format!(
                 "↑{} ↓{}",
@@ -940,22 +983,31 @@ impl UiApp {
             }
             Overlay::Settings { .. } => {}
             Overlay::Approval => {
-                let (name, summary, remaining) = self
+                let (name, summary, preview, remaining) = self
                     .approval_card()
-                    .unwrap_or_else(|| ("tool".into(), String::new(), 0));
+                    .unwrap_or_else(|| ("tool".into(), String::new(), None, 0));
                 let mut lines = vec![
                     Line::from(format!("Approve `{name}`?")),
                     Line::from(""),
                     Line::from(format!("  {summary}")),
-                    Line::from(""),
-                    Line::from("y approve once · a always allow this run · n deny"),
                 ];
-                let height = if remaining > 0 {
+                if let Some(preview) = preview.filter(|text| !text.is_empty()) {
+                    for line in preview.lines().take(6) {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {line}"),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(
+                    "y approve once · a always allow this run · n deny",
+                ));
+                let mut height = 8 + lines.len().saturating_sub(5).min(6) as u16;
+                if remaining > 0 {
                     lines.push(Line::from(format!("+{remaining} more awaiting decision")));
-                    9
-                } else {
-                    8
-                };
+                    height += 1;
+                }
                 let rect = centered(area, 78, height);
                 frame.render_widget(Clear, rect);
                 frame.render_widget(

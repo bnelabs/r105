@@ -33,6 +33,11 @@ r105 is a Rust terminal AI harness. The binary owns the terminal UI, backend pro
 | ui/ | Ratatui event loop, overlays, palette, transcript, cancellation |
 | command.rs | slash registry, shell word parsing, fuzzy ranking, visible scrolling |
 | tool.rs | native tool schemas, dispatch, parallel tool execution |
+| edit.rs | anchored edits and structured patches |
+| instructions.rs | global plus workspace instruction chain |
+| terminal.rs | PTY sessions, vt100 screen, command blocks (prototype) |
+| window.rs | native OS window, GPU text, hosts the PTY core (prototype) |
+| assistant.rs | headless prompt → stream → approve → tools loop for windows |
 | security.rs | workspace containment, DNS/IP blocklist, input limits |
 | sandbox.rs | nsjail, bubblewrap, Docker, or timeout fallback execution |
 | plugin.rs | executable plugin manifests and JSON stdin/stdout protocol |
