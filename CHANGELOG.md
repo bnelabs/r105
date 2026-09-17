@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-09-17
+
 ### Fixed
 - Window AI cancellation preserves the session and queued prompts.
 - Window Once and Deny verdicts no longer create persistent approval grants.
@@ -40,6 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AI merge in the window: `Ctrl+J` composer with streaming answers in
   the `Ctrl+K` panel, same approve-then-execute tool loop as the TUI
   with inline `y`/`a`/`n` verdicts, `Esc` cancels a live run.
+- Window session persistence: AI history checkpoints to a
+  `window-<uuid>` session and restores into the panel via
+  `--session <name> window`.
+- Window input: `Cmd/Ctrl+C/V` clipboard, drag selection with
+  scrollback, IME preedit input, and `--smoke-snapshot` PPM capture of
+  the final smoke frame.
+- macOS app bundle: `packaging/build_macos_app.sh` builds an ad-hoc
+  signed `r105.app`; launching from the bundle opens the window
+  surface.
 
 ## [2.3.1] — 2026-09-16
 
