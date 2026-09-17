@@ -32,6 +32,16 @@ if ! grep -Fq "## [$VERSION]" "$ROOT/CHANGELOG.md"; then
   exit 1
 fi
 
+NOTES="$ROOT/docs/release-notes/v$VERSION.md"
+if [ ! -s "$NOTES" ]; then
+  echo "missing release notes: docs/release-notes/v$VERSION.md" >&2
+  exit 1
+fi
+if ! grep -Fq "# r105 $VERSION" "$NOTES"; then
+  echo "release notes title does not identify r105 $VERSION" >&2
+  exit 1
+fi
+
 if [ -n "$TAG" ]; then
   TAG_VERSION=$(printf '%s' "$TAG" | sed 's/^v//')
   if [ "$TAG_VERSION" != "$VERSION" ]; then

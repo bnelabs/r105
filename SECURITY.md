@@ -2,7 +2,9 @@
 
 ## Supported Versions
 
-Only the latest released version of r105 is actively supported with security updates. Users are strongly encouraged to upgrade to the newest version.
+Only the latest released minor line of r105 is actively supported with security
+updates. The current supported line is 2.5.x; users are strongly encouraged
+to upgrade to the newest published patch.
 
 ## Reporting a Vulnerability
 
@@ -37,11 +39,18 @@ r105 follows several security best practices:
 - **Sandboxing**: Rust code execution uses OS-level isolation (nsjail, bubblewrap, Docker) when available
 - **Input Validation**: All tool inputs are validated and bounded
 - **No Credential Storage**: API keys are never written to disk; they're held in memory only
-- **Audit Trail**: Session files record all tool calls and responses
+- **Audit Trail**: Session files preserve tool-call/result history; approval
+  decisions remain runtime policy state and are not persisted as credentials
+- **Window input boundaries**: Native-window clipboard paste strips control
+  characters, selection stays inside the PTY grid, and AI tool calls still pass
+  through the same approval policy as the TUI
+- **Fail-closed approvals**: Denied calls become visible tool errors and never
+  start; an `Always` verdict is scoped to the exact call and touched files for
+  the current process
 
 ### Dependency Security
 
-- Dependencies are audited using `cargo-audit` in CI
+- Dependencies are audited using `cargo-audit` in CI and release validation
 - Vulnerability reports are reviewed and addressed promptly
 - Updates are only applied after thorough testing
 
@@ -53,6 +62,9 @@ r105 is designed with the following threat model in mind:
 - **Compromised Backends**: The backend provider may return malicious content or attempt to exploit the client
 - **Network Attacks**: Network requests may be intercepted, redirected, or manipulated
 - **File System Attacks**: File operations may attempt path traversal, symlink escapes, or access sensitive files
+- **Local extension risk**: Native plugins and MCP servers are local processes;
+  a manifest grants them the current user’s process privileges and must be
+  treated as trusted code
 
 The security measures in r105 are designed to mitigate these threats by:
 
@@ -61,6 +73,8 @@ The security measures in r105 are designed to mitigate these threats by:
 - Using sandboxed execution for untrusted code
 - Bounding all inputs and outputs
 - Never persisting sensitive credentials
+- Requiring explicit configuration for plugins, MCP servers, sandbox posture,
+  and approval defaults
 
 ### Disclosure Policy
 
@@ -73,4 +87,7 @@ After a vulnerability is fixed:
 
 ### Security Questions
 
-For general security questions or concerns that don't involve a specific vulnerability, please open a GitHub issue with the `security` label.
+For general security questions or concerns that don't involve a specific
+vulnerability, please open a GitHub issue with the `security` label. Do not
+include credentials, private model endpoints, or private workspace contents in
+public issues.

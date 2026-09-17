@@ -1,6 +1,6 @@
 # 0023: AI merge — composer and harness blocks in the native window
 
-- Status: implemented
+- Status: implemented; released in 2.5.0
 - Author: r105
 - Scope: `src/assistant.rs` (new), `src/window.rs` (chrome), `src/main.rs` (pass backend/state/config), `src/ui/approve.rs` (share card text)
 
@@ -37,13 +37,13 @@ canvas plus inline AI, sharing one block timeline.
 - `main.rs` passes `backend`, `state`, `config` into `WindowOptions`;
   policy and sandbox build from config exactly like `UiApp::new`.
 
-## Non-goals
+## Original non-goals
 
-- No session persistence for window AI history in this change
+- No session persistence for window AI history in the initial implementation
   (in-memory; TUI sessions untouched).
-- No markdown rendering, no selection/clipboard, no IME, no tabs,
-  no auto-compaction in the window.
-- No `.app` packaging in this change.
+- No markdown rendering, no selection/clipboard, no IME, no tabs, or
+  auto-compaction in the initial implementation.
+- No `.app` packaging in the initial implementation.
 
 ## Acceptance
 
@@ -76,11 +76,16 @@ canvas plus inline AI, sharing one block timeline.
 - macOS `.app` bundling via `packaging/build_macos_app.sh` (ad-hoc signed;
   distribution still requires Developer ID signing and notarization) and
   app-bundle launch defaults to the window surface.
-- Current readiness check (2026-09-17): release build, exact 120-frame smoke
-  runs, clean PPM capture, local HTTP/SSE orchestration tests, ignored GPU
-  tests, and the rebuilt ad-hoc app bundle pass. The configured
-  `192.168.68.57:8001` llama.cpp router is reachable; its loaded
-  `Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp` model passed the live streamed reply plus
-  approved `write_file` acceptance test and the release CLI `READY` probe.
-  Other catalog entries may remain unloaded, so live checks must name a loaded
-  model explicitly.
+- Current readiness check (2026-09-17): release build, exact smoke runs,
+  clean PPM capture, local HTTP/SSE orchestration tests, ignored GPU tests,
+  and the rebuilt ad-hoc app bundle pass. Live model checks remain
+  environment-dependent: name an explicitly loaded model and verify the
+  endpoint before relying on streaming or approval acceptance.
+
+## Current implementation boundary
+
+The released window surface owns one PTY, one assistant history, and one
+approval queue. It checkpoints to a named session and restores through
+`r105 --session <name> window`. Persistent tabs and nested split trees belong
+to the TUI (`r105 chat`) and are stored in `tabs.json`; the window does not
+share that layout.

@@ -42,8 +42,8 @@ jobs:
       - name: Lint
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
-      - name: Test
-        run: cargo test --all-targets --locked
+      - name: Test all features
+        run: cargo test --all-targets --all-features --locked
 
       - name: Validate CLI and schema
         run: |

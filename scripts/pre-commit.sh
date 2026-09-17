@@ -13,10 +13,10 @@ cargo fmt --all -- --check
 
 # Run clippy
 echo "Running clippy..."
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 
 # Run tests
 echo "Running tests..."
-cargo test --all-targets
+cargo test --locked --all-targets
 
 echo "All checks passed!"

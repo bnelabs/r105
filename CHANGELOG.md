@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- Synchronized the README, architecture, configuration, contributor guide,
+  security policy, tool/skill/export guides, packaging notes, and current
+  specs with the 2.5.0 TUI split-tree, tab persistence, PTY, and native-window
+  behavior.
+- Corrected release examples, source-module paths, current validation commands,
+  and changelog comparison links.
+- Release metadata checks now require matching per-version release notes.
+
 ## [2.5.0] — 2026-09-17
 
 ### Added
@@ -738,7 +747,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File explorer sidebar
 - Token usage estimation and auto-compaction at 80% context
 
-[Unreleased]: https://github.com/bnelabs/r105/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/bnelabs/r105/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/bnelabs/r105/compare/v2.4.0...v2.5.0
+[2.4.0]: https://github.com/bnelabs/r105/compare/v2.3.1...v2.4.0
+[2.3.1]: https://github.com/bnelabs/r105/compare/v2.3.0...v2.3.1
+[2.3.0]: https://github.com/bnelabs/r105/compare/v2.2.0...v2.3.0
+[2.2.0]: https://github.com/bnelabs/r105/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/bnelabs/r105/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/bnelabs/r105/compare/v1.4.0...v2.0.0
+[1.4.0]: https://github.com/bnelabs/r105/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/bnelabs/r105/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/bnelabs/r105/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/bnelabs/r105/compare/v1.0.2...v1.1.0
+[1.0.2]: https://github.com/bnelabs/r105/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/bnelabs/r105/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/bnelabs/r105/compare/v0.8.3...v1.0.0
 [0.8.3]: https://github.com/bnelabs/r105/compare/v0.8.2...v0.8.3

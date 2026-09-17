@@ -13,22 +13,22 @@ case "$1" in
     check)
         echo "Running all checks..."
         cargo fmt --all -- --check
-        cargo check --all-targets --all-features
-        cargo clippy --all-targets --all-features -- -D warnings
-        cargo test --all-targets
+        cargo check --locked --all-targets --all-features
+        cargo clippy --locked --all-targets --all-features -- -D warnings
+        cargo test --locked --all-targets
         ./packaging/check_release.sh
         echo "All checks passed!"
         ;;
     
     build)
         echo "Building release version..."
-        cargo build --release
+        cargo build --release --locked
         echo "Build complete: target/release/r105"
         ;;
     
     test)
         echo "Running tests..."
-        cargo test --all-targets
+        cargo test --locked --all-targets
         echo "Tests passed!"
         ;;
     
@@ -46,7 +46,7 @@ case "$1" in
     
     clippy)
         echo "Running clippy..."
-        cargo clippy --all-targets --all-features -- -D warnings
+        cargo clippy --locked --all-targets --all-features -- -D warnings
         echo "Clippy passed!"
         ;;
     

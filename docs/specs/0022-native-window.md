@@ -1,6 +1,6 @@
 # 0022: Native windowed terminal (own window)
 
-- Status: implemented; renderer/input hardening is covered by 0023
+- Status: implemented; renderer/input and AI integration are covered by 0023
 - Author: r105
 - Scope: `src/window.rs`, `src/main.rs` (`window` subcommand), `Cargo.toml` (`winit`, `wgpu`, `glyphon`, `pollster`)
 
@@ -44,4 +44,8 @@ no runtime beyond the OS.
 
 ## Amendments
 
-(None yet.)
+- 0023 completed the previously deferred input paths: caret placement, inline
+  AI composer/panel/approval chrome, clipboard, drag selection, IME commits,
+  smoke snapshots, named window-session checkpoints, and local macOS app
+  packaging. The native window remains a single PTY surface; TUI tabs and
+  nested split panes are a separate `chat` surface.

@@ -1,8 +1,8 @@
 # r105 — Beyond the prompt
 
-r105 is a local first AI harness for terminal work. It connects to local or cloud OpenAI compatible backends, keeps your sessions on your machine, and gives the model bounded tools for files, calculations, web research, and native Rust execution.
+r105 is a local-first AI harness for terminal work. It connects to local or cloud OpenAI-compatible backends, keeps your sessions on your machine, and gives the model bounded tools for files, calculations, web research, and native Rust execution.
 
-The application is written in Rust. Installed builds are single native executables and do not require Python, Node.js, or a runtime virtual environment.
+The current release is 2.5.0. The application is written in Rust: installed builds are single native executables and do not require Python, Node.js, or a runtime virtual environment.
 
 <p align="center">
   <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust">
@@ -17,7 +17,7 @@ The application is written in Rust. Installed builds are single native executabl
 | --- | --- | --- |
 | Linux with glibc 2.35 or newer | x86_64, aarch64 | tar.gz; Ubuntu/Debian deb, Arch pkg.tar.zst, Fedora/RHEL rpm for x86_64 |
 | Alpine Linux with musl | x86_64 | native apk package |
-| macOS | x86_64, arm64 | tar.gz; arm64 supports Apple silicon |
+| macOS | x86_64, arm64 | tar.gz; arm64 supports Apple silicon; local `.app` bundle on macOS |
 | Windows | x86_64, arm64 | zip; arm64 supports Windows on ARM |
 | FreeBSD 14 | amd64 | native pkg package |
 
@@ -32,13 +32,13 @@ The release archive names make the target explicit:
 - r105-windows-x86_64.zip
 - r105-windows-arm64.zip
 
-Every release includes SHA256SUMS.
+Every release includes SHA256SUMS. The macOS application bundle is a convenience build for local use; public distribution still requires platform signing and notarization.
 
 ## Installation
 
 ### Homebrew
 
-The Homebrew tap installs the native binary and has no Python resource tree:
+The Homebrew tap installs the native binary:
 
 ```sh
 brew install bnelabs/tap/r105
@@ -49,7 +49,7 @@ brew install bnelabs/tap/r105
 Download the archive for your operating system and architecture from GitHub Releases, verify its checksum, then place the executable on your PATH.
 
 ```sh
-VERSION=1.0.1
+VERSION=2.5.0
 curl -LO https://github.com/bnelabs/r105/releases/download/v$VERSION/r105-macos-arm64.tar.gz
 curl -LO https://github.com/bnelabs/r105/releases/download/v$VERSION/SHA256SUMS
 grep 'r105-macos-arm64.tar.gz$' SHA256SUMS | shasum -a 256 -c -
@@ -62,7 +62,7 @@ install -m 755 r105 /usr/local/bin/r105
 Use the package that matches the distribution:
 
 ```sh
-VERSION=1.0.1
+VERSION=2.5.0
 
 # Ubuntu / Debian
 sudo apt install "./r105_${VERSION}_amd64.deb"
@@ -98,6 +98,12 @@ For a local development build:
 cargo run -- chat
 ```
 
+To run the native window during development:
+
+```sh
+cargo run -- window
+```
+
 ### Docker
 
 The image is built from the Rust source and contains the native r105 executable:
@@ -124,6 +130,11 @@ Start the TUI:
 ```sh
 r105 chat
 ```
+
+The TUI is the full workspace surface: it provides persistent tabs, nested
+split panes, session management, completion, approvals, and exports. The
+native window is a separate single-window PTY surface with inline AI; use
+`r105 window` when you want the terminal and AI panel in an OS window.
 
 The default connection is a local llama-router at http://127.0.0.1:8010. You can also send one prompt and exit:
 
@@ -167,7 +178,7 @@ Local and self-hosted providers (`llama-router`, `llama.cpp`, Ollama, LM Studio,
 
 ### llama.cpp
 
-Start an OpenAI compatible llama-server:
+Start an OpenAI-compatible llama-server:
 
 ```sh
 llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
@@ -182,7 +193,7 @@ In the TUI, open `/connect` and choose `llama.cpp`. The menu asks for the base U
 | --- | --- |
 | R105_URL | Startup base URL |
 | R105_MODEL | Startup model override |
-| OPENAI_BASE_URL | OpenAI compatible fallback URL |
+| OPENAI_BASE_URL | OpenAI-compatible fallback URL |
 | OPENAI_API_KEY | OpenAI, vLLM, or custom endpoint key |
 | OPENCODE_API_KEY | OpenCode Zen and OpenCode Go key |
 | GROQ_API_KEY | Groq key |
@@ -216,7 +227,7 @@ Conversation turns stay answer-first: `>` marks the prompt, `●` marks the
 assistant reply, and reasoning/tool output stays in compact expandable rows
 (`click` or `/expand`) instead of printing internal traces into the chat.
 
-- Tabs are session-backed: Ctrl+Shift+T opens one on a fresh session, Ctrl+Shift+W closes it (or the focused pane in a split), Ctrl+Tab cycles, Alt+1..9 selects, Alt+Shift+←/→ reorders, and clicking the bar works too. The active chip exposes `×` for direct closure. Switching autosaves the live session first; the bar persists across restarts in `tabs.json`.
+- Tabs are session-backed: Ctrl+Shift+T opens one on a fresh session, Ctrl+Shift+W closes it (or the focused pane in a split), Ctrl+Tab and Ctrl+Shift+Tab cycle, Alt+1..9 selects, Alt+Shift+←/→ reorders, and clicking the bar works too. The active chip exposes `×` for direct closure. Switching autosaves the live session first; the bar persists across restarts in `tabs.json`.
 - Panes use a persistent nested layout inside a tab: Ctrl+Shift+D opens a fresh session to the right, Ctrl+Shift+E stacks one below, Ctrl+Shift+←/→ (or Ctrl+Alt+←/→) moves focus, clicking a pane focuses it, Ctrl+Shift+Enter temporarily maximizes the focused pane, and Ctrl+Shift+W closes it (the last pane closes the tab). Split view uses compact pane headers and tree-owned dividers; the active pane and its adjacent divider get the accent marker while background panes stay quiet. Every pane is a live session: a request keeps streaming while you work in a sibling, the header shows the session name plus `…` while running and `•` when a background pane finished, and up to four panes fit. Tab switches stash the whole layout — each pane autosaves its own session and the exact split, zoom state, and focus restore together.
 - Ctrl+R searches shell history in reverse: the current draft seeds the query, typing narrows (case-insensitive), ↑↓/wheel move the highlight, the composer previews the match live, Enter accepts it without running, Esc restores the draft. Clicking a row selects it; clicking the highlighted row accepts.
 - Type / or press Ctrl+P to open the action palette (`*` marks saved workflows from Markdown files). Click a row to pick it; click again to fill it in.
@@ -361,10 +372,10 @@ The model can use these native tools:
 | Tool | Purpose |
 | --- | --- |
 | execute_rust | Compile and run Rust in the configured sandbox |
-| write_file | Write a workspace relative file |
+| write_file | Write a workspace-relative file |
 | edit_file | Replace one anchored span in a workspace file |
 | apply_patch | Apply a structured Add/Update/Delete patch with @@ hunks |
-| read_file | Read a workspace relative file |
+| read_file | Read a workspace-relative file |
 | list_files | List a workspace directory |
 | get_time | Return the local system clock |
 | calculate | Evaluate bounded arithmetic |
@@ -378,7 +389,7 @@ Tool schemas are sent with each request. Tool calls are executed in parallel whe
 
 ## Security and permissions
 
-r105 is local first, but model generated actions still cross explicit boundaries:
+r105 is local-first, but model-generated actions still cross explicit boundaries:
 
 - Workspace file tools reject absolute paths, traversal, and symlink escapes.
 - Web tools accept only HTTP(S), reject embedded credentials, block private and metadata addresses, pin the validated DNS address for the request, and validate every redirect before following it.
@@ -519,6 +530,9 @@ Use /mcp reconnect to initialize the configured servers and call tools/list. Dis
 
 The default file is ~/.config/r105/config.json:
 
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the complete key
+reference, persistence paths, precedence, and migration behavior.
+
 ```json
 {
   "theme": "r105",
@@ -548,9 +562,19 @@ never persisted.
 
 Unknown keys are ignored with a warning for compatibility. Set R105_STRICT_CONFIG=1 to fail fast. r105 config-schema prints the JSON Schema used by the native loader.
 
-## Sessions and exports
+## Sessions, tabs, and exports
 
-Sessions are JSON files in ~/.config/r105/sessions/. The Rust loader reads the existing r105 0.8.x session shape, accepts legacy null or structured message content, writes versioned files with atomic replacement, and preserves model, context, active skills, skill parameters, and trace metadata.
+Named sessions are JSON files in `~/.config/r105/sessions/`. The loader reads
+legacy r105 0.8.x session shapes, accepts null or structured message content,
+writes versioned files with atomic replacement, and preserves model, context,
+active skills, skill parameters, mode, and trace metadata. The TUI stores its
+tab bar in `~/.config/r105/tabs.json`; each tab records pane sessions, focus,
+zoom, and the nested right/down split tree. Invalid or legacy tab files are
+repaired to a safe single-pane layout.
+
+The native window creates a separate `window-<id>` session unless an explicit
+`--session <name>` is supplied. Its AI history is checkpointed while the
+window is open and can be resumed with `r105 --session <name> window`.
 
 ```text
 /session save night-run
@@ -576,14 +600,14 @@ Exports have no optional runtime dependencies:
 r105 [OPTIONS] [COMMAND]
 
 Commands:
-  chat           Start the interactive TUI
+  chat           Start the interactive native Rust TUI
   send           Send one prompt and exit
   health         Check the selected backend
   doctor         Diagnose config, sandbox, backend, and workspace
   profiles       Print llama-router profiles
   config-schema  Print or write the config JSON Schema
-  sandbox        Run a command in the sandbox boundary (tester)
-  terminal       Open the PTY shell with block tracking
+  sandbox        Run a command inside the sandbox boundary (dry-run tester)
+  terminal       Open the PTY shell with block tracking; `-- <cmd>` runs once
   window         Open the native r105 terminal and AI window
 ```
 
@@ -603,31 +627,33 @@ remain available as separate commands.
 
 ## Native window
 
-`r105 window` opens r105 in its own OS window: a GPU-rendered
-terminal (winit, wgpu, glyphon with the system monospace font)
-hosting the same PTY shell core. Typing runs in the shell, resize
-reflows the grid, `Cmd/Ctrl+Q` or the close button quits.
+`r105 window` opens r105 in its own OS window: a GPU-rendered terminal
+hosting the same PTY shell core. Typing runs in the shell, resize reflows the
+grid, and `Cmd/Ctrl+Q` or the close button quits. This surface is intentionally
+one live PTY and one AI history; persistent tabs and nested split panes belong
+to `r105 chat`.
 `r105 window --smoke 60` renders 60 frames and exits with a frame
 report for automated checks (`--smoke-chrome` also seeds the
 composer, AI panel, and approval bar for headless coverage).
+Use `r105 window --smoke 120 --smoke-snapshot /tmp/r105-frame.ppm` to save
+the final frame for visual inspection.
 
-`Ctrl+J` opens the AI composer (`Enter` sends, `Alt+Enter` newline,
-`Esc` closes, `Ctrl+C` cancels a run). Answers stream into the AI
-panel (`Ctrl+K`, arrows move, `PgUp`/`PgDn` scroll); tool calls run
-the same approve-then-execute loop as the TUI, with `y`/`a`/`n`
-verdicts inline. `Esc` in the terminal cancels a live run, otherwise
-it goes to the shell. Drag selects terminal text, `Cmd+C/V` on macOS
-or `Ctrl+Shift+C/V` on Linux/Windows copies and pastes; plain `Ctrl+C`
-remains the shell interrupt. Scroll and wheel reach scrollback, IME input
-commits into the focused surface, and each window session checkpoints
-itself (resume with `--session <name> window`). AI responses are plain
-text; markdown rendering remains deliberately out of scope.
+`Ctrl+J` opens the AI composer (`Enter` sends, `Alt+Enter` inserts a newline,
+`Esc` returns to the shell, and `Ctrl+C` cancels a run). Answers stream into
+the AI panel (`Ctrl+K`; arrows and `PgUp`/`PgDn` navigate); tool calls use the
+same approve-then-execute loop as the TUI, with `y`/`a`/`n` verdicts inline.
+`Esc` in the terminal cancels a live AI run, otherwise it goes to the shell.
+Drag selects terminal text. `Cmd+C/V` on macOS or `Ctrl+Shift+C/V` on
+Linux/Windows copies and pastes; plain `Ctrl+C` remains the shell interrupt.
+Scrollback, IME commits, and smoke-frame PPM capture are supported. AI
+responses are plain text; markdown rendering remains deliberately out of
+scope in this surface.
 
 Common options:
 
 | Option | Description |
 | --- | --- |
-| --url <URL> | OpenAI compatible base URL |
+| --url <URL> | OpenAI-compatible base URL |
 | --workspace <PATH> | Workspace directory |
 | --skills-dir <PATH> | Markdown skill directory |
 | --plugins-dir <PATH> | Native plugin manifest directory |
@@ -641,7 +667,6 @@ Common options:
 | --session <NAME> | Load a saved session |
 | --timeout <SECONDS> | Backend and tool timeout |
 | --yes | Select full access without prompting |
-| --smoke-snapshot <PATH> | Save a smoke frame as a PPM image (with `--smoke`) |
 
 ## Development
 
@@ -650,10 +675,15 @@ The Rust code is organized by responsibility:
 ```
 src/
 ├── app.rs       diagnostics
-├── backend.rs   OpenAI compatible HTTP and SSE client
+├── approve.rs   approval policy, grants, and decision resolution
+├── assistant.rs headless window AI orchestration and lifecycle tests
+├── backend.rs   OpenAI-compatible HTTP and SSE client
 ├── command.rs   slash parser, registry, fuzzy visibility
 ├── config.rs    config schema and atomic JSON writes
-├── export.rs    dependency free exporters
+├── custom.rs    Markdown workflow discovery and expansion
+├── edit.rs      anchored edits and structured patch application
+├── export.rs    dependency-free exporters
+├── instructions.rs project instruction chain (AGENTS files)
 ├── mcp.rs       native MCP discovery and calls
 ├── model.rs     messages, state, usage
 ├── plugin.rs    executable plugin protocol
@@ -661,30 +691,44 @@ src/
 ├── sandbox.rs   subprocess boundary
 ├── security.rs  path and web security checks
 ├── session.rs   versioned atomic persistence
+├── suggest.rs   deterministic shell-history and argument completion
+├── terminal.rs  PTY sessions, vt100 screen, and shell blocks
 ├── sse.rs       streaming parser and tool call accumulator
 ├── tool.rs      native tools and bounded expression parser
-└── ui/          Ratatui harness UI (app, input, tabs, commands, completion, render)
+├── window.rs    native GPU terminal and inline AI chrome
+└── ui/          Ratatui TUI (panes, tabs, commands, completion, render)
 ```
 
 Run the checks before a change:
 
 ```sh
 cargo fmt --all -- --check
-cargo check --all-targets --all-features
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
+cargo check --locked --all-targets --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets
+cargo build --release --locked
+target/release/r105 window --smoke 60
+target/release/r105 window --smoke 90 --smoke-chrome
 ```
 
-A local OpenAI compatible mock can validate the non streaming CLI path. A live backend is required for real model, streaming, and tool loop checks.
+A local OpenAI-compatible mock can validate the non-streaming CLI path and
+assistant lifecycle. A live backend is required for real model, streaming,
+and tool-loop checks; endpoint availability is environment-dependent and is
+not assumed by the deterministic release gate.
 
 ## Documentation
 
 - Architecture: ARCHITECTURE.md
+- Contribution workflow: CONTRIBUTING.md
+- Security policy: SECURITY.md
 - Skills: docs/SKILLS.md
 - Tools: docs/TOOLS.md
 - Export formats: docs/EXPORT.md
+- Configuration: docs/CONFIGURATION.md
+- Change specifications: docs/specs/README.md
 - Package recipes: packaging/README.md
 - Changelog: CHANGELOG.md
+- Release notes: docs/release-notes/
 
 ## License
 

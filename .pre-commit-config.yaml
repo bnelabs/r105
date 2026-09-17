@@ -10,21 +10,21 @@ repos:
 
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+        entry: cargo clippy --locked --all-targets --all-features -- -D warnings
         language: system
         pass_filenames: false
         types: [rust]
 
       - id: cargo-test
         name: cargo test
-        entry: cargo test --all-targets
+        entry: cargo test --locked --all-targets
         language: system
         pass_filenames: false
         types: [rust]
 
       - id: cargo-check
         name: cargo check
-        entry: cargo check --all-targets --all-features
+        entry: cargo check --locked --all-targets --all-features
         language: system
         pass_filenames: false
         types: [rust]

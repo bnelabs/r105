@@ -1,6 +1,8 @@
 # Release packages
 
-The release workflow builds the Rust binary once per target and then packages it in the native format for each operating system.
+The release workflow builds the Rust binary once per target and then packages
+it in the native format for each operating system. The current release line is
+2.5.x; replace `<VERSION>` below with the tag version being built.
 
 | Target | Artifact | Build environment |
 | --- | --- | --- |
@@ -18,15 +20,30 @@ The release workflow builds the Rust binary once per target and then packages it
 
 The Ubuntu, Arch, and Fedora packages share the Linux x86_64 GNU executable. The FreeBSD and Alpine jobs compile the Rust binary on the target ABI. Alpine is allowed to be an optional best effort job because its musl toolchain can be unavailable during a GitHub hosted runner outage; the GNU and other native assets remain required.
 
-Every archive contains the executable, README, and LICENSE. The release job publishes SHA256SUMS after all required assets are assembled.
+Every archive contains the executable, README, and LICENSE. The release job
+publishes `SHA256SUMS` after all assets are assembled, then synchronizes the
+Homebrew and Scoop metadata in a follow-up commit. Alpine is best effort in
+the tag workflow; the explicit `rebuild-alpine.yml` workflow can attach a
+native APK and refresh checksums for an existing release.
 
 ## Local package checks
 
 ```sh
 cargo build --release --locked
 target/release/r105 --version
+VERSION=2.5.0
+./packaging/check_release.sh --tag "v$VERSION"
+./packaging/build_macos_app.sh  # macOS only; creates target/r105.app
 ```
+
+`check_release.sh` verifies Cargo.toml, Cargo.lock, the matching changelog
+section, the matching `docs/release-notes/v<VERSION>.md` file, and an optional
+tag name.
 
 For a Debian package, stage the target/release/r105 binary at usr/bin/r105 and use packaging/debian/control.in. The Arch, Fedora, FreeBSD, and Alpine templates follow the same binary only layout.
 
-The Homebrew template in docs/homebrew.rb.in selects the macOS or Linux archive by CPU architecture. The Scoop manifest selects the Windows x86_64 or arm64 archive. Release automation fills checksums after assets exist.
+The Homebrew template in `docs/homebrew.rb.in` selects the macOS or Linux
+archive by CPU architecture. The Scoop manifest selects the Windows x86_64 or
+arm64 archive. Release automation fills checksums after assets exist. The
+local macOS bundle is ad-hoc signed; Developer ID signing and notarization are
+required for public distribution.

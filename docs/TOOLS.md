@@ -1,6 +1,6 @@
 # Native tools
 
-r105 sends tool schemas in the OpenAI compatible request and executes returned calls through the Rust tool protocol.
+r105 sends tool schemas in the OpenAI-compatible request and executes returned calls through the Rust tool protocol.
 
 ## Built in tools
 
@@ -23,6 +23,14 @@ r105 sends tool schemas in the OpenAI compatible request and executes returned c
 The native ToolContext carries the workspace, sandbox, cancellation token, network permission, code permission, session mode, approval policy, shared todo list, and plugin directory. Tool calls in one model response run concurrently. A failed call becomes a tool result containing its error, so independent calls can finish.
 
 Every call resolves through the approval policy first (mode gate, permission posture, command denylists/allowlists, then the per-category `approval_*` level): denied calls never start, and `ask` calls pause on an inline card in the TUI (`y` once, `a` always this run, `n` deny) or fail closed outside it.
+
+The TUI and native window use the same tool lifecycle. Calls from one model
+response are prechecked together, independent approved calls execute in
+parallel, and results are appended as `tool` messages before the next streamed
+request. A request can run at most eight tool rounds. In the native window the
+same policy appears as an inline approval bar (`y`/`a`/`n`); `Esc` or `Ctrl+C`
+cancels the active request without dropping queued prompts or the repaired
+tool-call/result history.
 
 ## Tool protocol
 
@@ -56,7 +64,12 @@ All workspace paths pass through the canonical workspace root. The following are
 - symlink paths that resolve outside the workspace;
 - oversized file writes and reads.
 
-Writes report whether a file was created or updated. Reads and tool results are bounded before they reach the model.
+Writes report whether a file was created or updated. Reads and tool results are
+bounded before they reach the model. `write_file`, `edit_file`, and
+`apply_patch` are workspace-relative write paths. `edit_file` requires an
+anchored old span (and replaces all matches only when requested);
+`apply_patch` supports Add, Update, and Delete hunks. Approval previews show
+the affected files before a write begins.
 
 ## Patch format
 
@@ -141,10 +154,27 @@ The executable receives one newline terminated request:
 {"method":"call","tool":"hello","arguments":{"name":"Ada"}}
 ```
 
-It returns one JSON object with content or result. The model sees the tool as plugin_example_hello. Plugin names are namespaced and plugin processes inherit a cleared environment plus PATH.
+It returns one JSON object with content or result. The model sees the tool as
+`plugin_example_hello`. Plugin names are namespaced. Plugin processes run in
+the workspace with a cleared environment containing only a safe `PATH`,
+`HOME` set to the workspace, and `R105_PLUGIN` identifying the manifest. This
+is process sanitization, not OS namespace isolation; use the sandbox boundary
+for untrusted code.
 
 ## MCP
 
 MCP servers use the config.json mcp_servers list. /mcp reconnect performs initialize and tools/list, caches the returned schemas, and exposes them as mcp_server_tool. /mcp tools prints the cached OpenAI function schemas. /mcp list prints configured and discovered counts.
 
-Stdio servers receive JSON RPC lines. HTTP servers receive request/response JSON or an SSE data response. Each tool call has a 30 second response limit.
+Stdio servers receive JSON RPC lines. HTTP servers receive request/response JSON
+or an SSE data response. Each tool call has a 30 second response limit. MCP
+schemas are held in memory and are rediscovered with `/mcp reconnect`; they are
+not copied into the persistent config.
+
+## Native-window boundary
+
+The native window is a separate UI surface over the same `ToolContext` and
+approval policy. `Ctrl+J` opens its composer, `Ctrl+K` opens the AI panel, and
+the approval bar shows the same call summary and diff preview as the TUI. The
+window checkpoints its AI history to a named session, but does not share the
+TUI tab/split tree. Clipboard paste is normalized before it reaches the PTY or
+composer, and terminal selection is display-only until copied explicitly.

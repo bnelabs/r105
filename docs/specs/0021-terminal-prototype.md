@@ -1,4 +1,4 @@
-# 0021: Terminal core (PTY + blocks, behind a flag)
+# 0021: Terminal core (PTY + blocks)
 
 - Status: implemented
 - Author: r105
@@ -55,4 +55,9 @@ Land the core behind a separate subcommand; `chat` stays untouched.
 
 ## Amendments
 
-(None yet.)
+- The terminal core is now shared by both `r105 terminal` and the native
+  `r105 window` surface. The window adds GPU rendering, selection, clipboard,
+  IME, and inline AI without changing the PTY/block invariants described here.
+- Recognized bash, zsh, and fish sessions continue to use OSC 7/133/633 for
+  cwd, command boundaries, and exit status. Unknown shells keep an honest
+  completed state when no marker supplies an exit code.

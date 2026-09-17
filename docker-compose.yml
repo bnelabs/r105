@@ -1,7 +1,10 @@
 # r105 + llama-router quick-start stack
-# Usage:
-#   docker-compose up -d llama-router  # start the router
-#   docker-compose run r105 chat       # launch the TUI
+# Usage (Compose v2):
+#   docker compose up -d llama-router  # start the router
+#   docker compose run --rm r105 chat   # launch the TUI
+#
+# The container runs the native `r105` binary. Mount a workspace and config
+# directory explicitly when using it outside this quick-start stack.
 
 services:
   r105:
